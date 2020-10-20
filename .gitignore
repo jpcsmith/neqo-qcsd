@@ -8,3 +8,4 @@ Cargo.lock
 *.qlog
 *.swp
 /neqo-qns/.last-update-*
+activate
