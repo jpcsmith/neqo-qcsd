@@ -1,3 +1,4 @@
 *.rs text eol=lf
 *.toml text eol=lf
 *.h text eol=lf
+data/ filter=lfs diff=lfs merge=lfs -text
