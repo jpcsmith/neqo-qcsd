@@ -186,7 +186,15 @@ impl HttpServer for Http3Server {
                 } => {
                     println!("Headers (request={} fin={}): {:?}", request, fin, headers);
 
-                    let default_ret = b"Hello World".to_vec();
+                    let default_ret = b"Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla a justo ac felis dignissim cursus. Suspendisse hendrerit, enim sit amet malesuada rutrum, lorem ligula pulvinar velit, quis imperdiet lorem ligula non odio. Curabitur ut feugiat risus. Cras suscipit suscipit turpis, et semper augue pellentesque et. Suspendisse mi arcu, suscipit quis nunc sed, lobortis porttitor mauris. Donec consectetur lacus nec diam eleifend, aliquam lobortis tortor efficitur. Pellentesque vitae mauris dui. Vivamus ut bibendum justo. Morbi et porttitor dolor. Ut fringilla augue at auctor porttitor.
+
+Praesent pulvinar tempor dapibus. Vestibulum ac ligula at mi posuere laoreet. Nullam eget metus lectus. Vivamus molestie sollicitudin augue at lacinia. Donec lacinia urna ac diam mollis, quis ornare nulla pretium. Morbi ac aliquet nunc, vel efficitur urna. Cras varius volutpat tellus quis accumsan. Aenean lacinia mattis nulla, iaculis venenatis arcu sagittis ac. Fusce ac lectus ex. Fusce vestibulum lectus eget sapien porttitor, ut rutrum ipsum pretium. Quisque ullamcorper ultricies tincidunt. Ut hendrerit tellus vel orci venenatis, porttitor tempor risus auctor.
+
+Nam cursus nibh ac elit lobortis condimentum. Pellentesque sit amet enim ut mi interdum hendrerit. Aliquam tempor in magna sit amet pharetra. Donec venenatis erat et finibus congue. Quisque non lacus massa. Nam tortor orci, sagittis et neque eu, mattis luctus elit. Maecenas vel neque et justo facilisis tempor. Fusce nec vestibulum nisi, sit amet porta lectus. Class aptent taciti sociosqu ad litora torquent per conubia nostra, per inceptos himenaeos. Phasellus condimentum tellus id mattis efficitur. Vestibulum in justo sem. Sed eleifend odio quis ex convallis rutrum. Maecenas malesuada accumsan commodo. Maecenas hendrerit ipsum id turpis laoreet, sed auctor mi tempor.
+
+Curabitur posuere nulla at augue rhoncus, eget elementum lectus elementum. Pellentesque lorem nulla, pulvinar at nisl at, vestibulum lobortis justo. Vivamus est nisl, laoreet id justo nec, eleifend varius velit. Donec accumsan placerat cursus. Fusce tellus sem, tristique at elementum vitae, tempus eu metus. Etiam nibh sem, facilisis sit amet tempor nec, suscipit quis arcu. Pellentesque dignissim viverra dolor, quis laoreet lacus placerat vitae. Mauris nunc ligula, molestie et purus nec, tincidunt ornare nisi. Praesent vitae purus ut tortor aliquet tristique nec et neque. Cras ac metus mauris. Morbi vitae nisl nibh. Nulla rhoncus odio sit amet enim consectetur convallis. In commodo egestas dignissim.
+
+Nunc volutpat ut ex ac pulvinar. Nullam accumsan, lorem non scelerisque egestas, dui purus euismod mauris, eget aliquet nisl odio a lacus. Donec eleifend velit ut feugiat molestie. Curabitur consequat quis eros vel euismod. Vivamus facilisis augue nisi, eu mattis massa finibus vitae. Ut vulputate justo vitae fermentum porttitor. Nulla vel tempus augue. Phasellus sit amet tempus quam.".to_vec();
 
                     let response = headers.and_then(|h| {
                         h.iter().find(|&(k, _)| k == ":path").and_then(|(_, path)| {
