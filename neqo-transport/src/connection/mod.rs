@@ -72,6 +72,7 @@ pub const LOCAL_STREAM_LIMIT_BIDI: u64 = 16;
 pub const LOCAL_STREAM_LIMIT_UNI: u64 = 16;
 
 const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
+const SHAPE_CLIENT: bool = true;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ZeroRttState {
@@ -374,6 +375,10 @@ impl Connection {
     ) -> Res<Self> {
         let tphandler = Rc::new(RefCell::new(TransportParametersHandler::default()));
         Self::set_tp_defaults(&mut tphandler.borrow_mut().local);
+        if role == Role::Client {
+            tphandler.borrow_mut().local.set_integer(tparams::INITIAL_MAX_DATA, 850);
+        }
+
         let local_initial_source_cid = cid_manager.borrow_mut().generate_cid();
         tphandler.borrow_mut().local.set_bytes(
             tparams::INITIAL_SOURCE_CONNECTION_ID,
@@ -413,6 +418,11 @@ impl Connection {
             release_resumption_token_timer: None,
             quic_version,
         };
+
+        if role == Role::Client && SHAPE_CLIENT {
+            c.flow_mgr.borrow_mut().enable_flow_shaping();
+        }
+
         c.stats.borrow_mut().init(format!("{}", c));
         Ok(c)
     }
@@ -798,6 +808,7 @@ impl Connection {
             return;
         }
 
+        self.flow_mgr.borrow_mut().process_timer(now);
         self.cleanup_streams();
 
         let res = self.crypto.states.check_key_update(now);
@@ -864,6 +875,12 @@ impl Connection {
             if let Some(pace_time) = self.loss_recovery.next_paced() {
                 qtrace!([self], "Pacing timer {:?}", pace_time);
                 delays.push(pace_time);
+            }
+        }
+        if self.role == Role::Client && self.flow_mgr.borrow().is_shaping() {
+            if let Some(signal_time) = self.flow_mgr.borrow().next_signal_time() {
+                qtrace!([self], "Shape timer {:?}", signal_time);
+                delays.push(signal_time);
             }
         }
 
