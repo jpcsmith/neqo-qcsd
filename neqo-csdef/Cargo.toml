@@ -1,0 +1,12 @@
+[package]
+name = "neqo-csdef"
+version = "0.1.0"
+authors = ["Jean-Pierre Smith <rougesprit@gmail.com>"]
+edition = "2018"
+
+[lib]
+doctest = false
+bench = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
