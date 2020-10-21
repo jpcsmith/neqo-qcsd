@@ -27,6 +27,7 @@ use neqo_crypto::{
     Agent, AntiReplay, AuthenticationStatus, Cipher, Client, HandshakeState, ResumptionToken,
     SecretAgentInfo, Server, ZeroRttChecker,
 };
+use neqo_csdef::flow_shaper::{ self, FlowShaper, Cmd as FsCmd };
 
 use crate::addr_valid::{AddressValidation, NewTokenState};
 use crate::cc::CongestionControlAlgorithm;
@@ -72,7 +73,9 @@ pub const LOCAL_STREAM_LIMIT_BIDI: u64 = 16;
 pub const LOCAL_STREAM_LIMIT_UNI: u64 = 16;
 
 const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
-const SHAPE_CLIENT: bool = true;
+const DEBUG_SHAPE_CLIENT: bool = true;
+const DEBUG_SAMPLE_TRACE: &str = "../data/nytimes.csv";
+const SIGNAL_INTERVAL: u32 = 5;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ZeroRttState {
@@ -273,6 +276,9 @@ pub struct Connection {
     /// this is when that turns into an event without NEW_TOKEN.
     release_resumption_token_timer: Option<Instant>,
     quic_version: QuicVersion,
+
+    // Added for flow shaping
+    flow_shaper: Option<FlowShaper>
 }
 
 impl Debug for Connection {
@@ -385,6 +391,16 @@ impl Connection {
             local_initial_source_cid.to_vec(),
         );
 
+        let mut flow_shaper = None;
+        if role == Role::Client && DEBUG_SHAPE_CLIENT {
+            let trace = flow_shaper::load_trace(DEBUG_SAMPLE_TRACE)
+                    .expect("Load failed");
+            flow_shaper = Some(FlowShaper::new(
+                    Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
+                    &trace)
+                );
+        }
+
         let crypto = Crypto::new(agent, protocols, tphandler.clone())?;
 
         let stats = StatsCell::default();
@@ -417,14 +433,17 @@ impl Connection {
             qlog: NeqoQlog::disabled(),
             release_resumption_token_timer: None,
             quic_version,
+            flow_shaper,
         };
-
-        if role == Role::Client && SHAPE_CLIENT {
-            c.flow_mgr.borrow_mut().enable_flow_shaping();
-        }
 
         c.stats.borrow_mut().init(format!("{}", c));
         Ok(c)
+    }
+
+    /// Return true iff the connection has a FlowShaper, regardless as to 
+    /// whether shaping has started.
+    pub fn is_being_shaped(&self) -> bool {
+        self.flow_shaper.is_some()
     }
 
     /// Get the local path.
@@ -808,7 +827,15 @@ impl Connection {
             return;
         }
 
-        self.flow_mgr.borrow_mut().process_timer(now);
+
+        if let Some(shaper) = &mut self.flow_shaper {
+            shaper.process_timer(now)
+                .map(|cmd| match cmd {
+                    FsCmd::IncreaseMaxData(inc) => self.flow_mgr.borrow_mut()
+                        .increase_max_data_by(inc),
+                });
+        }
+
         self.cleanup_streams();
 
         let res = self.crypto.states.check_key_update(now);
@@ -877,8 +904,13 @@ impl Connection {
                 delays.push(pace_time);
             }
         }
-        if self.role == Role::Client && self.flow_mgr.borrow().is_shaping() {
-            if let Some(signal_time) = self.flow_mgr.borrow().next_signal_time() {
+
+        if self.is_being_shaped() {
+            if let Some(signal_time) = self.flow_shaper
+                    .as_ref()
+                    .expect("Being shaped but no shaper?")
+                    .next_signal_time()
+            {
                 qtrace!([self], "Shape timer {:?}", signal_time);
                 delays.push(signal_time);
             }
@@ -1978,14 +2010,16 @@ impl Connection {
                 }
             }
             Frame::DataBlocked { data_limit } => {
-                // Should never happen since we set data limit to max
-                qwarn!(
-                    [self],
-                    "Received DataBlocked with data limit {}",
-                    data_limit
-                );
-                // But if it does, open it up all the way
-                self.flow_mgr.borrow_mut().max_data(LOCAL_MAX_DATA);
+                if !self.is_being_shaped() {
+                    // Should never happen since we set data limit to max
+                    qwarn!(
+                        [self],
+                        "Received DataBlocked with data limit {}",
+                        data_limit
+                    );
+                    // But if it does, open it up all the way
+                    self.flow_mgr.borrow_mut().max_data(LOCAL_MAX_DATA);
+                }
             }
             Frame::StreamDataBlocked {
                 stream_id,

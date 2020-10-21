@@ -5,6 +5,7 @@ use std::time::{ Duration, Instant };
 use std::collections::{ HashMap, VecDeque };
 use std::convert::TryFrom;
 
+
 #[derive(Debug)]
 pub enum TraceLoadError {
     Io(io::Error),
@@ -53,11 +54,9 @@ pub fn load_trace(filename: &str) -> Result<Trace, TraceLoadError> {
 }
 
 
-#[derive(Debug,Eq,PartialEq,Ord,PartialOrd)]
+#[derive(Debug,Eq,PartialEq)]
 pub enum Cmd {
-    Done,
-    Wait(Duration),
-    IncreaseMaxData(u32),
+    IncreaseMaxData(u64),
 }
 
 
@@ -74,28 +73,37 @@ pub struct FlowShaper {
 
 
 impl FlowShaper {
-    pub fn start_shaping(&mut self) {
+    /// Start shaping the traffic using the current time as the reference
+    /// point.
+    pub fn start(&mut self) {
         self.start_time = Some(Instant::now());
     }
 
-    pub fn process_timer(&mut self, now: Instant) -> Cmd {
-        let start_time = self.start_time.expect(
-            "Cannot process timer before start_shaping is called");
-        self.process_timer_(now.duration_since(start_time))
+    /// Report the next instant at which the FlowShaper should be called for 
+    /// processing events.
+    pub fn next_signal_time(&self) -> Option<Instant> {
+        self.in_target.front()
+            .map(|(ts, _)| Duration::from_millis(u64::from(*ts)))
+            .zip(self.start_time)
+            .map(|(dur, start)| start + dur)
     }
 
-    fn process_timer_(&mut self, since_start: Duration) -> Cmd {
-        if let Some(next) = self.in_target.front() {
-            let next = Duration::from_millis(next.0 as u64);
+    pub fn process_timer(&mut self, now: Instant) -> Option<Cmd> {
+        self.process_timer_(now.duration_since(self.start_time?))
+    }
+
+    fn process_timer_(&mut self, since_start: Duration) -> Option<Cmd> {
+        if let Some((ts, _)) = self.in_target.front() {
+            let next = Duration::from_millis(u64::from(*ts));
             if next < since_start {
-                let size = self.in_target.pop_front().unwrap().1 as u32;
-                return Cmd::IncreaseMaxData(size);
-            } else {
-                return Cmd::Wait(next - since_start);
-            }
+                let (_, size) = self.in_target.pop_front()
+                    .expect("the deque to be non-empty");
+                return Some(Cmd::IncreaseMaxData(
+                    u64::try_from(size).expect("absolute sizes")));
+            } 
         }
 
-        Cmd::Done
+        None
     }
 
     pub fn new(interval: Duration, trace: &Trace) -> FlowShaper {
@@ -163,15 +171,22 @@ mod tests {
     }
 
     #[test]
+    fn test_next_signal_time() {
+        let mut shaper = create_shaper();
+        assert_eq!(shaper.next_signal_time(), None);
+
+        shaper.start();
+        assert_eq!(shaper.next_signal_time(), 
+                   Some(shaper.start_time.unwrap() + Duration::from_millis(15)))
+    }
+
+    #[test]
     fn test_process_timer() {
         let mut shaper = create_shaper();
-        assert_eq!(shaper.process_timer_(Duration::from_millis(0)),
-                   Cmd::Wait(Duration::from_millis(15)));
-        assert_eq!(shaper.process_timer_(Duration::from_millis(3)),
-                   Cmd::Wait(Duration::from_millis(12)));
-        assert_eq!(shaper.process_timer_(Duration::from_millis(17)), Cmd::IncreaseMaxData(800));
+        assert_eq!(shaper.process_timer_(Duration::from_millis(3)), None);
         assert_eq!(shaper.process_timer_(Duration::from_millis(17)),
-                   Cmd::Wait(Duration::from_millis(3)));
-        assert_eq!(shaper.process_timer_(Duration::from_millis(21)), Cmd::IncreaseMaxData(350));
+                   Some(Cmd::IncreaseMaxData(800)));
+        assert_eq!(shaper.process_timer_(Duration::from_millis(21)),
+                   Some(Cmd::IncreaseMaxData(350)));
     }
 }
