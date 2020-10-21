@@ -9,7 +9,6 @@
 
 use std::collections::HashMap;
 use std::mem;
-use std::time::{ Duration, Instant };
 
 use neqo_common::{qinfo, qtrace, qwarn, Encoder};
 
@@ -23,8 +22,6 @@ use crate::AppError;
 
 pub type FlowControlRecoveryToken = Frame;
 
-const SIGNAL_INTERVAL: u32 = 5;
-const PACKET_SIZE: u32 = 850;
 
 #[derive(Debug, Default)]
 pub struct FlowMgr {
@@ -42,41 +39,11 @@ pub struct FlowMgr {
     used_data: u64,
     max_data: u64,
 
-    shape_flow: bool,
-    next_send: Option<Instant>,
     remote_max_data: u64,
 }
 
 
 impl FlowMgr {
-
-    pub fn is_shaping(&self) -> bool {
-        self.shape_flow
-    }
-
-    pub fn next_signal_time(&self) -> Option<Instant> {
-        self.next_send
-    }
-
-    pub fn process_timer(&mut self, now: Instant) {
-        if !self.shape_flow { return; }
-
-        if let Some(next_send) = self.next_send {
-            if next_send > now {
-                return;
-            }
-        }
-
-        self.remote_max_data += PACKET_SIZE as u64;
-        let frame = Frame::MaxData { maximum_data: self.remote_max_data };
-        self.from_conn.insert(mem::discriminant(&frame), frame);
-
-        self.next_send = Some(now + Duration::from_millis(SIGNAL_INTERVAL as u64));
-    }
-
-    pub fn enable_flow_shaping(&mut self) {
-        self.shape_flow = true;
-    }
 
     pub fn conn_credit_avail(&self) -> u64 {
         self.max_data - self.used_data
@@ -119,10 +86,18 @@ impl FlowMgr {
 
     pub fn max_data(&mut self, maximum_data: u64) {
         let frame = Frame::MaxData { maximum_data };
+        self.from_conn.insert(mem::discriminant(&frame), frame);
 
-        if !self.shape_flow {
-            self.from_conn.insert(mem::discriminant(&frame), frame);
-        } 
+        self.remote_max_data = maximum_data;
+    }
+
+    /// Increase the remote's maximum data allowance by the specified amount.
+    /// An incremental version of the `max_data` method.
+    pub fn increase_max_data_by(&mut self, increase: u64) {
+        let new_max = self.remote_max_data.saturating_add(increase);
+        if new_max > self.remote_max_data {
+            self.max_data(new_max);
+        }
     }
 
     // -- frames scoped on stream --
