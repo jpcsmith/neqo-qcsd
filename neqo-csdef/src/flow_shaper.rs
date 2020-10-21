@@ -1,8 +1,8 @@
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::num;
-use std::time::Duration;
-use std::collections::HashMap;
+use std::time::{ Duration, Instant };
+use std::collections::{ HashMap, VecDeque };
 use std::convert::TryFrom;
 
 #[derive(Debug)]
@@ -53,16 +53,51 @@ pub fn load_trace(filename: &str) -> Result<Trace, TraceLoadError> {
 }
 
 
+#[derive(Debug,Eq,PartialEq,Ord,PartialOrd)]
+pub enum Cmd {
+    Done,
+    Wait(Duration),
+    IncreaseMaxData(u32),
+}
+
+
+#[derive(Debug)]
 pub struct FlowShaper {
     // The control interval
     interval: Duration,
 
-    // The target trace, binned into control intervals
-    out_target: Vec<(u32, i32)>,
-    in_target: Vec<(u32, i32)>,
+    out_target: VecDeque<(u32, i32)>,
+    in_target: VecDeque<(u32, i32)>,
+
+    start_time: Option<Instant>
 }
 
+
 impl FlowShaper {
+    pub fn start_shaping(&mut self) {
+        self.start_time = Some(Instant::now());
+    }
+
+    pub fn process_timer(&mut self, now: Instant) -> Cmd {
+        let start_time = self.start_time.expect(
+            "Cannot process timer before start_shaping is called");
+        self.process_timer_(now.duration_since(start_time))
+    }
+
+    fn process_timer_(&mut self, since_start: Duration) -> Cmd {
+        if let Some(next) = self.in_target.front() {
+            let next = Duration::from_millis(next.0 as u64);
+            if next < since_start {
+                let size = self.in_target.pop_front().unwrap().1 as u32;
+                return Cmd::IncreaseMaxData(size);
+            } else {
+                return Cmd::Wait(next - since_start);
+            }
+        }
+
+        Cmd::Done
+    }
+
     pub fn new(interval: Duration, trace: &Trace) -> FlowShaper {
         assert!(trace.len() > 0);
 
@@ -84,7 +119,7 @@ impl FlowShaper {
         let mut in_target: Vec<(u32, i32)> = bins
             .iter()
             .filter(|&((_, inc), _)| !*inc)
-            .map(|((ts, _), size)| (*ts, *size))
+            .map(|((ts, _), size)| (*ts, size.abs()))
             .collect();
         in_target.sort();
 
@@ -95,7 +130,12 @@ impl FlowShaper {
             .collect();
         out_target.sort();
 
-        FlowShaper{ interval, in_target, out_target }
+        FlowShaper{ 
+            interval,
+            in_target: VecDeque::from(in_target), 
+            out_target: VecDeque::from(out_target),
+            start_time: None
+        }
     }
 }
 
@@ -108,9 +148,30 @@ impl FlowShaper {
 mod tests {
     use super::*;
 
+    fn create_shaper() -> FlowShaper {
+        let vec = vec![
+                (Duration::from_millis(2), 1350), (Duration::from_millis(16), -800),
+                (Duration::from_millis(21), 600), (Duration::from_millis(22), -350),
+            ];
+        FlowShaper::new(Duration::from_millis(5), &vec)
+    }
+
     #[test]
     fn test_sanity() {
-        let trace = load_trace("../../nytimes.csv").expect("Load failed");
+        let trace = load_trace("../data/nytimes.csv").expect("Load failed");
         FlowShaper::new(Duration::from_millis(10), &trace);
+    }
+
+    #[test]
+    fn test_process_timer() {
+        let mut shaper = create_shaper();
+        assert_eq!(shaper.process_timer_(Duration::from_millis(0)),
+                   Cmd::Wait(Duration::from_millis(15)));
+        assert_eq!(shaper.process_timer_(Duration::from_millis(3)),
+                   Cmd::Wait(Duration::from_millis(12)));
+        assert_eq!(shaper.process_timer_(Duration::from_millis(17)), Cmd::IncreaseMaxData(800));
+        assert_eq!(shaper.process_timer_(Duration::from_millis(17)),
+                   Cmd::Wait(Duration::from_millis(3)));
+        assert_eq!(shaper.process_timer_(Duration::from_millis(21)), Cmd::IncreaseMaxData(350));
     }
 }

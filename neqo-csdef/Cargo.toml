@@ -10,3 +10,4 @@ bench = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
+neqo-transport = { path = "./../neqo-transport" }
