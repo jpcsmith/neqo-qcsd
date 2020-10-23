@@ -4,6 +4,7 @@ use std::num;
 use std::time::{ Duration, Instant };
 use std::collections::{ HashMap, VecDeque };
 use std::convert::TryFrom;
+use std::cmp::max;
 
 
 #[derive(Debug)]
@@ -85,7 +86,7 @@ impl FlowShaper {
         self.in_target.front()
             .map(|(ts, _)| Duration::from_millis(u64::from(*ts)))
             .zip(self.start_time)
-            .map(|(dur, start)| start + dur)
+            .map(|(dur, start)| max(start + dur, Instant::now()))
     }
 
     pub fn process_timer(&mut self, now: Instant) -> Option<Cmd> {

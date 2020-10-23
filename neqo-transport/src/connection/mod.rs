@@ -76,6 +76,7 @@ const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
 const DEBUG_SHAPE_CLIENT: bool = true;
 const DEBUG_SAMPLE_TRACE: &str = "../data/nytimes.csv";
 const SIGNAL_INTERVAL: u32 = 5;
+const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ZeroRttState {
@@ -381,8 +382,9 @@ impl Connection {
     ) -> Res<Self> {
         let tphandler = Rc::new(RefCell::new(TransportParametersHandler::default()));
         Self::set_tp_defaults(&mut tphandler.borrow_mut().local);
-        if role == Role::Client {
-            tphandler.borrow_mut().local.set_integer(tparams::INITIAL_MAX_DATA, 850);
+        if role == Role::Client && DEBUG_SHAPE_CLIENT {
+            tphandler.borrow_mut().local
+                .set_integer(tparams::INITIAL_MAX_DATA, DEBUG_INITIAL_MAX_DATA);
         }
 
         let local_initial_source_cid = cid_manager.borrow_mut().generate_cid();
@@ -395,10 +397,11 @@ impl Connection {
         if role == Role::Client && DEBUG_SHAPE_CLIENT {
             let trace = flow_shaper::load_trace(DEBUG_SAMPLE_TRACE)
                     .expect("Load failed");
-            flow_shaper = Some(FlowShaper::new(
-                    Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
-                    &trace)
-                );
+            let mut shaper = FlowShaper::new(
+                Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
+                &trace);
+            shaper.start();
+            flow_shaper = Some(shaper);
         }
 
         let crypto = Crypto::new(agent, protocols, tphandler.clone())?;
