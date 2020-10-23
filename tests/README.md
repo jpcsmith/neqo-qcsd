@@ -6,7 +6,7 @@ cd ols-dockerfiles/template
 bash build.sh -L 1.7.5 -P lsphp74
 cd -
 
-docker build -t vanilla-srv - < Dockerfile
+docker build -t vanilla-srv ./docker
 ```
 
 And start with: `./start-vanilla.sh`
