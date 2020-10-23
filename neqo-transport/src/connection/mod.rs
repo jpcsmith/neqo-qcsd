@@ -73,7 +73,6 @@ pub const LOCAL_STREAM_LIMIT_BIDI: u64 = 16;
 pub const LOCAL_STREAM_LIMIT_UNI: u64 = 16;
 
 const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
-const DEBUG_SHAPE_CLIENT: bool = true;
 const DEBUG_SAMPLE_TRACE: &str = "../data/nytimes.csv";
 const SIGNAL_INTERVAL: u32 = 5;
 const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
@@ -382,7 +381,7 @@ impl Connection {
     ) -> Res<Self> {
         let tphandler = Rc::new(RefCell::new(TransportParametersHandler::default()));
         Self::set_tp_defaults(&mut tphandler.borrow_mut().local);
-        if role == Role::Client && DEBUG_SHAPE_CLIENT {
+        if role == Role::Client && !neqo_csdef::debug_disable_shaping() {
             tphandler.borrow_mut().local
                 .set_integer(tparams::INITIAL_MAX_DATA, DEBUG_INITIAL_MAX_DATA);
         }
@@ -394,7 +393,7 @@ impl Connection {
         );
 
         let mut flow_shaper = None;
-        if role == Role::Client && DEBUG_SHAPE_CLIENT {
+        if role == Role::Client && !neqo_csdef::debug_disable_shaping() {
             let trace = flow_shaper::load_trace(DEBUG_SAMPLE_TRACE)
                     .expect("Load failed");
             let mut shaper = FlowShaper::new(
