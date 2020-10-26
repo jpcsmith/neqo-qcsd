@@ -5,6 +5,8 @@ from io import StringIO
 import pandas as pd
 from invoke import task
 
+SERVER_PORTS = [80, 443, 7443]
+
 
 @task
 def extract_har_urls(conn, harfile):
@@ -42,7 +44,8 @@ def pcap_to_csv(conn, pcapfile):
     data["timestamp"] -= data.loc[0, "timestamp"]
 
     # Set the direction
-    outgoing_mask = data[["udp.port", "tcp.port"]].isin((443, 80)).any(axis=1)
+    outgoing_mask = (data[["udp.port", "tcp.port"]]
+                     .isin(SERVER_PORTS).any(axis=1))
     data["dir"] = 1
     data.loc[outgoing_mask, "dir"] = -1
 
