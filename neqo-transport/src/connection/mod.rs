@@ -74,7 +74,7 @@ pub const LOCAL_STREAM_LIMIT_UNI: u64 = 16;
 
 const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
 const DEBUG_SAMPLE_TRACE: &str = "../data/nytimes.csv";
-const SIGNAL_INTERVAL: u32 = 5;
+const SIGNAL_INTERVAL: u32 = 1;
 const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
 
 #[derive(Debug, PartialEq, Eq)]
