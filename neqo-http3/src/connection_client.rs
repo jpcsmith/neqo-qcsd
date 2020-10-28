@@ -24,13 +24,19 @@ use neqo_transport::{
     AppError, CongestionControlAlgorithm, Connection, ConnectionEvent, ConnectionId,
     ConnectionIdManager, Output, QuicVersion, StreamId, StreamType, ZeroRttState,
 };
+use neqo_csdef::flow_shaper::{ self, FlowShaper };
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{ Duration, Instant };
 
 use crate::{Error, Res};
+
+
+const DEBUG_SAMPLE_TRACE: &str = "../data/nytimes.csv";
+const SIGNAL_INTERVAL: u32 = 1;
+
 
 // This is used for filtering send_streams and recv_Streams with a stream_ids greater than or equal a given id.
 // Only the same type (bidirectional or unidirectionsl) streams are filtered.
@@ -76,6 +82,8 @@ pub struct Http3Client {
     base_handler: Http3Connection,
     events: Http3ClientEvents,
     push_handler: Rc<RefCell<PushController>>,
+
+    flow_shaper: Option<Rc<RefCell<FlowShaper>>>
 }
 
 impl Display for Http3Client {
@@ -97,22 +105,54 @@ impl Http3Client {
         quic_version: QuicVersion,
         http3_parameters: &Http3Parameters,
     ) -> Res<Self> {
-        Ok(Self::new_with_conn(
-            Connection::new_client(
-                server_name,
-                &[alpn_from_quic_version(quic_version)],
-                cid_manager,
-                local_addr,
-                remote_addr,
-                cc_algorithm,
-                quic_version,
-            )?,
-            http3_parameters,
-        ))
+        let flow_shaper = match neqo_csdef::debug_disable_shaping() {
+            true => None,
+            false => {
+                let trace = flow_shaper::load_trace(DEBUG_SAMPLE_TRACE)
+                    .expect("failed to load sample schedule");
+                let mut shaper = FlowShaper::new(
+                    Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
+                    &trace);
+                shaper.start();
+
+                Some(Rc::new(RefCell::new(shaper)))
+            }
+        };
+
+        let conn = Connection::new_client(
+            server_name,
+            &[alpn_from_quic_version(quic_version)],
+            cid_manager,
+            local_addr,
+            remote_addr,
+            cc_algorithm,
+            quic_version,
+        )?;
+
+        match flow_shaper {
+            None => Ok(Self::new_with_conn(conn, http3_parameters)),
+            Some(shaper) => Ok(Self::new_with_shaper(conn, http3_parameters, shaper)),
+        }
     }
 
     #[must_use]
-    pub fn new_with_conn(c: Connection, http3_parameters: &Http3Parameters) -> Self {
+    pub fn new_with_shaper(
+        c: Connection, http3_parameters: &Http3Parameters,
+        flow_shaper: Rc<RefCell<FlowShaper>>
+    ) -> Self {
+        let mut conn = c;
+        conn.set_flow_shaper(&flow_shaper);
+
+        let mut client = Self::new_with_conn(conn, http3_parameters);
+        client.flow_shaper = Some(flow_shaper);
+
+        client
+    }
+
+    #[must_use]
+    pub fn new_with_conn(
+        c: Connection, http3_parameters: &Http3Parameters,
+    ) -> Self {
         let events = Http3ClientEvents::default();
         Self {
             conn: c,
@@ -122,12 +162,18 @@ impl Http3Client {
                 http3_parameters.max_concurrent_push_streams,
                 events,
             ))),
+            flow_shaper: None
         }
     }
 
     #[must_use]
     pub fn role(&self) -> Role {
         self.conn.role()
+    }
+
+    #[must_use]
+    pub fn is_being_shaped(&self) -> bool {
+        self.flow_shaper.is_some()
     }
 
     #[must_use]

@@ -27,7 +27,7 @@ use neqo_crypto::{
     Agent, AntiReplay, AuthenticationStatus, Cipher, Client, HandshakeState, ResumptionToken,
     SecretAgentInfo, Server, ZeroRttChecker,
 };
-use neqo_csdef::flow_shaper::{ self, FlowShaper, Cmd as FsCmd };
+use neqo_csdef::flow_shaper::{ FlowShaper, Cmd as FsCmd };
 
 use crate::addr_valid::{AddressValidation, NewTokenState};
 use crate::cc::CongestionControlAlgorithm;
@@ -73,8 +73,6 @@ pub const LOCAL_STREAM_LIMIT_BIDI: u64 = 16;
 pub const LOCAL_STREAM_LIMIT_UNI: u64 = 16;
 
 const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
-const DEBUG_SAMPLE_TRACE: &str = "../data/nytimes.csv";
-const SIGNAL_INTERVAL: u32 = 1;
 const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -278,7 +276,7 @@ pub struct Connection {
     quic_version: QuicVersion,
 
     // Added for flow shaping
-    flow_shaper: Option<FlowShaper>
+    flow_shaper: Option<Rc<RefCell<FlowShaper>>>
 }
 
 impl Debug for Connection {
@@ -392,17 +390,6 @@ impl Connection {
             local_initial_source_cid.to_vec(),
         );
 
-        let mut flow_shaper = None;
-        if role == Role::Client && !neqo_csdef::debug_disable_shaping() {
-            let trace = flow_shaper::load_trace(DEBUG_SAMPLE_TRACE)
-                    .expect("Load failed");
-            let mut shaper = FlowShaper::new(
-                Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
-                &trace);
-            shaper.start();
-            flow_shaper = Some(shaper);
-        }
-
         let crypto = Crypto::new(agent, protocols, tphandler.clone())?;
 
         let stats = StatsCell::default();
@@ -435,15 +422,28 @@ impl Connection {
             qlog: NeqoQlog::disabled(),
             release_resumption_token_timer: None,
             quic_version,
-            flow_shaper,
+            flow_shaper: None,
         };
 
         c.stats.borrow_mut().init(format!("{}", c));
         Ok(c)
     }
 
+    /// Sets the FlowShaper to be used to shape the connection
+    pub fn set_flow_shaper(& mut self, shaper: &Rc<RefCell<FlowShaper>>) {
+        assert!(self.role == Role::Client);
+        assert!(self.state == State::Init, "FlowShaper can only be added while initialising.");
+
+        self.flow_shaper = Some(shaper.clone());
+
+        // Update the initial transport parameters due to shaping being enabled
+        self.tps.borrow_mut().local
+            .set_integer(tparams::INITIAL_MAX_DATA, DEBUG_INITIAL_MAX_DATA);
+    }
+
     /// Return true iff the connection has a FlowShaper, regardless as to 
     /// whether shaping has started.
+    #[must_use]
     pub fn is_being_shaped(&self) -> bool {
         self.flow_shaper.is_some()
     }
@@ -830,8 +830,8 @@ impl Connection {
         }
 
 
-        if let Some(shaper) = &mut self.flow_shaper {
-            shaper.process_timer(now)
+        if let Some(shaper) = &self.flow_shaper {
+            shaper.borrow_mut().process_timer(now)
                 .map(|cmd| match cmd {
                     FsCmd::IncreaseMaxData(inc) => self.flow_mgr.borrow_mut()
                         .increase_max_data_by(inc),
@@ -911,6 +911,7 @@ impl Connection {
             if let Some(signal_time) = self.flow_shaper
                     .as_ref()
                     .expect("Being shaped but no shaper?")
+                    .borrow()
                     .next_signal_time()
             {
                 qtrace!([self], "Shape timer {:?}", signal_time);
