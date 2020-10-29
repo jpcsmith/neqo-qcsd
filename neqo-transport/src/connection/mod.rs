@@ -73,7 +73,6 @@ pub const LOCAL_STREAM_LIMIT_BIDI: u64 = 16;
 pub const LOCAL_STREAM_LIMIT_UNI: u64 = 16;
 
 const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
-const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ZeroRttState {
@@ -379,10 +378,6 @@ impl Connection {
     ) -> Res<Self> {
         let tphandler = Rc::new(RefCell::new(TransportParametersHandler::default()));
         Self::set_tp_defaults(&mut tphandler.borrow_mut().local);
-        if role == Role::Client && !neqo_csdef::debug_disable_shaping() {
-            tphandler.borrow_mut().local
-                .set_integer(tparams::INITIAL_MAX_DATA, DEBUG_INITIAL_MAX_DATA);
-        }
 
         let local_initial_source_cid = cid_manager.borrow_mut().generate_cid();
         tphandler.borrow_mut().local.set_bytes(
@@ -435,13 +430,15 @@ impl Connection {
         assert!(self.state == State::Init, "FlowShaper can only be added while initialising.");
 
         self.flow_shaper = Some(shaper.clone());
-
-        // Update the initial transport parameters due to shaping being enabled
-        self.tps.borrow_mut().local
-            .set_integer(tparams::INITIAL_MAX_DATA, DEBUG_INITIAL_MAX_DATA);
+        // Set the transport parameters for the remote endpoint to obey
+        for (param, value) in FlowShaper::tparam_defaults().iter() {
+            assert!(self.set_local_tparam(
+                    *param, tparams::TransportParameter::Integer(*value)
+            ).is_ok());
+        }
     }
 
-    /// Return true iff the connection has a FlowShaper, regardless as to 
+    /// Return true iff the connection has a FlowShaper, regardless as to
     /// whether shaping has started.
     #[must_use]
     pub fn is_being_shaped(&self) -> bool {
@@ -833,8 +830,8 @@ impl Connection {
         if let Some(shaper) = &self.flow_shaper {
             shaper.borrow_mut().process_timer(now)
                 .map(|cmd| match cmd {
-                    FsCmd::IncreaseMaxData(inc) => self.flow_mgr.borrow_mut()
-                        .increase_max_data_by(inc),
+                    FsCmd::SendMaxData(size) => self.flow_mgr.borrow_mut()
+                        .max_data(size),
                 });
         }
 
@@ -907,9 +904,7 @@ impl Connection {
             }
         }
 
-        qtrace!([self], "Reached here? {:?}", self.flow_shaper);
         if self.is_being_shaped() {
-            qtrace!([self], "Reached here!");
             if let Some(signal_time) = self.flow_shaper
                     .as_ref()
                     .expect("Being shaped but no shaper?")
