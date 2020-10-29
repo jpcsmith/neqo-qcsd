@@ -907,7 +907,9 @@ impl Connection {
             }
         }
 
+        qtrace!([self], "Reached here? {:?}", self.flow_shaper);
         if self.is_being_shaped() {
+            qtrace!([self], "Reached here!");
             if let Some(signal_time) = self.flow_shaper
                     .as_ref()
                     .expect("Being shaped but no shaper?")

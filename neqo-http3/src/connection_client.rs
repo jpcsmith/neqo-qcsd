@@ -24,7 +24,7 @@ use neqo_transport::{
     AppError, CongestionControlAlgorithm, Connection, ConnectionEvent, ConnectionId,
     ConnectionIdManager, Output, QuicVersion, StreamId, StreamType, ZeroRttState,
 };
-use neqo_csdef::flow_shaper::{ self, FlowShaper };
+use neqo_csdef::flow_shaper::FlowShaper;
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::net::SocketAddr;
@@ -105,48 +105,18 @@ impl Http3Client {
         quic_version: QuicVersion,
         http3_parameters: &Http3Parameters,
     ) -> Res<Self> {
-        let flow_shaper = match neqo_csdef::debug_disable_shaping() {
-            true => None,
-            false => {
-                let trace = flow_shaper::load_trace(DEBUG_SAMPLE_TRACE)
-                    .expect("failed to load sample schedule");
-                let mut shaper = FlowShaper::new(
-                    Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
-                    &trace);
-                shaper.start();
-
-                Some(Rc::new(RefCell::new(shaper)))
-            }
-        };
-
-        let conn = Connection::new_client(
-            server_name,
-            &[alpn_from_quic_version(quic_version)],
-            cid_manager,
-            local_addr,
-            remote_addr,
-            cc_algorithm,
-            quic_version,
-        )?;
-
-        match flow_shaper {
-            None => Ok(Self::new_with_conn(conn, http3_parameters)),
-            Some(shaper) => Ok(Self::new_with_shaper(conn, http3_parameters, shaper)),
-        }
-    }
-
-    #[must_use]
-    pub fn new_with_shaper(
-        c: Connection, http3_parameters: &Http3Parameters,
-        flow_shaper: Rc<RefCell<FlowShaper>>
-    ) -> Self {
-        let mut conn = c;
-        conn.set_flow_shaper(&flow_shaper);
-
-        let mut client = Self::new_with_conn(conn, http3_parameters);
-        client.flow_shaper = Some(flow_shaper);
-
-        client
+        Ok(Self::new_with_conn(
+            Connection::new_client(
+                server_name,
+                &[alpn_from_quic_version(quic_version)],
+                cid_manager,
+                local_addr,
+                remote_addr,
+                cc_algorithm,
+                quic_version,
+            )?,
+            http3_parameters,
+        ))
     }
 
     #[must_use]
@@ -154,7 +124,7 @@ impl Http3Client {
         c: Connection, http3_parameters: &Http3Parameters,
     ) -> Self {
         let events = Http3ClientEvents::default();
-        Self {
+        let mut client = Self {
             conn: c,
             base_handler: Http3Connection::new(http3_parameters.qpack_settings),
             events: events.clone(),
@@ -163,7 +133,27 @@ impl Http3Client {
                 events,
             ))),
             flow_shaper: None
+        };
+
+        if !neqo_csdef::debug_disable_shaping() {
+            client.enable_shaping();
         }
+
+        client
+    }
+
+    fn enable_shaping(&mut self) {
+        qtrace!([self], "Enabling connection shaping.");
+
+        let shaper = Rc::new(RefCell::new(FlowShaper::new_from_file(
+            DEBUG_SAMPLE_TRACE,
+            Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
+        ).expect("failed to load sample schedule")));
+
+        self.conn.set_flow_shaper(&shaper);
+
+        shaper.borrow_mut().start();
+        self.flow_shaper = Some(shaper);
     }
 
     #[must_use]
