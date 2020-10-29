@@ -146,11 +146,11 @@ impl FlowShaper {
             start_time: None
         }
     }
+
+    pub fn new_from_file(filename: &str, interval: Duration) -> Result<Self, TraceLoadError> {
+        load_trace(filename).map(|trace| Self::new(interval, &trace))
+    }
 }
-
-
-
-
 
 
 #[cfg(test)]
