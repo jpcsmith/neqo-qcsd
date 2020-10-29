@@ -7,6 +7,9 @@ use std::convert::TryFrom;
 use std::cmp::max;
 
 
+const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
+
+
 #[derive(Debug)]
 pub enum TraceLoadError {
     Io(io::Error),
@@ -57,7 +60,7 @@ pub fn load_trace(filename: &str) -> Result<Trace, TraceLoadError> {
 
 #[derive(Debug,Eq,PartialEq)]
 pub enum Cmd {
-    IncreaseMaxData(u64),
+    SendMaxData(u64),
 }
 
 
@@ -66,10 +69,15 @@ pub struct FlowShaper {
     // The control interval
     interval: Duration,
 
-    out_target: VecDeque<(u32, i32)>,
-    in_target: VecDeque<(u32, i32)>,
+    out_target: VecDeque<(u32, u32)>,
+    in_target: VecDeque<(u32, u32)>,
 
-    start_time: Option<Instant>
+    start_time: Option<Instant>,
+
+    // The current maximum amount of data that may be received
+    // on the connection.
+    rx_max_data: u64,
+    rx_progress: u64,
 }
 
 
@@ -99,8 +107,11 @@ impl FlowShaper {
             if next < since_start {
                 let (_, size) = self.in_target.pop_front()
                     .expect("the deque to be non-empty");
-                return Some(Cmd::IncreaseMaxData(
-                    u64::try_from(size).expect("absolute sizes")));
+
+                self.rx_progress = self.rx_progress.saturating_add(u64::from(size));
+                if self.rx_progress > self.rx_max_data {
+                    return Some(Cmd::SendMaxData(self.rx_progress));
+                }
             } 
         }
 
@@ -125,17 +136,17 @@ impl FlowShaper {
                 .or_insert(*size);
         }
 
-        let mut in_target: Vec<(u32, i32)> = bins
+        let mut in_target: Vec<(u32, u32)> = bins
             .iter()
             .filter(|&((_, inc), _)| !*inc)
-            .map(|((ts, _), size)| (*ts, size.abs()))
+            .map(|((ts, _), size)| (*ts, u32::try_from(size.abs()).unwrap()))
             .collect();
         in_target.sort();
 
-        let mut out_target: Vec<(u32, i32)> = bins
+        let mut out_target: Vec<(u32, u32)> = bins
             .iter()
             .filter(|((_, inc), _)| *inc)
-            .map(|((ts, _), size)| (*ts, *size))
+            .map(|((ts, _), size)| (*ts, u32::try_from(*size).unwrap()))
             .collect();
         out_target.sort();
 
@@ -143,12 +154,22 @@ impl FlowShaper {
             interval,
             in_target: VecDeque::from(in_target), 
             out_target: VecDeque::from(out_target),
-            start_time: None
+            start_time: None,
+            rx_max_data: DEBUG_INITIAL_MAX_DATA,
+            rx_progress: 0,
         }
     }
 
+    /// Create a new FlowShaper from a CSV trace file
     pub fn new_from_file(filename: &str, interval: Duration) -> Result<Self, TraceLoadError> {
         load_trace(filename).map(|trace| Self::new(interval, &trace))
+    }
+
+    /// Return the initial values for transport parameters
+    pub fn tparam_defaults() -> [(u64, u64); 1] {
+        [
+            (0x04, DEBUG_INITIAL_MAX_DATA), 
+        ]
     }
 }
 
@@ -159,7 +180,7 @@ mod tests {
 
     fn create_shaper() -> FlowShaper {
         let vec = vec![
-                (Duration::from_millis(2), 1350), (Duration::from_millis(16), -800),
+                (Duration::from_millis(2), 1350), (Duration::from_millis(16), -4800),
                 (Duration::from_millis(21), 600), (Duration::from_millis(22), -350),
             ];
         FlowShaper::new(Duration::from_millis(5), &vec)
@@ -182,12 +203,12 @@ mod tests {
     }
 
     #[test]
-    fn test_process_timer() {
+    fn test_process_timer_2() {
         let mut shaper = create_shaper();
         assert_eq!(shaper.process_timer_(Duration::from_millis(3)), None);
         assert_eq!(shaper.process_timer_(Duration::from_millis(17)),
-                   Some(Cmd::IncreaseMaxData(800)));
+                   Some(Cmd::SendMaxData(4800)));
         assert_eq!(shaper.process_timer_(Duration::from_millis(21)),
-                   Some(Cmd::IncreaseMaxData(350)));
+                   Some(Cmd::SendMaxData(5150)));
     }
 }
