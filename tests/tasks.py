@@ -6,11 +6,15 @@ import signal
 from contextlib import contextmanager
 
 from invoke import task
+# determine OS
+from sys import platform
 
+
+HOSTNAME = "https://localhost:7443" if platform == "linux" else "https://host.docker.internal:7443"
 
 URLS = {
     "vanilla": [
-        "https://localhost:7443" + path for path in (
+        HOSTNAME + path for path in (
             "/", "/css/bootstrap.min.css", "/css/fontAwesome.css",
             "/css/hero-slider.css", "/css/templatemo-main.css",
             "/css/owl-carousel.css",
@@ -55,10 +59,21 @@ def collect_quic(conn, out_pcap, shaping=True):
     """
     with capture(conn, out_pcap):
         urls = ' '.join(URLS["vanilla"])
-        conn.run(f"../target/debug/neqo-client {urls}", echo=True, env={
-            "SSLKEYLOGFILE": "out.log",
-            "CSDEF_NO_SHAPING": "" if shaping else "yes"
-        })
+        if platform == "linux":
+            conn.run(f"../target/debug/neqo-client {urls}", echo=True, env={
+                "SSLKEYLOGFILE": "out.log",
+                "CSDEF_NO_SHAPING": "" if shaping else "yes"
+            })
+        elif platform == "darwin":
+            conn.run(f"docker exec -w $PWD -e LD_LIBRARY_PATH=$PWD/../target/debug/build/neqo-crypto-044e50838ff4228a/out/dist/Debug/lib/ neqo-qcd ../target/debug/neqo-client {urls}",
+                echo=True, env={
+                    "SSLKEYLOGFILE": "out.log",
+                    "CSDEF_NO_SHAPING": "" if shaping else "yes"
+            })
+        else:
+            raise Exception("OS not supported")
+        
+
 
 
 @task
