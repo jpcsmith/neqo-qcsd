@@ -27,7 +27,7 @@ use neqo_crypto::{
     Agent, AntiReplay, AuthenticationStatus, Cipher, Client, HandshakeState, ResumptionToken,
     SecretAgentInfo, Server, ZeroRttChecker,
 };
-use neqo_csdef::flow_shaper::{ FlowShaper, Cmd as FsCmd };
+use neqo_csdef::flow_shaper::{ FlowShaper, FlowShapingEvent };
 
 use crate::addr_valid::{AddressValidation, NewTokenState};
 use crate::cc::CongestionControlAlgorithm;
@@ -827,12 +827,21 @@ impl Connection {
         }
 
 
-        if let Some(shaper) = &self.flow_shaper {
-            shaper.borrow_mut().process_timer(now)
-                .map(|cmd| match cmd {
-                    FsCmd::SendMaxData(size) => self.flow_mgr.borrow_mut()
-                        .max_data(size),
-                });
+        if let Some(ref shaper) = self.flow_shaper {
+            let ref mut shaper = shaper.borrow_mut();
+
+            shaper.process_timer(now);
+            while shaper.has_events() {
+                match shaper.next_event().unwrap() {
+                    FlowShapingEvent::SendMaxData(size) => {
+                        self.flow_mgr.borrow_mut().max_data(size);
+                    },
+                    FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit } => {
+                        self.flow_mgr.borrow_mut()
+                            .max_stream_data(StreamId::new(stream_id), new_limit);
+                    }
+                };
+            }
         }
 
         self.cleanup_streams();
@@ -1537,6 +1546,15 @@ impl Connection {
                 }
                 if frame.is_none() && space == PNSpace::ApplicationData {
                     frame = self.new_token.get_frame(remaining);
+                }
+            }
+
+            // Consider the stream as created 
+            // TODO(jsmith): 
+            if self.is_being_shaped() {
+                if let Some((Frame::Stream { stream_id, offset: 0, ..}, _)) = &frame {
+                    self.flow_shaper.as_ref().unwrap().borrow()
+                        .on_stream_created(stream_id.as_u64());
                 }
             }
 
@@ -2483,6 +2501,7 @@ impl Connection {
                         self.events.clone(),
                     ),
                 );
+
                 new_id.as_u64()
             }
             StreamType::BiDi => {
@@ -2541,6 +2560,7 @@ impl Connection {
                         self.events.clone(),
                     ),
                 );
+
                 new_id.as_u64()
             }
         })

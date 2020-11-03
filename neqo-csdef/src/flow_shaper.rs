@@ -5,9 +5,16 @@ use std::time::{ Duration, Instant };
 use std::collections::{ HashMap, VecDeque };
 use std::convert::TryFrom;
 use std::cmp::max;
+use std::cell::RefCell;
+
+use crate::stream_id::StreamId;
 
 
 const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
+
+// The value below is taken from the QUIC Connection class and defines the 
+// buffer that is allocated for receiving data.
+const RX_STREAM_DATA_WINDOW: u64 = 0x10_0000; // 1MiB
 
 
 #[derive(Debug)]
@@ -58,12 +65,70 @@ pub fn load_trace(filename: &str) -> Result<Trace, TraceLoadError> {
 }
 
 
-#[derive(Debug,Eq,PartialEq)]
-pub enum Cmd {
+#[derive(Debug, Eq, PartialEq)]
+pub enum FlowShapingEvent {
     SendMaxData(u64),
+    SendMaxStreamData { stream_id: u64, new_limit: u64 },
+}
+
+#[derive(Debug, Default)]
+struct FlowShapingEvents {
+    // This is in a RefCell to allow borrowing a mutable reference in an
+    // immutable context
+    events: RefCell<VecDeque<FlowShapingEvent>>
+}
+
+impl FlowShapingEvents {
+    pub(self) fn send_max_data(&self, new_limit: u64) {
+        self.insert(FlowShapingEvent::SendMaxData(new_limit));
+    }
+
+    pub fn send_max_stream_data(&self, stream_id: StreamId, new_limit: u64) {
+        self.insert(FlowShapingEvent::SendMaxStreamData {
+            stream_id: stream_id.as_u64(), new_limit
+        });
+    }
+
+    fn insert(&self, event: FlowShapingEvent) {
+        self.events.borrow_mut().push_back(event);
+    }
+
+
+    /// Pop the first max_stream_data event with the specified stream 
+    /// id. Return true iff the event was found and removed.
+    pub(self) fn cancel_max_stream_data(&self, stream_id: StreamId) -> bool {
+        type FSE = FlowShapingEvent;
+
+        let position = self.events.borrow().iter().position(|item| match item {
+            FSE::SendMaxStreamData { stream_id: sid, .. } => *sid == stream_id.as_u64(),
+            _ => false
+        });
+
+        match position {
+            Some(index) => {
+                self.events.borrow_mut().remove(index);
+                true
+            },
+            None => false
+        }
+    }
+
+    #[must_use]
+    pub fn next_event(&mut self) -> Option<FlowShapingEvent> {
+        self.events.borrow_mut().pop_front()
+    }
+
+    #[must_use]
+    pub fn has_events(&self) -> bool {
+        !self.events.borrow().is_empty()
+    }
 }
 
 
+
+
+/// Shaper for the connection. Assumes that it operates on the client,
+/// and not the server.
 #[derive(Debug)]
 pub struct FlowShaper {
     // The control interval
@@ -78,6 +143,8 @@ pub struct FlowShaper {
     // on the connection.
     rx_max_data: u64,
     rx_progress: u64,
+
+    events: FlowShapingEvents
 }
 
 
@@ -88,7 +155,7 @@ impl FlowShaper {
         self.start_time = Some(Instant::now());
     }
 
-    /// Report the next instant at which the FlowShaper should be called for 
+    /// Report the next instant at which the FlowShaper should be called for
     /// processing events.
     pub fn next_signal_time(&self) -> Option<Instant> {
         self.in_target.front()
@@ -97,11 +164,13 @@ impl FlowShaper {
             .map(|(dur, start)| max(start + dur, Instant::now()))
     }
 
-    pub fn process_timer(&mut self, now: Instant) -> Option<Cmd> {
-        self.process_timer_(now.duration_since(self.start_time?))
+    pub fn process_timer(&mut self, now: Instant) {
+        if let Some(start_time) = self.start_time {
+            self.process_timer_(now.duration_since(start_time));
+        }
     }
 
-    fn process_timer_(&mut self, since_start: Duration) -> Option<Cmd> {
+    fn process_timer_(&mut self, since_start: Duration) {
         if let Some((ts, _)) = self.in_target.front() {
             let next = Duration::from_millis(u64::from(*ts));
             if next < since_start {
@@ -110,12 +179,10 @@ impl FlowShaper {
 
                 self.rx_progress = self.rx_progress.saturating_add(u64::from(size));
                 if self.rx_progress > self.rx_max_data {
-                    return Some(Cmd::SendMaxData(self.rx_progress));
+                    self.events.send_max_data(self.rx_progress);
                 }
-            } 
+            }
         }
-
-        None
     }
 
     pub fn new(interval: Duration, trace: &Trace) -> FlowShaper {
@@ -150,13 +217,14 @@ impl FlowShaper {
             .collect();
         out_target.sort();
 
-        FlowShaper{ 
+        FlowShaper{
             interval,
-            in_target: VecDeque::from(in_target), 
+            in_target: VecDeque::from(in_target),
             out_target: VecDeque::from(out_target),
             start_time: None,
             rx_max_data: DEBUG_INITIAL_MAX_DATA,
             rx_progress: 0,
+            events: FlowShapingEvents::default(),
         }
     }
 
@@ -166,10 +234,56 @@ impl FlowShaper {
     }
 
     /// Return the initial values for transport parameters
-    pub fn tparam_defaults() -> [(u64, u64); 1] {
+    pub fn tparam_defaults() -> [(u64, u64); 3] {
         [
-            (0x04, DEBUG_INITIAL_MAX_DATA), 
+            (0x04, DEBUG_INITIAL_MAX_DATA),
+            // Disable the peer sending data on bidirectional streams openned
+            // by this endpoint (initial_max_stream_data_bidi_local)
+            (0x05, 20),
+            // Disable the peer sending data on bidirectional streams that
+            // they open (initial_max_stream_data_bidi_remote)
+            (0x06, 20),
+            // Disable the peer sending data on unidirectional streams that
+            // they open (initial_max_stream_data_uni)
+            // (0x07, 20),
         ]
+    }
+
+    /// Queue events related to a new stream being created by the peer.
+    pub fn on_stream_incoming(&self, stream_id: u64) {
+        let stream_id = StreamId::new(stream_id);
+        assert!(stream_id.is_server_initiated());
+        assert!(stream_id.is_uni(), "Servers dont initiate BiDi streams in HTTP3");
+
+        // Do nothing, as unidirectional streams were not flow controlled
+    }
+
+    /// Queue events related to a new stream being created by this
+    /// endpoint.
+    pub fn on_stream_created(&self, stream_id: u64) {
+        let stream_id = StreamId::new(stream_id);
+        assert!(stream_id.is_client_initiated());
+
+        if stream_id.is_bidi() {
+            self.events.send_max_stream_data(stream_id, RX_STREAM_DATA_WINDOW);
+        }
+    }
+
+    /// Records the creation of a stream for padding.
+    ///
+    /// Assumes that no events have been dequeud since the call of the
+    /// associated `on_new_stream` call for the `stream_id`.
+    pub fn on_new_padding_stream(&self, stream_id: u64) {
+        assert!(self.events.cancel_max_stream_data(StreamId::new(stream_id)));
+    }
+
+    pub fn next_event(&mut self) -> Option<FlowShapingEvent> {
+        self.events.next_event()
+    }
+
+    #[must_use]
+    pub fn has_events(&self) -> bool {
+        self.events.has_events()
     }
 }
 
@@ -177,6 +291,13 @@ impl FlowShaper {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type FSE = FlowShapingEvent;
+
+    const CLIENT_BIDI_STREAM_ID: u64 = 0b100;
+    const SERVER_BIDI_STREAM_ID: u64 = 0b101;
+    const CLIENT_UNI_STREAM_ID: u64 =  0b110;
+    const SERVER_UNI_STREAM_ID: u64 =  0b111;
 
     fn create_shaper() -> FlowShaper {
         let vec = vec![
@@ -198,17 +319,71 @@ mod tests {
         assert_eq!(shaper.next_signal_time(), None);
 
         shaper.start();
-        assert_eq!(shaper.next_signal_time(), 
+        assert_eq!(shaper.next_signal_time(),
                    Some(shaper.start_time.unwrap() + Duration::from_millis(15)))
     }
 
     #[test]
-    fn test_process_timer_2() {
+    fn test_process_timer() {
         let mut shaper = create_shaper();
-        assert_eq!(shaper.process_timer_(Duration::from_millis(3)), None);
-        assert_eq!(shaper.process_timer_(Duration::from_millis(17)),
-                   Some(Cmd::SendMaxData(4800)));
-        assert_eq!(shaper.process_timer_(Duration::from_millis(21)),
-                   Some(Cmd::SendMaxData(5150)));
+
+        shaper.process_timer_(Duration::from_millis(3));
+        assert_eq!(shaper.next_event(), None);
+
+        shaper.process_timer_(Duration::from_millis(17));
+        shaper.process_timer_(Duration::from_millis(21));
+
+        assert_eq!(shaper.next_event(), Some(FSE::SendMaxData(4800)));
+        assert_eq!(shaper.next_event(), Some(FSE::SendMaxData(5150)));
     }
+
+    #[test]
+    fn test_on_stream_created_uni() {
+        // It's a unidirectional stream, so we do not queue any events
+        let mut shaper = create_shaper();
+        shaper.on_stream_created(CLIENT_UNI_STREAM_ID);
+        assert_eq!(shaper.next_event(), None);
+    }
+
+    #[test]
+    fn test_on_stream_created_bidi() {
+        // It's a unidirectional stream, so we do not queue any events
+        let mut shaper = create_shaper();
+        shaper.on_stream_created(CLIENT_BIDI_STREAM_ID);
+        assert_eq!(
+            shaper.events.next_event(),
+            Some(FSE::SendMaxStreamData {
+                stream_id: CLIENT_BIDI_STREAM_ID, new_limit: RX_STREAM_DATA_WINDOW
+            }));
+    }
+
+    #[test]
+    fn test_on_stream_created_bidi_padding() {
+        // If a stream is identified as being for a padding URL, its max data
+        // should not be increased
+        let mut shaper = create_shaper();
+
+        shaper.on_stream_created(CLIENT_BIDI_STREAM_ID);
+        shaper.on_new_padding_stream(CLIENT_BIDI_STREAM_ID);
+        assert_eq!(shaper.events.next_event(), None);
+    }
+
+    #[test]
+    fn test_on_stream_incoming_uni() {
+        let mut shaper = create_shaper();
+        shaper.on_stream_incoming(SERVER_UNI_STREAM_ID);
+
+        // Incoming Unidirectional streams are not blocked initially, as we do not 
+        // expect padding resources to arrive on them.
+        assert_eq!(shaper.events.next_event(), None);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_on_stream_incoming_bidi() {
+        // We assume that the server never opens bidi streams in H3
+        let shaper = create_shaper();
+        shaper.on_stream_incoming(SERVER_BIDI_STREAM_ID);
+    }
+
 }
