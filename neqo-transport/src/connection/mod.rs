@@ -1620,6 +1620,7 @@ impl Connection {
                 self.add_frames(&mut builder, *space, limit, &profile, now);
             if builder.is_empty() {
                 // Nothing to include in this packet.
+                // TODO (ldolfi): possible point where add just padding frames
                 encoder = builder.abort();
                 continue;
             }
@@ -1653,13 +1654,14 @@ impl Connection {
                 // Packets containing Initial packets might need padding, and we want to
                 // track that padding along with the Initial packet.  So defer tracking.
                 initial_sent = Some(sent);
-                needs_padding = true;
+                // needs_padding = true;
             } else {
                 if pt != PacketType::ZeroRtt {
-                    needs_padding = false;
+                    // needs_padding = false;
                 }
                 self.loss_recovery.on_packet_sent(sent);
             }
+            needs_padding = true;
 
             if *space == PNSpace::Handshake {
                 if self.role == Role::Client {
@@ -1684,6 +1686,11 @@ impl Connection {
                     packets.resize(path.mtu(), 0);
                 }
                 self.loss_recovery.on_packet_sent(initial);
+            } else {
+                if needs_padding {
+                    qdebug!([self], "pad not Initial to path MTU {}", path.mtu());
+                    packets.resize(path.mtu(), 0);
+                }
             }
             Ok(SendOption::Yes(path.datagram(packets)))
         }
