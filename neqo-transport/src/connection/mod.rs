@@ -856,7 +856,7 @@ impl Connection {
                             .max_stream_data(StreamId::new(stream_id), new_limit);
                     },
                     FlowShapingEvent::SendPaddingFrames(pad_size) => {
-                        self.shaper_padding = pad_size;
+                        self.shaper_padding += pad_size;
                     }
                 };
             }
@@ -1591,12 +1591,6 @@ impl Connection {
                 ack_eliciting |= frame.ack_eliciting();
                 debug_assert_ne!(frame, Frame::Padding);
                 frame.marshal(builder);
-                // try to add a padding frame
-                // let padd_frame = Frame::Padding;
-                // let pad_size = limit - builder.len()-2;
-                // for _n in 0..pad_size {
-                //     padd_frame.marshal(builder);
-                // }
 
                 if let Some(t) = token {
                     tokens.push(t);

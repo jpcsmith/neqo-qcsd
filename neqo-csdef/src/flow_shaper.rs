@@ -13,7 +13,7 @@ use crate::stream_id::StreamId;
 
 const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
 
-const DEBUG_PAD_PACKET_SIZE: i32 = 100;
+const DEBUG_PAD_PACKET_SIZE: i32 = 350;
 
 // The value below is taken from the QUIC Connection class and defines the 
 // buffer that is allocated for receiving data.
@@ -233,7 +233,6 @@ impl FlowShaper {
                 .and_modify(|e| *e += size)
                 .or_insert(*size);
         }
-        // add bins for padding (TODO: maybe use different hashmap)
 
         let mut in_target: Vec<(u32, u32)> = bins
             .iter()
@@ -242,15 +241,12 @@ impl FlowShaper {
             .collect();
         in_target.sort();
 
-        // padding frames should now be added here according to schedule
         let mut out_target: Vec<(u32, u32)> = bins
             .iter()
             .filter(|((_, inc), _)| *inc)
             .map(|((ts, _), size)| (*ts, u32::try_from(*size).unwrap()))
             .collect();
         out_target.sort();
-
-        // let mut pad_target: Vec<u32, u32> = pad_bins
 
         FlowShaper{
             interval,
@@ -291,11 +287,11 @@ impl FlowShaper {
     pub fn pparam_defaults() -> [(String, u64); 3] {
         [
             // Client's padding budget in number of packets (FIXME)
-            ("pad_client_max_n".to_string(), 1700),
+            ("pad_client_max_n".to_string(), 2500),
             // minimum padding time in seconds
-            ("pad_client_max_w".to_string(), 1),
+            ("pad_client_max_w".to_string(), 3),
             // maximum padding time in seconds
-            ("pad_client_min_w".to_string(), 14)
+            ("pad_client_min_w".to_string(), 1)
         ]
     }
 
@@ -305,6 +301,7 @@ impl FlowShaper {
 
     // creates new Trace of dummy packets sampled from rayleigh distribution
     pub fn new_padding_trace(&self) -> Result<Trace, TraceLoadError>{
+        println!("Creating padding trace.");
         let mut schedule = Vec::new();
         // get params
         let packet_budget = match self.padding_params.get("pad_client_max_n") {
@@ -322,7 +319,7 @@ impl FlowShaper {
         // sample n_C and w_c
         let _n_c: u64 = rand::thread_rng().gen_range(1,packet_budget+1);
         let _w_c: u64 = rand::thread_rng().gen_range(*min_w,max_w+1);
-        // println!("n_c: {}\tw_c: {}", _n_c, _w_c);
+        println!("n_c: {}\tw_c: {}", _n_c, _w_c);
 
         // sample timetable
         let mut count = 0u64;
@@ -332,7 +329,7 @@ impl FlowShaper {
             let u: f64 = rand::thread_rng().gen_range(0.,1.);
             t = rayleigh_cdf_inv(u, _w_c);
             schedule.push((Duration::from_secs_f64(t), DEBUG_PAD_PACKET_SIZE as i32));
-            // println!("{}.  {}", count, t);
+            println!("{}.  {}", count, t);
         }
         return Ok(schedule);
     }
