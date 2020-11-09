@@ -304,7 +304,7 @@ impl FlowShaper {
     }
 
     // creates new Trace of dummy packets sampled from rayleigh distribution
-    pub fn new_padding_trace(self) -> Result<Trace, TraceLoadError>{
+    pub fn new_padding_trace(&self) -> Result<Trace, TraceLoadError>{
         let mut schedule = Vec::new();
         // get params
         let packet_budget = match self.padding_params.get("pad_client_max_n") {
