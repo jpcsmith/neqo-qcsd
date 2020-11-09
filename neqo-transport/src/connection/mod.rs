@@ -275,7 +275,8 @@ pub struct Connection {
     quic_version: QuicVersion,
 
     // Added for flow shaping
-    flow_shaper: Option<Rc<RefCell<FlowShaper>>>
+    flow_shaper: Option<Rc<RefCell<FlowShaper>>>,
+    shaper_padding: u32
 }
 
 impl Debug for Connection {
@@ -418,6 +419,7 @@ impl Connection {
             release_resumption_token_timer: None,
             quic_version,
             flow_shaper: None,
+            shaper_padding: 0u32,
         };
 
         c.stats.borrow_mut().init(format!("{}", c));
@@ -429,13 +431,26 @@ impl Connection {
         assert!(self.role == Role::Client);
         assert!(self.state == State::Init, "FlowShaper can only be added while initialising.");
 
+        let ref mut shaper = shaper.borrow_mut();
+
+        //TODO: (ldolfi) eventually, pass parameters for the rayleigh distribution here
+        // for now I am setting the padding schedule using FRONT parameters from Gong2020
+        for (param, value) in FlowShaper::pparam_defaults().iter() {
+            shaper.set_padding_param(param.to_string(), *value);
+        }
+        // create the padding trace
+        let pad_trace = shaper.new_padding_trace().unwrap();
+        shaper.set_padding_trace(Duration::from_millis(1),
+                                    &pad_trace
+                                );
+
         self.flow_shaper = Some(shaper.clone());
         // Set the transport parameters for the remote endpoint to obey
-        for (param, value) in FlowShaper::tparam_defaults().iter() {
-            assert!(self.set_local_tparam(
-                    *param, tparams::TransportParameter::Integer(*value)
-            ).is_ok());
-        }
+        // for (param, value) in FlowShaper::tparam_defaults().iter() {
+        //     assert!(self.set_local_tparam(
+        //             *param, tparams::TransportParameter::Integer(*value)
+        //     ).is_ok());
+        // }
     }
 
     /// Return true iff the connection has a FlowShaper, regardless as to
@@ -839,6 +854,9 @@ impl Connection {
                     FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit } => {
                         self.flow_mgr.borrow_mut()
                             .max_stream_data(StreamId::new(stream_id), new_limit);
+                    },
+                    FlowShapingEvent::SendPaddingFrames(pad_size) => {
+                        self.shaper_padding = pad_size;
                     }
                 };
             }
@@ -1526,14 +1544,25 @@ impl Connection {
 
         // All useful frames are at least 2 bytes.
         while builder.len() + 2 < limit {
-            let remaining = limit - builder.len();
+            let mut remaining = limit - builder.len();
             // Try to get a frame from frame sources
             let mut frame = self.acks.get_frame(now, space);
             // If we are CC limited we can only send acks!
             if !profile.ack_only(space) {
+                
                 if frame.is_none() && space == PNSpace::ApplicationData && self.role == Role::Server
                 {
                     frame = self.state_signaling.send_done();
+                }
+                if frame.is_none() && space == PNSpace::ApplicationData && self.role == Role::Client {
+                    // add shaper padding before anything else
+                    let padd_frame = Frame::Padding;
+                    let padd_size = std::cmp::min(self.shaper_padding, remaining as u32);
+                    for _n in 0..padd_size {
+                        padd_frame.marshal(builder);
+                    }
+                    self.shaper_padding -= padd_size;
+                    remaining = limit - builder.len();
                 }
                 if frame.is_none() {
                     frame = self.crypto.streams.get_frame(space, remaining)
@@ -1558,17 +1587,16 @@ impl Connection {
                 }
             }
 
-            let padd_frame = Frame::Padding;
-
             if let Some((frame, token)) = frame {
                 ack_eliciting |= frame.ack_eliciting();
                 debug_assert_ne!(frame, Frame::Padding);
                 frame.marshal(builder);
                 // try to add a padding frame
-                let pad_size = limit - builder.len()-2;
-                for _n in 0..pad_size {
-                    padd_frame.marshal(builder);
-                }
+                // let padd_frame = Frame::Padding;
+                // let pad_size = limit - builder.len()-2;
+                // for _n in 0..pad_size {
+                //     padd_frame.marshal(builder);
+                // }
 
                 if let Some(t) = token {
                     tokens.push(t);
