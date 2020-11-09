@@ -431,20 +431,20 @@ impl Connection {
         assert!(self.role == Role::Client);
         assert!(self.state == State::Init, "FlowShaper can only be added while initialising.");
 
-        let ref mut shaper = shaper.borrow_mut();
+        let shaper = shaper.clone();
 
         //TODO: (ldolfi) eventually, pass parameters for the rayleigh distribution here
         // for now I am setting the padding schedule using FRONT parameters from Gong2020
         for (param, value) in FlowShaper::pparam_defaults().iter() {
-            shaper.set_padding_param(param.to_string(), *value);
+            shaper.borrow_mut().set_padding_param(param.to_string(), *value);
         }
         // create the padding trace
-        let pad_trace = shaper.new_padding_trace().unwrap();
-        shaper.set_padding_trace(Duration::from_millis(1),
+        let pad_trace = shaper.borrow().new_padding_trace().unwrap();
+        shaper.borrow_mut().set_padding_trace(Duration::from_millis(1),
                                     &pad_trace
                                 );
 
-        self.flow_shaper = Some(shaper.clone());
+        self.flow_shaper = Some(shaper);
         // Set the transport parameters for the remote endpoint to obey
         // for (param, value) in FlowShaper::tparam_defaults().iter() {
         //     assert!(self.set_local_tparam(
