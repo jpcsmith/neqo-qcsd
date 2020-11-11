@@ -13,7 +13,7 @@ use crate::stream_id::StreamId;
 
 const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
 
-const DEBUG_PAD_PACKET_SIZE: i32 = 350;
+const DEBUG_PAD_PACKET_SIZE: i32 = 1000;
 
 // The value below is taken from the QUIC Connection class and defines the 
 // buffer that is allocated for receiving data.

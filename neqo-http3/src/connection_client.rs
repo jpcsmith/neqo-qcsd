@@ -145,11 +145,24 @@ impl Http3Client {
     fn enable_shaping(&mut self) {
         qtrace!([self], "Enabling connection shaping.");
 
+        // TODO (ldolfi): change to new_with_padding_only
+        // so pading is part of creation of shaper
         let shaper = Rc::new(RefCell::new(FlowShaper::new_from_file(
             DEBUG_SAMPLE_TRACE,
             Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
         ).expect("failed to load sample schedule")));
 
+        // set padding aprameters
+        for (param, value) in FlowShaper::pparam_defaults().iter() {
+            shaper.borrow_mut().set_padding_param(param.to_string(), *value);
+        }
+        // create padding traces
+        let pad_trace = shaper.borrow().new_padding_trace().unwrap();
+        shaper.borrow_mut().set_padding_trace(Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
+                                    &pad_trace
+                                );
+
+        // sets the shaper to the connection
         self.conn.set_flow_shaper(&shaper);
 
         shaper.borrow_mut().start();
