@@ -269,13 +269,13 @@ impl FlowShaper {
     /// Return the initial values for transport parameters
     pub fn tparam_defaults() -> [(u64, u64); 3] {
         [
-            (0x04, DEBUG_INITIAL_MAX_DATA),
+            (0x04, 20),
             // Disable the peer sending data on bidirectional streams openned
             // by this endpoint (initial_max_stream_data_bidi_local)
-            (0x05, 20),
+            (0x05, 10_000),
             // Disable the peer sending data on bidirectional streams that
             // they open (initial_max_stream_data_bidi_remote)
-            (0x06, 20),
+            (0x06, 10_000),
             // Disable the peer sending data on unidirectional streams that
             // they open (initial_max_stream_data_uni)
             // (0x07, 20),

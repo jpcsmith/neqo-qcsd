@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 LOG=
-# LOG="neqo_transport=trace,error"
+LOG="neqo_transport=info,debug"
 HOST="host.docker.internal:7443"
 LOCAL_URLS=( "https://${HOST}/" "https://${HOST}/css/bootstrap.min.css" \
              "https://${HOST}/css/fontAwesome.css" "https://${HOST}/css/hero-slider.css" \
