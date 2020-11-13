@@ -433,11 +433,11 @@ impl Connection {
 
         self.flow_shaper = Some(shaper.clone());
         // Set the transport parameters for the remote endpoint to obey
-        // for (param, value) in FlowShaper::tparam_defaults().iter() {
-        //     assert!(self.set_local_tparam(
-        //             *param, tparams::TransportParameter::Integer(*value)
-        //     ).is_ok());
-        // }
+        for (param, value) in FlowShaper::tparam_defaults().iter() {
+            assert!(self.set_local_tparam(
+                    *param, tparams::TransportParameter::Integer(*value)
+            ).is_ok());
+        }
     }
 
     /// Return true iff the connection has a FlowShaper, regardless as to

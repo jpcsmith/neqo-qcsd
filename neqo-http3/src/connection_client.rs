@@ -34,7 +34,7 @@ use std::time::{ Duration, Instant };
 use crate::{Error, Res};
 
 
-const DEBUG_SAMPLE_TRACE: &str = "../data/nytimes.csv";
+const DEBUG_SAMPLE_TRACE: &str = "../data/demoburst.csv";
 const SIGNAL_INTERVAL: u32 = 1;
 
 
