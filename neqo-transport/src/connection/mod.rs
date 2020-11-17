@@ -830,11 +830,11 @@ impl Connection {
 
 
         if let Some(ref shaper) = self.flow_shaper {
-            let ref mut shaper = shaper.borrow_mut();
+            let shaper2 = shaper.clone();
 
-            shaper.process_timer(now);
-            while shaper.has_events() {
-                match shaper.next_event().unwrap() {
+            shaper2.borrow_mut().process_timer(now);
+            while shaper2.borrow().has_events() {
+                match shaper2.borrow_mut().next_event().unwrap() {
                     FlowShapingEvent::SendMaxData(size) => {
                         self.flow_mgr.borrow_mut().max_data(size);
                     },
@@ -844,6 +844,15 @@ impl Connection {
                     },
                     FlowShapingEvent::SendPaddingFrames(pad_size) => {
                         self.shaper_padding += pad_size;
+                    },
+                    FlowShapingEvent::CloseConnection => {
+                        // if !(&self.state == State::Closing ) {
+                        //     self.close(Instant::now(), 0x100, &"");
+                        // }
+                        let st = State::Closed(ConnectionError::Application(0x100));
+                        self.set_state(st);
+                        qinfo!("Closing shaper expired");
+                        return;
                     }
                 };
             }

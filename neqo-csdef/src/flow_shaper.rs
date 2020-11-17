@@ -81,6 +81,7 @@ pub enum FlowShapingEvent {
     SendMaxData(u64),
     SendMaxStreamData { stream_id: u64, new_limit: u64 },
     SendPaddingFrames(u32),
+    CloseConnection,
 }
 
 #[derive(Debug, Default)]
@@ -103,6 +104,10 @@ impl FlowShapingEvents {
 
     pub(self) fn send_pad_frames(&self, pad_size: u32) {
         self.insert(FlowShapingEvent::SendPaddingFrames(pad_size));
+    }
+
+    pub(self) fn send_connection_close(&self) {
+        self.insert(FlowShapingEvent::CloseConnection)
     }
 
     fn insert(&self, event: FlowShapingEvent) {
@@ -213,6 +218,12 @@ impl FlowShaper {
                 
                 self.events.send_pad_frames(size);
             }
+        }
+
+        // check dequeues empty, if so send connection close event
+        // TODO (ldolfi): use check only on dequeues actually in use
+        if self.in_target.is_empty() && self.pad_out_target.is_empty() {
+            self.events.send_connection_close();
         }
     }
 
