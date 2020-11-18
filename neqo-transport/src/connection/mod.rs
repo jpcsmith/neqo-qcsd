@@ -1574,15 +1574,6 @@ impl Connection {
                 }
             }
 
-            // Consider the stream as created 
-            // TODO(jsmith): 
-            if self.is_being_shaped() {
-                if let Some((Frame::Stream { stream_id, offset: 0, ..}, _)) = &frame {
-                    self.flow_shaper.as_ref().unwrap().borrow()
-                        .on_stream_created(stream_id.as_u64());
-                }
-            }
-
             if let Some((frame, token)) = frame {
                 ack_eliciting |= frame.ack_eliciting();
                 debug_assert_ne!(frame, Frame::Padding);
