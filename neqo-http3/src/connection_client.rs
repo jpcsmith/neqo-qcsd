@@ -362,6 +362,16 @@ impl Http3Client {
             .conn
             .stream_create(StreamType::BiDi)
             .map_err(|e| Error::map_stream_create_errors(&e))?;
+            
+        // Notify flow_shaper of the new stream
+        match &self.flow_shaper {
+            Some(shaper) => {
+                shaper.borrow_mut().on_stream_created(id);
+            },
+            None => {
+                panic!("Tried to add a padding stream without a flow_shaper.");
+            }
+        }
 
         // Transform pseudo-header fields
         let mut final_headers = Vec::new();
@@ -403,12 +413,12 @@ impl Http3Client {
     // flow_shaper as a dummy resource for padding
     pub fn fetch_dummy(
         &mut self,
-        _now: Instant,
+        now: Instant,
         method: &str,
         scheme: &str,
         host: &str,
         path: &str,
-        _headers: &[Header],
+        headers: &[Header],
     ) -> Res<u64> {
         qinfo!(
             [self],
@@ -433,25 +443,39 @@ impl Http3Client {
             }
         }
 
-        // TODO (ldolfi): here would go the part where we allcoate the stream 
+        // TODO (ldolfi): here would go the part where we register the stream 
         // and prepare a Box for the received message, but do we need it?
         // Transform pseudo-header fields
-        // let mut final_headers = Vec::new();
-        // final_headers.push((":method".into(), method.to_owned()));
-        // final_headers.push((":scheme".into(), scheme.to_owned()));
-        // final_headers.push((":authority".into(), host.to_owned()));
-        // final_headers.push((":path".into(), path.to_owned()));
-        // final_headers.extend_from_slice(headers);
+        let mut final_headers = Vec::new();
+        final_headers.push((":method".into(), method.to_owned()));
+        final_headers.push((":scheme".into(), scheme.to_owned()));
+        final_headers.push((":authority".into(), host.to_owned()));
+        final_headers.push((":path".into(), path.to_owned()));
+        final_headers.extend_from_slice(headers);
 
-        // self.base_handler.add_streams(
-        //     id,
-        //     SendMessage::new_with_headers(id, final_headers, Box::new(self.events.clone())),
-        //     Box::new(RecvMessage::new(
-        //         id,
-        //         Box::new(self.events.clone()),
-        //         Some(self.push_handler.clone()),
-        //     )),
-        // );
+        self.base_handler.add_streams(
+            id,
+            SendMessage::new_with_headers(id, final_headers, Box::new(self.events.clone())),
+            Box::new(RecvMessage::new(
+                id,
+                Box::new(self.events.clone()),
+                Some(self.push_handler.clone()),
+            )),
+        );
+        
+        // Send the actual request (headers) immediately
+        if let Err(e) = self
+            .base_handler
+            .send_streams
+            .get_mut(&id)
+            .ok_or(Error::InvalidStreamId)?
+            .send(&mut self.conn, &mut self.base_handler.qpack_encoder)
+        {
+            if e.connection_error() {
+                self.close(now, e.code(), "");
+            }
+            return Err(e);
+        }
 
         Ok(id)
     }
