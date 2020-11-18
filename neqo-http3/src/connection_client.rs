@@ -31,11 +31,14 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 use std::time::{ Duration, Instant };
 
+use url::Url; // for parsing dummy url
+
 use crate::{Error, Res};
 
 
 const DEBUG_SAMPLE_TRACE: &str = "../data/demoburst.csv";
 const SIGNAL_INTERVAL: u32 = 1;
+const DEBUG_DUMMY_PATH: &str = "https://host.docker.internal:7443/img/2nd-big-item.jpg";
 
 
 // This is used for filtering send_streams and recv_Streams with a stream_ids greater than or equal a given id.
@@ -321,6 +324,40 @@ impl Http3Client {
             _ => {}
         }
 
+        // (ldolfi) Before creating a new stream, check wether this is the first fetch
+        // (i.e. there is no data to send) and create a padding stream to pair with that
+        if self.is_being_shaped() {
+            if !self.base_handler.has_data_to_send() {
+                // open dummy stream
+                // TODO (ldolfi): come up with a better padding url
+                let pad_url = Url::parse(DEBUG_DUMMY_PATH).expect("Failed to parse dummy path");
+                match self.fetch_dummy(
+                        Instant::now(),
+                        "GET",
+                        &pad_url.scheme(),
+                        &pad_url.host_str().unwrap(),
+                        &pad_url.path(),
+                        headers // TODO (ldolfi): eventually disable compression
+                    ) {
+                        Ok(pad_id) => {
+                            println!(
+                                "Successfully created shaping stream id {} for resource {}",
+                                pad_id, pad_url
+                            );
+                            // save id
+                            self.flow_shaper
+                                .as_ref()
+                                .unwrap()
+                                .borrow_mut()
+                                .on_new_padding_stream(pad_id);
+                        },
+                        Err(e) => {
+                            panic!("Can't open dummy stream {}", e);
+                        }
+                    }
+            }
+        }
+
         let id = self
             .conn
             .stream_create(StreamType::BiDi)
@@ -358,6 +395,63 @@ impl Http3Client {
             }
             return Err(e);
         }
+
+        Ok(id)
+    }
+
+    // Like fetch(), this function creates a stream to fetch a resource, but used instead by the 
+    // flow_shaper as a dummy resource for padding
+    pub fn fetch_dummy(
+        &mut self,
+        _now: Instant,
+        method: &str,
+        scheme: &str,
+        host: &str,
+        path: &str,
+        _headers: &[Header],
+    ) -> Res<u64> {
+        qinfo!(
+            [self],
+            "Fetch Dummy method={}, scheme={}, host={}, path={}",
+            method,
+            scheme,
+            host,
+            path
+        );
+        let id = self
+            .conn
+            .stream_create(StreamType::BiDi)
+            .map_err(|e| Error::map_stream_create_errors(&e))?;
+
+        // notify flow_shaper of the new stream
+        match &self.flow_shaper {
+            Some(shaper) => {
+                shaper.borrow_mut().on_stream_created(id);
+            },
+            None => {
+                panic!("Tried to add a padding stream without a flow_shaper.");
+            }
+        }
+
+        // TODO (ldolfi): here would go the part where we allcoate the stream 
+        // and prepare a Box for the received message, but do we need it?
+        // Transform pseudo-header fields
+        // let mut final_headers = Vec::new();
+        // final_headers.push((":method".into(), method.to_owned()));
+        // final_headers.push((":scheme".into(), scheme.to_owned()));
+        // final_headers.push((":authority".into(), host.to_owned()));
+        // final_headers.push((":path".into(), path.to_owned()));
+        // final_headers.extend_from_slice(headers);
+
+        // self.base_handler.add_streams(
+        //     id,
+        //     SendMessage::new_with_headers(id, final_headers, Box::new(self.events.clone())),
+        //     Box::new(RecvMessage::new(
+        //         id,
+        //         Box::new(self.events.clone()),
+        //         Some(self.push_handler.clone()),
+        //     )),
+        // );
 
         Ok(id)
     }
