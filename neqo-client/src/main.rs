@@ -327,9 +327,9 @@ impl<'a> Handler<'a> {
         loop {
             if self.url_queue.is_empty() {
                 // add one more request for padding then break
-                let pad_url = Url::parse("https://host.docker.internal:7443/img/2nd-big-item.jpg");
-                self.url_queue.push_back(pad_url.unwrap());
-                self.download_next(client);
+                // let pad_url = Url::parse("https://host.docker.internal:7443/img/2nd-big-item.jpg");
+                // self.url_queue.push_back(pad_url.unwrap());
+                // self.download_next(client);
                 
                 break;
             }

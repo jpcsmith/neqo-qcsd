@@ -2,7 +2,7 @@ use std::fs::File;
 use std::io::{self, BufRead};
 use std::num;
 use std::time::{ Duration, Instant };
-use std::collections::{ HashMap, VecDeque };
+use std::collections::{ HashMap, VecDeque, HashSet };
 use std::convert::TryFrom;
 use std::cmp::max;
 use std::cell::RefCell;
@@ -145,7 +145,18 @@ impl FlowShapingEvents {
     }
 }
 
+#[derive(Debug, Default)]
+struct FlowShapingStreams {
+    // Hash set keeping track of stream ids of streams currently being shaped
+    streams: RefCell<HashSet<u64>>
+}
 
+impl FlowShapingStreams {
+    // add a padding stream to the shaping streams
+    pub(self) fn add_padding_stream(&self, stream_id: u64) -> bool {
+        self.streams.borrow_mut().insert(stream_id)
+    }
+}
 
 
 /// Shaper for the connection. Assumes that it operates on the client,
@@ -169,7 +180,8 @@ pub struct FlowShaper {
 
     // padding parameters
     padding_params: HashMap <String, u64>,
-    pad_out_target: VecDeque<(u32, u32)>,
+    pad_out_target: VecDeque <(u32, u32)>,
+    shaping_streams: FlowShapingStreams,
 
 }
 
@@ -269,6 +281,7 @@ impl FlowShaper {
             events: FlowShapingEvents::default(),
             padding_params: HashMap::new(),
             pad_out_target: VecDeque::new(),
+            shaping_streams: FlowShapingStreams::default(),
         }
     }
 
@@ -398,6 +411,11 @@ impl FlowShaper {
     /// associated `on_new_stream` call for the `stream_id`.
     pub fn on_new_padding_stream(&self, stream_id: u64) {
         assert!(self.events.cancel_max_stream_data(StreamId::new(stream_id)));
+        self.add_padding_stream(stream_id);
+    }
+
+    pub fn add_padding_stream(&self, stream_id: u64) {
+        assert!(self.shaping_streams.add_padding_stream(stream_id));
     }
 
     pub fn next_event(&mut self) -> Option<FlowShapingEvent> {
