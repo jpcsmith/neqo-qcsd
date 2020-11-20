@@ -839,16 +839,14 @@ impl Connection {
                         self.flow_mgr.borrow_mut().max_data(size);
                     },
                     FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit } => {
-                        self.flow_mgr.borrow_mut()
-                            .max_stream_data(StreamId::new(stream_id), new_limit);
+                        if let (_, Some(rs)) = self.obtain_stream(StreamId::new(stream_id)).expect("foo") {
+                            rs.send_flowc_update(new_limit);
+                        }
                     },
                     FlowShapingEvent::SendPaddingFrames(pad_size) => {
                         self.shaper_padding += pad_size;
                     },
                     FlowShapingEvent::CloseConnection => {
-                        // if !(&self.state == State::Closing ) {
-                        //     self.close(Instant::now(), 0x100, &"");
-                        // }
                         let st = State::Closed(ConnectionError::Application(0x100));
                         self.set_state(st);
                         qinfo!("Closing shaper expired");

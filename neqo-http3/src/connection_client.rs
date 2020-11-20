@@ -36,7 +36,7 @@ use url::Url; // for parsing dummy url
 use crate::{Error, Res};
 
 
-const DEBUG_SAMPLE_TRACE: &str = "../data/emptytrace.csv";
+const DEBUG_SAMPLE_TRACE: &str = "../data/demoburst.csv";
 const SIGNAL_INTERVAL: u32 = 1;
 const DEBUG_DUMMY_PATH: &str = "https://host.docker.internal:7443/img/2nd-big-item.jpg";
 

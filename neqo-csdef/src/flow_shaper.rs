@@ -22,7 +22,9 @@ const DEBUG_PAD_PACKET_SIZE: i32 = 1000;
 
 // The value below is taken from the QUIC Connection class and defines the 
 // buffer that is allocated for receiving data.
-const RX_STREAM_DATA_WINDOW: u64 = 0x10_0042; // 1MiB
+const RX_STREAM_DATA_WINDOW: u64 = 0x10_0000; // 1MiB
+// taken from transport connection
+const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
 
 
 #[derive(Debug)]
@@ -308,7 +310,7 @@ impl FlowShaper {
     /// Return the initial values for transport parameters
     pub fn tparam_defaults() -> [(u64, u64); 3] {
         [
-            (0x04, DEBUG_INITIAL_MAX_DATA),
+            (0x04, LOCAL_MAX_DATA),
             // Disable the peer sending data on bidirectional streams openned
             // by this endpoint (initial_max_stream_data_bidi_local)
             (0x05, 20),
