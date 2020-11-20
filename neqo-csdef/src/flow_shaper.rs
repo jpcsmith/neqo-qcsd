@@ -7,6 +7,11 @@ use std::convert::TryFrom;
 use std::cmp::max;
 use std::cell::RefCell;
 use rand::Rng; // for rayleigh sampling
+use std::fmt::Display;
+
+use neqo_common::{
+    qdebug, qinfo, qlog::NeqoQlog, qtrace
+};
 
 use crate::stream_id::StreamId;
 
@@ -17,7 +22,7 @@ const DEBUG_PAD_PACKET_SIZE: i32 = 1000;
 
 // The value below is taken from the QUIC Connection class and defines the 
 // buffer that is allocated for receiving data.
-const RX_STREAM_DATA_WINDOW: u64 = 0x10_0000; // 1MiB
+const RX_STREAM_DATA_WINDOW: u64 = 0x10_0042; // 1MiB
 
 
 #[derive(Debug)]
@@ -156,6 +161,10 @@ impl FlowShapingStreams {
     pub(self) fn add_padding_stream(&self, stream_id: u64) -> bool {
         self.streams.borrow_mut().insert(stream_id)
     }
+
+    pub(self) fn contains(&self, stream_id: u64) -> bool {
+        self.streams.borrow().contains(&stream_id)
+    }
 }
 
 
@@ -183,6 +192,12 @@ pub struct FlowShaper {
     pad_out_target: VecDeque <(u32, u32)>,
     shaping_streams: FlowShapingStreams,
 
+}
+
+impl Display for FlowShaper {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "QCD FlowShaper")
+    }
 }
 
 
@@ -217,7 +232,7 @@ impl FlowShaper {
 
                 self.rx_progress = self.rx_progress.saturating_add(u64::from(size));
                 if self.rx_progress > self.rx_max_data {
-                    self.events.send_max_data(self.rx_progress);
+                    self.events.send_max_stream_data(StreamId::new(0), self.rx_progress);
                 }
             }
         }
@@ -293,13 +308,13 @@ impl FlowShaper {
     /// Return the initial values for transport parameters
     pub fn tparam_defaults() -> [(u64, u64); 3] {
         [
-            (0x04, 20),
+            (0x04, DEBUG_INITIAL_MAX_DATA),
             // Disable the peer sending data on bidirectional streams openned
             // by this endpoint (initial_max_stream_data_bidi_local)
-            (0x05, 10_000),
+            (0x05, 20),
             // Disable the peer sending data on bidirectional streams that
             // they open (initial_max_stream_data_bidi_remote)
-            (0x06, 10_000),
+            (0x06, 20),
             // Disable the peer sending data on unidirectional streams that
             // they open (initial_max_stream_data_uni)
             // (0x07, 20),
@@ -402,6 +417,7 @@ impl FlowShaper {
 
         if stream_id.is_bidi() {
             self.events.send_max_stream_data(stream_id, RX_STREAM_DATA_WINDOW);
+            qdebug!([self], "Added send_max_stream_data event to stream {} limit {}", stream_id, RX_STREAM_DATA_WINDOW);
         }
     }
 
@@ -411,11 +427,18 @@ impl FlowShaper {
     /// associated `on_new_stream` call for the `stream_id`.
     pub fn on_new_padding_stream(&self, stream_id: u64) {
         assert!(self.events.cancel_max_stream_data(StreamId::new(stream_id)));
+        qdebug!([self], "Removed max stream data event from stream {}", stream_id);
         self.add_padding_stream(stream_id);
     }
 
     pub fn add_padding_stream(&self, stream_id: u64) {
         assert!(self.shaping_streams.add_padding_stream(stream_id));
+    }
+
+    // returns true if the stream_id is contained in the set of streams
+    // being currently shaped
+    pub fn is_shaping_stream(&self, stream_id: u64) -> bool {
+        self.shaping_streams.contains(stream_id)
     }
 
     pub fn next_event(&mut self) -> Option<FlowShapingEvent> {
