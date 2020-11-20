@@ -36,7 +36,7 @@ use url::Url; // for parsing dummy url
 use crate::{Error, Res};
 
 
-const DEBUG_SAMPLE_TRACE: &str = "../data/demoburst.csv";
+const DEBUG_SAMPLE_TRACE: &str = "../data/emptytrace.csv";
 const SIGNAL_INTERVAL: u32 = 1;
 const DEBUG_DUMMY_PATH: &str = "https://host.docker.internal:7443/img/2nd-big-item.jpg";
 
@@ -362,16 +362,7 @@ impl Http3Client {
             .conn
             .stream_create(StreamType::BiDi)
             .map_err(|e| Error::map_stream_create_errors(&e))?;
-            
-        // Notify flow_shaper of the new stream
-        match &self.flow_shaper {
-            Some(shaper) => {
-                shaper.borrow_mut().on_stream_created(id);
-            },
-            None => {
-                panic!("Tried to add a padding stream without a flow_shaper.");
-            }
-        }
+        
 
         // Transform pseudo-header fields
         let mut final_headers = Vec::new();
@@ -405,7 +396,7 @@ impl Http3Client {
             }
             return Err(e);
         }
-
+            
         Ok(id)
     }
 
