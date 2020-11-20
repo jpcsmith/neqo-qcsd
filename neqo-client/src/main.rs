@@ -330,6 +330,7 @@ impl<'a> Handler<'a> {
                 // let pad_url = Url::parse("https://host.docker.internal:7443/img/2nd-big-item.jpg");
                 // self.url_queue.push_back(pad_url.unwrap());
                 // self.download_next(client);
+                self.streams.insert(0, None);
                 
                 break;
             }
