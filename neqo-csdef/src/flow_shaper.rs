@@ -227,7 +227,7 @@ impl FlowShaper {
     }
 
     fn process_timer_(&mut self, since_start: Duration) {
-        if let Some((ts, _)) = self.in_target.front() {
+        if let Some((ts, _)) = self.pad_in_target.front() {
             let next = Duration::from_millis(u64::from(*ts));
             if next < since_start {
                 let (_, size) = self.in_target.pop_front()
@@ -235,7 +235,13 @@ impl FlowShaper {
 
                 self.rx_progress = self.rx_progress.saturating_add(u64::from(size));
                 if self.rx_progress > self.rx_max_data {
-                    self.events.send_max_stream_data(StreamId::new(0), self.rx_progress);
+                    // TODO (ldolfi): use all shaping streams
+                    match self.shaping_streams.streams.borrow().iter().next() {
+                        Some(id) => {
+                            self.events.send_max_stream_data(StreamId::new(*id), self.rx_progress);
+                        },
+                        None => { panic!("Tried to shape but no shaping streams available.")}
+                    }
                 }
             }
         }
