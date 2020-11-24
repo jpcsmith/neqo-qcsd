@@ -839,7 +839,8 @@ impl Connection {
                         self.flow_mgr.borrow_mut().max_data(size);
                     },
                     FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit } => {
-                        if let (_, Some(rs)) = self.obtain_stream(StreamId::new(stream_id)).expect("foo") {
+                        if let (_, Some(rs)) = self.obtain_stream(StreamId::new(stream_id))
+                                                    .expect("Did not find padding stream") {
                             rs.send_flowc_update(new_limit);
                         }
                     },
