@@ -192,6 +192,7 @@ pub struct FlowShaper {
     // padding parameters
     padding_params: HashMap <String, u64>,
     pad_out_target: VecDeque <(u32, u32)>,
+    pad_in_target: VecDeque <(u32, u32)>,
     shaping_streams: FlowShapingStreams,
 
 }
@@ -298,6 +299,7 @@ impl FlowShaper {
             events: FlowShapingEvents::default(),
             padding_params: HashMap::new(),
             pad_out_target: VecDeque::new(),
+            pad_in_target: VecDeque::new(),
             shaping_streams: FlowShapingStreams::default(),
         }
     }
@@ -325,14 +327,16 @@ impl FlowShaper {
 
     // Return the default values for padding trace
     // currently set to parametrs in Gong2020
-    pub fn pparam_defaults() -> [(String, u64); 3] {
+    pub fn pparam_defaults() -> [(String, u64); 4] {
         [
-            // Client's padding budget in number of packets (FIXME)
+            // Client's padding budget in number of packets
             ("pad_client_max_n".to_string(), 2500),
             // minimum padding time in seconds
-            ("pad_client_max_w".to_string(), 3),
+            ("pad_max_w".to_string(), 3),
             // maximum padding time in seconds
-            ("pad_client_min_w".to_string(), 1)
+            ("pad_min_w".to_string(), 1),
+            // Client's padding budget in number of packets
+            ("pad_server_max_n".to_string(), 2500),
         ]
     }
 
@@ -342,26 +346,29 @@ impl FlowShaper {
 
     // creates new Trace of dummy packets sampled from rayleigh distribution
     pub fn new_padding_trace(&self) -> Result<Trace, TraceLoadError>{
-        println!("Creating padding trace.");
+        qinfo!([self], "Creating padding traces.");
         let mut schedule = Vec::new();
         // get params
-        let packet_budget = match self.padding_params.get("pad_client_max_n") {
+        let cpacket_budget = match self.padding_params.get("pad_client_max_n") {
             Some(v) => v,
             None => return Err(TraceLoadError::Parse("padding parameter not found".to_string()))
         };
-        let min_w = match self.padding_params.get("pad_client_min_w") {
+        let min_w = match self.padding_params.get("pad_min_w") {
             Some(v) => v,
             None => return Err(TraceLoadError::Parse("padding parameter not found".to_string()))
         };
-        let max_w = match self.padding_params.get("pad_client_max_w") {
+        let max_w = match self.padding_params.get("pad_max_w") {
+            Some(v) => v,
+            None => return Err(TraceLoadError::Parse("padding parameter not found".to_string()))
+        };
+        let spacket_budget = match self.padding_params.get("pad_server_max_n") {
             Some(v) => v,
             None => return Err(TraceLoadError::Parse("padding parameter not found".to_string()))
         };
         // sample n_C and w_c
-        let _n_c: u64 = rand::thread_rng().gen_range(1,packet_budget+1);
+        let _n_c: u64 = rand::thread_rng().gen_range(1,cpacket_budget+1);
         let _w_c: u64 = rand::thread_rng().gen_range(*min_w,max_w+1);
         println!("n_c: {}\tw_c: {}", _n_c, _w_c);
-
         // sample timetable
         let mut count = 0u64;
         let mut t;
@@ -372,6 +379,21 @@ impl FlowShaper {
             schedule.push((Duration::from_secs_f64(t), DEBUG_PAD_PACKET_SIZE as i32));
             println!("{}.  {}", count, t);
         }
+        // sample n_s
+        let _n_s: u64 = rand::thread_rng().gen_range(1,spacket_budget+1);
+        let _w_s: u64 = rand::thread_rng().gen_range(*min_w,max_w+1);
+        println!("n_s: {}\tw_s: {}", _n_s, _w_s);
+        // sample timetable
+        count = 0;
+        let mut t;
+        while count < _n_s {
+            count += 1;
+            let u: f64 = rand::thread_rng().gen_range(0.,1.);
+            t = rayleigh_cdf_inv(u, _w_s);
+            schedule.push((Duration::from_secs_f64(t), -DEBUG_PAD_PACKET_SIZE as i32));
+            println!("{}.  {}", count, t);
+        }
+
         return Ok(schedule);
     }
 
@@ -393,13 +415,28 @@ impl FlowShaper {
                 .or_insert(*size);
         }
         // padding frames should now be added here according to schedule
+        // let mut pad_out_target: Vec<(u32, u32)> = bins
+        //     .iter()
+        //     .map(|((ts, _), size)| (*ts, u32::try_from(*size).unwrap()))
+        //     .collect();
+        // pad_out_target.sort();
+
+        let mut pad_in_target: Vec<(u32, u32)> = bins
+            .iter()
+            .filter(|&((_, inc), _)| !*inc)
+            .map(|((ts, _), size)| (*ts, u32::try_from(size.abs()).unwrap()))
+            .collect();
+        pad_in_target.sort();
+
         let mut pad_out_target: Vec<(u32, u32)> = bins
             .iter()
+            .filter(|((_, inc), _)| *inc)
             .map(|((ts, _), size)| (*ts, u32::try_from(*size).unwrap()))
             .collect();
         pad_out_target.sort();
 
         self.pad_out_target = VecDeque::from(pad_out_target);
+        self.pad_in_target = VecDeque::from(pad_in_target);
     }
 
     /// Queue events related to a new stream being created by the peer.
