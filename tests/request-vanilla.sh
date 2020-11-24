@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
+#?? Usage: request-vanilla.sh [HOSTIP:PORT]
 
 LOG=
 LOG="neqo_transport=debug,error"
-HOST="localhost:7443"
+DEFAULT_HOST="localhost:7443"
+HOST="${1:-${DEFAULT_HOST}}"
 LOCAL_URLS=( "https://${HOST}/" "https://${HOST}/css/bootstrap.min.css" \
              "https://${HOST}/css/fontAwesome.css" "https://${HOST}/css/hero-slider.css" \
              "https://${HOST}/css/templatemo-main.css" "https://${HOST}/css/owl-carousel.css" \
