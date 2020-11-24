@@ -5,11 +5,24 @@ FROM litespeedtech/openlitespeed:1.7.5-lsphp74
 
 RUN apt-get -q update && apt-get -q install -y unzip && rm -rf /var/lib/apt/lists/*
 
-RUN wget -q https://www.free-css.com/assets/files/free-css-templates/download/page259/vanilla.zip \
-        && unzip -qq vanilla.zip \
-        && rm vanilla.zip \
-        && mv templatemo_526_vanilla/* /var/www/vhosts/localhost/html/ \
-        && rmdir templatemo_526_vanilla
+
+COPY vanilla.zip .
+RUN unzip -qq vanilla.zip \
+    && rm vanilla.zip \
+    && mkdir -p /var/www/vhosts/vanilla/html \
+    && mv templatemo_526_vanilla/* /var/www/vhosts/vanilla/html/ \
+    && chown -R lsadm:lsadm /var/www/vhosts/vanilla \
+    && rmdir templatemo_526_vanilla
+
+
+COPY weather.zip .
+RUN mkdir -p /var/www/vhosts/weather/html \
+    && unzip -d /var/www/vhosts/weather/html -qq weather.zip \
+    && chown -R lsadm:lsadm /var/www/vhosts/weather \
+    && rm weather.zip
+
+RUN find /var/www/vhosts -type d -exec chmod 755 {} \; \
+    && find /var/www/vhosts -type f -exec chmod 644 {} \;
 
 # Use port 7443 for HTTPS
 # RUN sed -i 's/:443/:7443/' /usr/local/lsws/conf/httpd_config.conf
