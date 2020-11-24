@@ -18,7 +18,7 @@ use crate::stream_id::StreamId;
 
 const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
 
-const DEBUG_PAD_PACKET_SIZE: i32 = 1000;
+const DEBUG_PAD_PACKET_SIZE: i32 = 200;
 
 // The value below is taken from the QUIC Connection class and defines the 
 // buffer that is allocated for receiving data.
@@ -155,7 +155,8 @@ impl FlowShapingEvents {
 #[derive(Debug, Default)]
 struct FlowShapingStreams {
     // Hash set keeping track of stream ids of streams currently being shaped
-    streams: RefCell<HashSet<u64>>
+    streams: RefCell<HashSet<u64>>,
+    max_stream_datas: RefCell<HashMap<StreamId,u64>>,
 }
 
 impl FlowShapingStreams {
@@ -167,6 +168,18 @@ impl FlowShapingStreams {
     pub(self) fn contains(&self, stream_id: u64) -> bool {
         self.streams.borrow().contains(&stream_id)
     }
+
+    pub(self) fn insert(&self, stream_id: StreamId, max_stream_data: u64) -> Option<u64> {
+        self.max_stream_datas.borrow_mut().insert(stream_id, max_stream_data)
+    }
+
+    // pub(self) fn get(&self, stream_id: StreamId) -> Option<&u64> {
+    //     self.max_stream_datas.borrow().get(&stream_id)
+    // }
+
+    // pub(self) fn get_mut(&self, stream_id: StreamId) -> Option<&mut u64> {
+    //     self.max_stream_datas.borrow_mut().get_mut(&stream_id)
+    // }
 }
 
 
@@ -194,6 +207,7 @@ pub struct FlowShaper {
     pad_out_target: VecDeque <(u32, u32)>,
     pad_in_target: VecDeque <(u32, u32)>,
     shaping_streams: FlowShapingStreams,
+    shaping_streams_max_data: HashMap <StreamId, u64>,
 
 }
 
@@ -227,10 +241,11 @@ impl FlowShaper {
     }
 
     fn process_timer_(&mut self, since_start: Duration) {
+        // dummy packets in
         if let Some((ts, _)) = self.pad_in_target.front() {
             let next = Duration::from_millis(u64::from(*ts));
             if next < since_start {
-                let (_, size) = self.in_target.pop_front()
+                let (_, size) = self.pad_in_target.pop_front()
                     .expect("the deque to be non-empty");
 
                 self.rx_progress = self.rx_progress.saturating_add(u64::from(size));
@@ -239,13 +254,15 @@ impl FlowShaper {
                     match self.shaping_streams.streams.borrow().iter().next() {
                         Some(id) => {
                             self.events.send_max_stream_data(StreamId::new(*id), self.rx_progress);
+                            // self.shaping_streams_max_data.insert(StreamId::new(*id), self.rx_progress);
+                            self.shaping_streams.insert(StreamId::new(*id), self.rx_progress);
                         },
                         None => { panic!("Tried to shape but no shaping streams available.")}
                     }
                 }
             }
         }
-        // add padding
+        // dummy packets out
         if let Some((ts, _)) = self.pad_out_target.front() {
             let next = Duration::from_millis(u64::from(*ts));
             if next < since_start {
@@ -255,10 +272,35 @@ impl FlowShaper {
                 self.events.send_pad_frames(size);
             }
         }
+        // dummy packets in
+        if let Some((ts, _)) = self.pad_in_target.front() {
+            let next = Duration::from_millis(u64::from(*ts));
+            if next < since_start {
+                let (_, size) = self.pad_in_target.pop_front()
+                    .expect("the deque to be non-empty");
+                
+                // TODO (ldolfi): use all shaping streams
+                match self.shaping_streams.streams.borrow().iter().next() {
+                    Some(id) => {
+                        let stream_id = StreamId::new(*id);
+                        if let Some(max_stream_data) = self.shaping_streams
+                                                           .max_stream_datas
+                                                           .borrow_mut()
+                                                           .get_mut(&stream_id)
+                        {
+                            *max_stream_data += size as u64;
+                            self.events
+                                .send_max_stream_data(stream_id, *max_stream_data);
+                        }
+                    },
+                    _ => { panic!("Tried to shape but no shaping streams available.")}
+                }
+            }
+        }
 
         // check dequeues empty, if so send connection close event
         // TODO (ldolfi): use check only on dequeues actually in use
-        if self.in_target.is_empty() && self.pad_out_target.is_empty() {
+        if self.pad_in_target.is_empty() && self.pad_out_target.is_empty() {
             self.events.send_connection_close();
         }
     }
@@ -307,6 +349,7 @@ impl FlowShaper {
             pad_out_target: VecDeque::new(),
             pad_in_target: VecDeque::new(),
             shaping_streams: FlowShapingStreams::default(),
+            shaping_streams_max_data: HashMap::new(),
         }
     }
 
@@ -478,6 +521,7 @@ impl FlowShaper {
 
     pub fn add_padding_stream(&self, stream_id: u64) {
         assert!(self.shaping_streams.add_padding_stream(stream_id));
+        assert!(self.shaping_streams.insert(StreamId::from(stream_id), 0).is_none());
     }
 
     // returns true if the stream_id is contained in the set of streams
