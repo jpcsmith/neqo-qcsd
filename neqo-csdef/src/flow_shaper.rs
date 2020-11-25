@@ -178,6 +178,10 @@ impl FlowShapingStreams {
         self.max_stream_datas.borrow_mut().insert(stream_id, max_stream_data)
     }
 
+    pub(self) fn len(&self) -> usize {
+        self.streams.borrow().len()
+    }
+
     // pub(self) fn get(&self, stream_id: StreamId) -> Option<&u64> {
     //     self.max_stream_datas.borrow().get(&stream_id)
     // }
@@ -246,26 +250,26 @@ impl FlowShaper {
     }
 
     fn process_timer_(&mut self, since_start: Duration) {
-        if let Some((ts, _)) = self.pad_in_target.front() {
-            let next = Duration::from_millis(u64::from(*ts));
-            if next < since_start {
-                let (_, size) = self.pad_in_target.pop_front()
-                    .expect("the deque to be non-empty");
+        // if let Some((ts, _)) = self.in_target.front() {
+        //     let next = Duration::from_millis(u64::from(*ts));
+        //     if next < since_start {
+        //         let (_, size) = self.in_target.pop_front()
+        //             .expect("the deque to be non-empty");
 
-                self.rx_progress = self.rx_progress.saturating_add(u64::from(size));
-                if self.rx_progress > self.rx_max_data {
-                    // TODO (ldolfi): use all shaping streams
-                    match self.shaping_streams.streams.borrow().iter().next() {
-                        Some(id) => {
-                            self.events.send_max_stream_data(StreamId::new(*id), self.rx_progress);
-                            // self.shaping_streams_max_data.insert(StreamId::new(*id), self.rx_progress);
-                            self.shaping_streams.insert(*id, self.rx_progress);
-                        },
-                        _ => { qwarn!("Tried to shape but no shaping streams available.")}
-                    }
-                }
-            }
-        }
+        //         self.rx_progress = self.rx_progress.saturating_add(u64::from(size));
+        //         if self.rx_progress > self.rx_max_data {
+        //             // TODO (ldolfi): use all shaping streams
+        //             match self.shaping_streams.streams.borrow().iter().next() {
+        //                 Some(id) => {
+        //                     self.events.send_max_stream_data(StreamId::new(*id), self.rx_progress);
+        //                     // self.shaping_streams_max_data.insert(StreamId::new(*id), self.rx_progress);
+        //                     self.shaping_streams.insert(*id, self.rx_progress);
+        //                 },
+        //                 _ => { qwarn!("Tried to shape but no shaping streams available.")}
+        //             }
+        //         }
+        //     }
+        // }
         // dummy packets out
         if let Some((ts, _)) = self.pad_out_target.front() {
             let next = Duration::from_millis(u64::from(*ts));
@@ -284,6 +288,7 @@ impl FlowShaper {
                     .expect("the deque to be non-empty");
                 
                 // TODO (ldolfi): use all shaping streams
+                let num_dummy_streams = self.shaping_streams.len();
                 match self.shaping_streams.streams.borrow().iter().next() {
                     Some(id) => {
                         let stream_id = StreamId::new(*id);

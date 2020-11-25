@@ -38,7 +38,12 @@ use crate::{Error, Res};
 
 const DEBUG_SAMPLE_TRACE: &str = "../data/pad-trace-n2202-w1.csv";
 const SIGNAL_INTERVAL: u32 = 1;
-const DEBUG_DUMMY_PATH: &str = "https://host.docker.internal:7443/img/2nd-big-item.jpg";
+// const DEBUG_DUMMY_PATH: &str = "https://host.docker.internal:7443/img/2nd-big-item.jpg";
+const DEBUG_DUMMY_URLS: [&str; 5] = ["https://host.docker.internal:7443/img/2nd-big-item.jpg",
+                                    "https://host.docker.internal:7443/css/bootstrap.min.css",
+                                    "https://host.docker.internal:7443/img/3rd-item.jpg",
+                                    "https://host.docker.internal:7443/img/4th-item.jpg",
+                                    "https://host.docker.internal:7443/img/5th-item.jpg"];
 
 
 // This is used for filtering send_streams and recv_Streams with a stream_ids greater than or equal a given id.
@@ -329,32 +334,33 @@ impl Http3Client {
         if self.is_being_shaped() {
             if !self.base_handler.has_data_to_send() {
                 // open dummy stream
-                // TODO (ldolfi): come up with a better padding url
-                let pad_url = Url::parse(DEBUG_DUMMY_PATH).expect("Failed to parse dummy path");
-                match self.fetch_dummy(
-                        Instant::now(),
-                        "GET",
-                        &pad_url.scheme(),
-                        &pad_url.host_str().unwrap(),
-                        &pad_url.path(),
-                        headers // TODO (ldolfi): eventually disable compression
-                    ) {
-                        Ok(pad_id) => {
-                            println!(
-                                "Successfully created shaping stream id {} for resource {}",
-                                pad_id, pad_url
-                            );
-                            // save id
-                            self.flow_shaper
-                                .as_ref()
-                                .unwrap()
-                                .borrow_mut()
-                                .on_new_padding_stream(pad_id);
-                        },
-                        Err(e) => {
-                            panic!("Can't open dummy stream {}", e);
+                for pad_url in DEBUG_DUMMY_URLS.iter() {
+                    let pad_url = Url::parse(pad_url).expect("Failed to parse dummy path");
+                    match self.fetch_dummy(
+                            Instant::now(),
+                            "GET",
+                            &pad_url.scheme(),
+                            &pad_url.host_str().unwrap(),
+                            &pad_url.path(),
+                            headers // TODO (ldolfi): eventually disable compression
+                        ) {
+                            Ok(pad_id) => {
+                                println!(
+                                    "Successfully created shaping stream id {} for resource {}",
+                                    pad_id, pad_url
+                                );
+                                // save id
+                                self.flow_shaper
+                                    .as_ref()
+                                    .unwrap()
+                                    .borrow_mut()
+                                    .on_new_padding_stream(pad_id);
+                            },
+                            Err(e) => {
+                                panic!("Can't open dummy stream {}", e);
+                            }
                         }
-                    }
+                }
             }
         }
 
