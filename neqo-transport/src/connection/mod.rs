@@ -2036,6 +2036,13 @@ impl Connection {
                 data,
                 ..
             } => {
+                // eliminate immediately the dummy stream
+                if fin
+                    && self.is_being_shaped()
+                    && self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(stream_id.as_u64())
+                {
+                    self.flow_shaper.as_ref().unwrap().borrow().remove_dummy_stream(stream_id.as_u64());
+                }
                 if let (_, Some(rs)) = self.obtain_stream(stream_id)? {
                     rs.inbound_stream_frame(fin, offset, data)?;
                 }
