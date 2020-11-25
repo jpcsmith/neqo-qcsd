@@ -10,7 +10,7 @@ use rand::Rng; // for rayleigh sampling
 use std::fmt::Display;
 
 use neqo_common::{
-    qdebug, qinfo, qlog::NeqoQlog, qtrace
+    qdebug, qinfo, qlog::NeqoQlog, qtrace, qwarn
 };
 
 use crate::stream_id::StreamId;
@@ -156,7 +156,7 @@ impl FlowShapingEvents {
 struct FlowShapingStreams {
     // Hash set keeping track of stream ids of streams currently being shaped
     streams: RefCell<HashSet<u64>>,
-    max_stream_datas: RefCell<HashMap<StreamId,u64>>,
+    max_stream_datas: RefCell<HashMap<u64,u64>>,
 }
 
 impl FlowShapingStreams {
@@ -165,11 +165,16 @@ impl FlowShapingStreams {
         self.streams.borrow_mut().insert(stream_id)
     }
 
+    pub(self) fn remove_dummy_stream(&self, stream_id: &u64) -> bool {
+        self.max_stream_datas.borrow_mut().remove(stream_id);
+        self.streams.borrow_mut().remove(stream_id)
+    }
+
     pub(self) fn contains(&self, stream_id: u64) -> bool {
         self.streams.borrow().contains(&stream_id)
     }
 
-    pub(self) fn insert(&self, stream_id: StreamId, max_stream_data: u64) -> Option<u64> {
+    pub(self) fn insert(&self, stream_id: u64, max_stream_data: u64) -> Option<u64> {
         self.max_stream_datas.borrow_mut().insert(stream_id, max_stream_data)
     }
 
@@ -241,7 +246,6 @@ impl FlowShaper {
     }
 
     fn process_timer_(&mut self, since_start: Duration) {
-        // dummy packets in
         if let Some((ts, _)) = self.pad_in_target.front() {
             let next = Duration::from_millis(u64::from(*ts));
             if next < since_start {
@@ -255,9 +259,9 @@ impl FlowShaper {
                         Some(id) => {
                             self.events.send_max_stream_data(StreamId::new(*id), self.rx_progress);
                             // self.shaping_streams_max_data.insert(StreamId::new(*id), self.rx_progress);
-                            self.shaping_streams.insert(StreamId::new(*id), self.rx_progress);
+                            self.shaping_streams.insert(*id, self.rx_progress);
                         },
-                        None => { panic!("Tried to shape but no shaping streams available.")}
+                        _ => { qwarn!("Tried to shape but no shaping streams available.")}
                     }
                 }
             }
@@ -286,7 +290,7 @@ impl FlowShaper {
                         if let Some(max_stream_data) = self.shaping_streams
                                                            .max_stream_datas
                                                            .borrow_mut()
-                                                           .get_mut(&stream_id)
+                                                           .get_mut(id)
                         {
                             *max_stream_data += size as u64;
                             self.events
@@ -521,7 +525,12 @@ impl FlowShaper {
 
     pub fn add_padding_stream(&self, stream_id: u64) {
         assert!(self.shaping_streams.add_padding_stream(stream_id));
-        assert!(self.shaping_streams.insert(StreamId::from(stream_id), 0).is_none());
+        assert!(self.shaping_streams.insert(stream_id, 0).is_none());
+    }
+
+    pub fn remove_dummy_stream(&self, stream_id: u64) {
+        assert!(self.shaping_streams.remove_dummy_stream(&stream_id));
+        qdebug!("Removed dummy stream {} after receiving FIN", stream_id);
     }
 
     // returns true if the stream_id is contained in the set of streams
