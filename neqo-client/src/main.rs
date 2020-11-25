@@ -331,6 +331,10 @@ impl<'a> Handler<'a> {
                 // self.url_queue.push_back(pad_url.unwrap());
                 // self.download_next(client);
                 self.streams.insert(0, None);
+                self.streams.insert(4, None);
+                self.streams.insert(8, None);
+                self.streams.insert(12, None);
+                self.streams.insert(16, None);
                 
                 break;
             }
