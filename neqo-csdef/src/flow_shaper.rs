@@ -289,7 +289,9 @@ impl FlowShaper {
                 
                 // TODO (ldolfi): use all shaping streams
                 let num_dummy_streams = self.shaping_streams.len();
-                let size = ((size as usize) / num_dummy_streams) as u64;
+                let size = if num_dummy_streams > 0 {
+                     ((size as usize) / num_dummy_streams) as u64
+                    } else { 0 };
                 for id in self.shaping_streams.streams.borrow().iter() {
                     let stream_id = StreamId::new(*id);
                     if let Some(max_stream_data) = self.shaping_streams
