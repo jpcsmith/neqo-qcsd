@@ -15,7 +15,7 @@ use crate::settings::HSettings;
 use crate::Header;
 use crate::RecvMessageEvents;
 use neqo_common::{
-    event::Provider as EventProvider, hex, hex_with_len, qdebug, qinfo, qlog::NeqoQlog, qtrace,
+    event::Provider as EventProvider, hex, hex_with_len, qdebug, qinfo, qwarn, qlog::NeqoQlog, qtrace,
     Datagram, Decoder, Encoder, Role,
 };
 use neqo_crypto::{agent::CertificateInfo, AuthenticationStatus, ResumptionToken, SecretAgentInfo};
@@ -24,7 +24,7 @@ use neqo_transport::{
     AppError, CongestionControlAlgorithm, Connection, ConnectionEvent, ConnectionId,
     ConnectionIdManager, Output, QuicVersion, StreamId, StreamType, ZeroRttState,
 };
-use neqo_csdef::flow_shaper::FlowShaper;
+use neqo_csdef::flow_shaper::{ FlowShaper, FlowShapingEvent };
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::net::SocketAddr;
@@ -735,16 +735,20 @@ impl Http3Client {
 
     fn check_flow_shaping_events(&mut self) {
         qtrace!([self], "Check FlowShaping events");
-        let mut shaper = self.flow_shaper.as_ref().unwrap().borrow_mut();
-        while let Some(e) = shaper.next_application_event() {
-            qdebug!([self], "check_flow_shaping_events - event {:?}.", e);
-            match e {
-                FlowShapingEvent::CloseConnection => {
-                    self.close(Instant::now(), 0, "kthx4shaping!");
-                }
-            }
-        }
+        if let Some(shaper) = self.flow_shaper.clone(){
+            while let Some(e) = shaper.borrow_mut().next_application_event() {
+                qdebug!([self], "check_flow_shaping_events - event {:?}.", e);
+                match e {
+                    FlowShapingEvent::CloseConnection => {
+                        self.close(Instant::now(), 0, "kthx4shaping!");
+                    },
+                    _ => {}
+                };
+            };
 
+        } else {
+            qwarn!([self], "checking Flowshaping events without a flowshaper!");
+        }
     }
 
     fn handle_stream_readable(&mut self, stream_id: u64) -> Res<()> {
