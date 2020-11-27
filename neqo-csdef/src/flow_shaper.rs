@@ -121,7 +121,6 @@ impl FlowShapingEvents {
         self.events.borrow_mut().push_back(event);
     }
 
-
     /// Pop the first max_stream_data event with the specified stream 
     /// id. Return true iff the event was found and removed.
     pub(self) fn cancel_max_stream_data(&self, stream_id: StreamId) -> bool {
@@ -139,6 +138,33 @@ impl FlowShapingEvents {
             },
             None => false
         }
+    }
+
+    #[must_use]
+    pub fn next_event(&mut self) -> Option<FlowShapingEvent> {
+        self.events.borrow_mut().pop_front()
+    }
+
+    #[must_use]
+    pub fn has_events(&self) -> bool {
+        !self.events.borrow().is_empty()
+    }
+}
+
+#[derive(Debug, Default)]
+struct FlowShapingApplicationEvents {
+    // Events that concern the application layer (H3)
+    events: RefCell<VecDeque<FlowShapingEvent>>
+}
+
+impl FlowShapingApplicationEvents {
+
+    pub(self) fn send_connection_close(&self) {
+        self.insert(FlowShapingEvent::CloseConnection)
+    }
+
+    fn insert(&self, event: FlowShapingEvent) {
+        self.events.borrow_mut().push_back(event);
     }
 
     #[must_use]
@@ -210,6 +236,7 @@ pub struct FlowShaper {
     rx_progress: u64,
 
     events: FlowShapingEvents,
+    application_events: FlowShapingApplicationEvents,
 
     // padding parameters
     padding_params: HashMap <String, u64>,
@@ -308,7 +335,7 @@ impl FlowShaper {
         // check dequeues empty, if so send connection close event
         // TODO (ldolfi): use check only on dequeues actually in use
         if self.pad_in_target.is_empty() && self.pad_out_target.is_empty() {
-            self.events.send_connection_close();
+            self.application_events.send_connection_close();
         }
     }
 
@@ -352,6 +379,7 @@ impl FlowShaper {
             rx_max_data: DEBUG_INITIAL_MAX_DATA,
             rx_progress: 0,
             events: FlowShapingEvents::default(),
+            application_events: FlowShapingApplicationEvents::default(),
             padding_params: HashMap::new(),
             pad_out_target: VecDeque::new(),
             pad_in_target: VecDeque::new(),
@@ -549,6 +577,15 @@ impl FlowShaper {
     #[must_use]
     pub fn has_events(&self) -> bool {
         self.events.has_events()
+    }
+
+    pub fn next_application_event(&mut self) -> Option<FlowShapingEvent> {
+        self.application_events.next_event()
+    }
+
+    #[must_use]
+    pub fn has_application_events(&self) -> bool {
+        self.application_events.has_events()
     }
 }
 
