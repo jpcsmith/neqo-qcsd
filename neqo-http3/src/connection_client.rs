@@ -612,6 +612,9 @@ impl Http3Client {
                 if self.check_result(now, &res) {
                     return;
                 }
+                if self.is_being_shaped() {
+                    self.check_flow_shaping_events();
+                }
                 self.push_handler
                     .borrow_mut()
                     .maybe_send_max_push_id_frame(&mut self.base_handler);
@@ -728,6 +731,20 @@ impl Http3Client {
             }
         }
         Ok(())
+    }
+
+    fn check_flow_shaping_events(&mut self) {
+        qtrace!([self], "Check FlowShaping events");
+        let mut shaper = self.flow_shaper.as_ref().unwrap().borrow_mut();
+        while let Some(e) = shaper.next_application_event() {
+            qdebug!([self], "check_flow_shaping_events - event {:?}.", e);
+            match e {
+                FlowShapingEvent::CloseConnection => {
+                    self.close(Instant::now(), 0, "kthx4shaping!");
+                }
+            }
+        }
+
     }
 
     fn handle_stream_readable(&mut self, stream_id: u64) -> Res<()> {
