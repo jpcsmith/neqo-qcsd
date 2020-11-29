@@ -316,18 +316,20 @@ impl FlowShaper {
                 
                 // TODO (ldolfi): use all shaping streams
                 let num_dummy_streams = self.shaping_streams.len();
-                let size = ((size as usize) / num_dummy_streams) as u64;
-                for id in self.shaping_streams.streams.borrow().iter() {
-                    let stream_id = StreamId::new(*id);
-                    if let Some(max_stream_data) = self.shaping_streams
-                                                        .max_stream_datas
-                                                        .borrow_mut()
-                                                        .get_mut(id)
-                    {
-                        *max_stream_data += size;
-                        self.events
-                            .send_max_stream_data(stream_id, *max_stream_data);
-                    }
+                match self.shaping_streams.streams.borrow().iter().next() {
+                    Some(id) => {
+                        let stream_id = StreamId::new(*id);
+                        if let Some(max_stream_data) = self.shaping_streams
+                                                           .max_stream_datas
+                                                           .borrow_mut()
+                                                           .get_mut(id)
+                        {
+                            *max_stream_data += size as u64;
+                            self.events
+                                .send_max_stream_data(stream_id, *max_stream_data);
+                        }
+                    },
+                    _ => { qwarn!([self], "Tried to shape but no shaping streams available.")}
                 }
             }
         }
