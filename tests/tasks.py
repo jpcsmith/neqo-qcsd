@@ -13,6 +13,7 @@ from typing import Optional
 from invoke import task
 
 
+NEQO_LOG = "neqo_transport=info,debug"
 LOCAL_NETLOC = "{}:7443".format(
     "localhost" if platform == "linux" else "host.docker.internal")
 DEFAULT_NETLOC = {
@@ -30,7 +31,7 @@ def _load_urls(name: str, netloc: str, local: bool):
 
 
 @task
-def neqo_request(conn, name, netloc=None, local=False, shaping=True):
+def neqo_request(conn, name, netloc=None, local=False, shaping=True, log=False):
     """Request the URLs associated with a domain.
 
     Use the default local netloc by passing specifying local as true.
@@ -49,6 +50,7 @@ def neqo_request(conn, name, netloc=None, local=False, shaping=True):
 
     conn.run(f"{client_binary} {urls}", echo=True, env={
         "SSLKEYLOGFILE": "out.log",
+        "RUST_LOG": NEQO_LOG if log else "",
         "CSDEF_NO_SHAPING": "" if shaping else "yes"
     })
 
