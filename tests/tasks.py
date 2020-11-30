@@ -107,3 +107,15 @@ def list_urls(conn, in_har):
     """
     conn.run("jq -r '.log.entries | map(select(.response.status == 200) "
              f"| .request.url)[]' {in_har}", echo=False)
+
+
+@task
+def start_local_server(conn):
+    """Start the local test server.
+    """
+    args = {
+        "linux": "--net host",
+        "darwin": ("-p 80:80 -p 443:443/udp -p 443:443/tcp -p 7443:7443/udp "
+                   "-p 7443:7443/tcp")
+    }[platform]
+    conn.run(f"docker run -d --rm --name vanilla {args} vanilla-srv", echo=True)
