@@ -11,6 +11,7 @@ SHELL := bash
 .SUFFIXES:
 
 VANILLA_TRACES := data/vanilla-shaped.csv data/vanilla-unshaped.csv # data/vanilla-tcp.csv
+VANILLA_CAPTURES := data/vanilla-shaped.pcapng data/vanilla-unshaped.pcapng
 TSO_DISABLE_IFACE := lo
 TSO_DISABLE_IFACE_MACOS := lo0
 
@@ -45,3 +46,6 @@ data/vanilla-tcp.pcapng: /tmp/iface-configured
 
 %.csv: %.pcapng
 	inv -r "../python" pcap-to-csv $< > $@
+
+testdummy: $(VANILLA_CAPTURES)
+	inv plot-dummy $<
