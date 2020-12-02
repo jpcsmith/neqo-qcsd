@@ -18,7 +18,7 @@ use crate::stream_id::StreamId;
 
 const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
 
-const DEBUG_PAD_PACKET_SIZE: i32 = 200;
+const DEBUG_PAD_PACKET_SIZE: i32 = 450;
 
 // The value below is taken from the QUIC Connection class and defines the 
 // buffer that is allocated for receiving data.
@@ -463,7 +463,7 @@ impl FlowShaper {
             let u: f64 = rand::thread_rng().gen_range(0.,1.);
             t = rayleigh_cdf_inv(u, _w_c);
             schedule.push((Duration::from_secs_f64(t), DEBUG_PAD_PACKET_SIZE as i32));
-            println!("{}.  {}", count, t);
+            // println!("{}.  {}", count, t);
         }
         // sample n_s
         let _n_s: u64 = rand::thread_rng().gen_range(1,spacket_budget+1);
@@ -477,7 +477,7 @@ impl FlowShaper {
             let u: f64 = rand::thread_rng().gen_range(0.,1.);
             t = rayleigh_cdf_inv(u, _w_s);
             schedule.push((Duration::from_secs_f64(t), -DEBUG_PAD_PACKET_SIZE as i32));
-            println!("{}.  {}", count, t);
+            // println!("{}.  {}", count, t);
         }
 
         return Ok(schedule);

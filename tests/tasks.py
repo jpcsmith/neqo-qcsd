@@ -67,8 +67,12 @@ def neqo_request(conn, name, netloc=None, local=False, shaping=True, log=False):
         "linux": "../target/debug/neqo-client",
         "darwin": ("docker exec -w $PWD -e LD_LIBRARY_PATH=$PWD/../target"
                    "/debug/build/neqo-crypto-044e50838ff4228a/out/dist/Debug"
-                   "/lib/ neqo-qcd ../target/debug/neqo-client")
+                   "/lib/ -e SSLKEYLOGFILE=out.log")
+                   + (" -e RUST_LOG=")+(NEQO_LOG if log else "")
+                   + (" -e CSDEF_NO_SHAPING=")+("" if shaping else "yes")
+                   + (" neqo-qcd ../target/debug/neqo-client")
     }[platform]
+
 
     conn.run(f"{client_binary} {urls}", echo=True, env={
         "SSLKEYLOGFILE": "out.log",
@@ -77,16 +81,17 @@ def neqo_request(conn, name, netloc=None, local=False, shaping=True, log=False):
     })
 
 
+
 @contextmanager
 def capture(
     conn,
     out_pcap: str,
-    interface: Optional[str] = "lo",
+    interface: Optional[str] = "lo" if platform=="linux" else "lo0",
     filter_: str = "port 7443"
 ):
     """Create a context manager for capturing a trace with tshark.
     """
-    iface_flag = "" if interface is None else f"-i {interface}"
+    iface_flag = ("" if platform=="linux" else f"-i en2") if interface is None else f"-i {interface}"
     promise = conn.run(
         f"tshark {iface_flag} -f '{filter_}' -w '{out_pcap}'",
         asynchronous=True, echo=True)

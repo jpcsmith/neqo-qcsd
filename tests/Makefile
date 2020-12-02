@@ -22,10 +22,10 @@ all: $(VANILLA_TRACES)
 
 
 data/vanilla-shaped.pcapng:
-	inv collect-quic --shaping $@ 
+	inv collect-quic --shaping "vanilla" $@ 
 
 data/vanilla-unshaped.pcapng:
-	inv collect-quic --no-shaping $@ 
+	inv collect-quic --no-shaping "vanilla" $@ 
 
 data/vanilla-tcp.pcapng: /tmp/iface-configured
 	inv collect-tcp $@ 
@@ -49,3 +49,6 @@ data/vanilla-tcp.pcapng: /tmp/iface-configured
 
 testdummy: $(VANILLA_CAPTURES)
 	inv plot-dummy $<
+
+clean:
+	rm -f $(VANILLA_CAPTURES) $(VANILLA_TRACES)
