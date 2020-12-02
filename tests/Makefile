@@ -48,7 +48,7 @@ data/vanilla-tcp.pcapng: /tmp/iface-configured
 	inv -r "../python" pcap-to-csv $< > $@
 
 testdummy: $(VANILLA_CAPTURES)
-	inv plot-dummy $<
+	inv plot-dummy $^
 
 clean:
 	rm -f $(VANILLA_CAPTURES) $(VANILLA_TRACES)

@@ -155,6 +155,7 @@ def parse_data(ctx, pcapfile):
     """extract useful informations from the PCAP
         Returns a pandas dataframe
     """
+    # print("Parsing pcap.")
     result = ctx.run(
         f"tshark -r {pcapfile} -Tfields -E separator='%' "
         "-e frame.time_epoch -e frame.len -e udp.srcport -e quic.stream.stream_id -e quic.frame_type",
@@ -171,9 +172,29 @@ def parse_data(ctx, pcapfile):
 
     return data
 
+def parse_unshaped(ctx, pcapfile):
+    """Parse a trace for a capture with CSDEF_NO_SHAPING
+    """
+    result = ctx.run(
+        f"tshark -r {pcapfile} -Tfields -E separator=',' "
+        "-e frame.time_epoch -e frame.len -e udp.srcport",
+        hide="stdout")
+
+    csv = StringIO(result.stdout)
+    data = pd.read_csv(
+        csv, header=None, names=["timestamp", "size", "udp.port"])
+    assert not (data["size"] > 1600).any()
+
+    # Zero the timestamps
+    data = data.sort_values(by="timestamp")
+    data["timestamp"] -= data.loc[0, "timestamp"]
+
+    return data
+
 def plot_server_dummy(data_rx, ax):
     """ Plots the dummy packets from the server (RX) side
     """
+    # print("plot server dummy")
     dummy_mask = data_rx["quic.stream_id"].isin(DUMMYSTREAMS)
     data_dummy = data_rx.loc[dummy_mask]
     # data_dummy["size"] = data_dummy["size"].abs()
@@ -189,10 +210,11 @@ def plot_server_dummy(data_rx, ax):
     # plot data+dummy
 
     # set the bottoms for multiple bars
-    bottoms = np.zeros(len(binned_rx))
-    bottoms[:len(binned)] = binned["size"]
-    ax[1].bar(binned["bins"], binned["size"], width=0.04, color=PALETTE["orange"])
-    ax[1].bar(binned_rx["bins"], binned_rx["size"], width=0.04, bottom=bottoms, color=PALETTE["blue"])
+    dim = max(len(binned_rx), len(binned))
+    bottoms = np.zeros(dim)
+    bottoms[:len(binned)] = binned_rx["size"]
+    ax[1].bar(binned_rx["bins"], binned_rx["size"], width=0.04, color=PALETTE["blue"])
+    ax[1].bar(binned["bins"], binned["size"], width=0.04, bottom=bottoms, color=PALETTE["orange"])
 
 
     return ax
@@ -200,6 +222,7 @@ def plot_server_dummy(data_rx, ax):
 def plot_client_dummy(data_tx, ax):
     """ Plot dummy 
     """
+    # print("plot client dummy")
     # TODO get also padding in other packets with regex (\W(0)\W)|(\A0)|(\W0\Z)
     pad_mask = data_tx["quic.frame_type"] == '0'
     data_pad = data_tx.loc[pad_mask]
@@ -213,16 +236,38 @@ def plot_client_dummy(data_tx, ax):
 
     # plot data+dummy
     # set the bottoms for multiple bars
-    bottoms = np.zeros(len(binned_tx))
-    bottoms[:len(binned)] = binned["size"]
-    ax[1].bar(binned["bins"], binned["size"], width=0.04, color=PALETTE["rosepink"])
-    ax[1].bar(binned_tx["bins"], binned_tx["size"], width=0.04, bottom=bottoms, color=PALETTE["blue"])
+    dim = max(len(binned_tx), len(binned))
+    bottoms = np.zeros(dim)
+    bottoms[:len(binned_tx)] = binned_tx["size"]
+    ax[1].bar(binned_tx["bins"], binned_tx["size"], width=0.04, color=PALETTE["blue"])
+    ax[1].bar(binned["bins"], binned["size"], width=0.04, bottom=bottoms, color=PALETTE["rosepink"])
 
 
     return ax
 
+def plot_unshaped(data, ax):
+    # Set the direction
+    outgoing_mask = (data[["udp.port"]]
+                     .isin(SERVER_PORTS).any(axis=1))
+    data["dir"] = 1
+    data.loc[outgoing_mask, "dir"] = -1
+
+    # Create signed packet sizes
+    data["size"] *= data["dir"]
+
+    data_rx = data.loc[outgoing_mask]
+    data_tx = data.loc[~outgoing_mask]
+
+    binned_tx = make_binned(data_tx, RATE)
+    binned_rx = make_binned(data_rx, RATE)
+
+    ax[2].bar(binned_tx["bins"], binned_tx["size"], width=0.04, color=PALETTE["blue"])
+    ax[2].bar(binned_rx["bins"], binned_rx["size"], width=0.04, color=PALETTE["blue"])
+
+    return ax
+
 def make_binned(data, rate, keepZeros=False): 
-    binned = data.copy() 
+    binned = data.copy()
     bins = np.arange(0, np.ceil(binned["timestamp"].max()), rate) 
     binned["bins"] =  pd.cut(binned["timestamp"], bins=bins, right=False, labels=bins[:-1]) 
     binned = binned.groupby("bins")["size"].sum() 
@@ -233,13 +278,13 @@ def make_binned(data, rate, keepZeros=False):
     return binned
 
 @task
-def plot_dummy(ctx, pcapfile):
+def plot_dummy(ctx, pcapfile, pcapfile_unshaped):
     """Plots the dummy traffic from a PCAP trace
-
     """
 
     data = parse_data(ctx, pcapfile)
-
+    data_unshaped = parse_unshaped(ctx, pcapfile_unshaped)
+    # print("filtering rx and tx traffic")
     # Set the direction
     outgoing_mask = (data[["udp.port"]]
                      .isin(SERVER_PORTS).any(axis=1))
@@ -257,14 +302,26 @@ def plot_dummy(ctx, pcapfile):
     ax[0].set_title("Dummy Trace")
     ax[0].set_facecolor('0.85')
     ax[0].grid(color='w', linewidth=1)
+    ax[0].set_axisbelow(True)
+    ax[0].hlines(0.0, -0.1, data_unshaped["timestamp"].max(), linewidth=1, color='w')
+
     ax[1].set_title("Trace with dummy packets")
     ax[1].set_facecolor('0.85')
     ax[1].grid(color='w', linewidth=1)
+    ax[1].set_axisbelow(True)
+    ax[1].hlines(0.0, -0.1, data["timestamp"].max(), linewidth=1, color='w')
+
     ax[2].set_title("Unshaped Trace")
     ax[2].set_facecolor('0.85')
     ax[2].grid(color='w', linewidth=1)
+    ax[2].set_axisbelow(True)
+    ax[2].hlines(0.0, -0.1, data_unshaped["timestamp"].max(), linewidth=1, color='w')
     # plots server
     plot_server_dummy(data_rx, ax)
+    # plot client
     plot_client_dummy(data_tx, ax)
+    # plot unshaped
+    plot_unshaped(data_unshaped, ax)
+
     # Plot the graph
     plt.show()
