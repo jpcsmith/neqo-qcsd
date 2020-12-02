@@ -39,11 +39,11 @@ use crate::{Error, Res};
 const DEBUG_SAMPLE_TRACE: &str = "../data/pad-trace-n2202-w1.csv";
 const SIGNAL_INTERVAL: u32 = 1;
 // const DEBUG_DUMMY_PATH: &str = "https://host.docker.internal:7443/img/2nd-big-item.jpg";
-const DEBUG_DUMMY_URLS: [&str; 5] = ["https://host.docker.internal:7443/img/2nd-big-item.jpg",
-                                    "https://host.docker.internal:7443/css/bootstrap.min.css",
-                                    "https://host.docker.internal:7443/img/3rd-item.jpg",
-                                    "https://host.docker.internal:7443/img/4th-item.jpg",
-                                    "https://host.docker.internal:7443/img/5th-item.jpg"];
+const DEBUG_DUMMY_URLS: [&str; 5] = ["https://vanilla.neqo-test.com:7443/img/2nd-big-item.jpg",
+                                    "https://vanilla.neqo-test.com:7443/css/bootstrap.min.css",
+                                    "https://vanilla.neqo-test.com:7443/img/3rd-item.jpg",
+                                    "https://vanilla.neqo-test.com:7443/img/4th-item.jpg",
+                                    "https://vanilla.neqo-test.com:7443/img/5th-item.jpg"];
 
 
 // This is used for filtering send_streams and recv_Streams with a stream_ids greater than or equal a given id.
