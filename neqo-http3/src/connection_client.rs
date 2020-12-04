@@ -349,12 +349,12 @@ impl Http3Client {
                                     "Successfully created shaping stream id {} for resource {}",
                                     pad_id, pad_url
                                 );
-                                // save id
+                                // save id and url
                                 self.flow_shaper
                                     .as_ref()
                                     .unwrap()
-                                    .borrow_mut()
-                                    .on_new_padding_stream(pad_id);
+                                    .borrow()
+                                    .on_new_padding_stream(pad_id, pad_url);
                             },
                             Err(e) => {
                                 panic!("Can't open dummy stream {}", e);
@@ -433,7 +433,7 @@ impl Http3Client {
         // notify flow_shaper of the new stream
         match &self.flow_shaper {
             Some(shaper) => {
-                shaper.borrow_mut().on_stream_created(id);
+                shaper.borrow().on_stream_created(id);
             },
             None => {
                 panic!("Tried to add a padding stream without a flow_shaper.");
@@ -736,11 +736,38 @@ impl Http3Client {
     fn check_flow_shaping_events(&mut self) {
         qtrace!([self], "Check FlowShaping events");
         if let Some(shaper) = self.flow_shaper.clone(){
-            while let Some(e) = shaper.borrow_mut().next_application_event() {
+            while let Some(e) = shaper.borrow().next_application_event() {
                 qdebug!([self], "check_flow_shaping_events - event {:?}.", e);
                 match e {
                     FlowShapingEvent::CloseConnection => {
                         self.close(Instant::now(), 0, "kthx4shaping!");
+                    },
+                    FlowShapingEvent::ReopenStream(url) => {
+                        let headers: Header = (String::new(),String::new()); // TODO (ldolfi): figure out headers
+                        match self.fetch_dummy(
+                            Instant::now(),
+                            "GET",
+                            &url.scheme(),
+                            &url.host_str().unwrap(),
+                            &url.path(),
+                            &[headers]
+                        ) {
+                            Ok(stream_id) => {
+                                println!(
+                                    "Successfully created shaping stream id {} for resource {}",
+                                    stream_id, url
+                                );
+                                // save id and url
+                                self.flow_shaper
+                                    .as_ref()
+                                    .unwrap()
+                                    .borrow()
+                                    .on_new_padding_stream(stream_id, url);
+                            },
+                            Err(e) => {
+                                panic!("Can't open dummy stream {}", e);
+                            }
+                        }
                     },
                     _ => {}
                 };

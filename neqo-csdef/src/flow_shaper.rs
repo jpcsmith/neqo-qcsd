@@ -8,6 +8,7 @@ use std::cmp::max;
 use std::cell::RefCell;
 use rand::Rng; // for rayleigh sampling
 use std::fmt::Display;
+use url::Url;
 
 use neqo_common::{
     qdebug, qinfo, qlog::NeqoQlog, qtrace, qwarn
@@ -89,6 +90,7 @@ pub enum FlowShapingEvent {
     SendMaxStreamData { stream_id: u64, new_limit: u64 },
     SendPaddingFrames(u32),
     CloseConnection,
+    ReopenStream(Url),
 }
 
 #[derive(Debug, Default)]
@@ -163,12 +165,16 @@ impl FlowShapingApplicationEvents {
         self.insert(FlowShapingEvent::CloseConnection)
     }
 
+    pub(self) fn reopen_stream(&self, url: Url) {
+        self.insert(FlowShapingEvent::ReopenStream(url))
+    }
+
     fn insert(&self, event: FlowShapingEvent) {
         self.events.borrow_mut().push_back(event);
     }
 
     #[must_use]
-    pub fn next_event(&mut self) -> Option<FlowShapingEvent> {
+    pub fn next_event(&self) -> Option<FlowShapingEvent> {
         self.events.borrow_mut().pop_front()
     }
 
@@ -181,23 +187,23 @@ impl FlowShapingApplicationEvents {
 #[derive(Debug, Default)]
 struct FlowShapingStreams {
     // Hash set keeping track of stream ids of streams currently being shaped
-    streams: RefCell<HashSet<u64>>,
+    streams: RefCell<HashMap<u64, Url>>,
     max_stream_datas: RefCell<HashMap<u64,u64>>,
 }
 
 impl FlowShapingStreams {
     // add a padding stream to the shaping streams
-    pub(self) fn add_padding_stream(&self, stream_id: u64) -> bool {
-        self.streams.borrow_mut().insert(stream_id)
+    pub(self) fn add_padding_stream(&self, stream_id: u64, dummy_url: Url) -> bool {
+        self.streams.borrow_mut().insert(stream_id, dummy_url).is_none()
     }
 
-    pub(self) fn remove_dummy_stream(&self, stream_id: &u64) -> bool {
+    pub(self) fn remove_dummy_stream(&self, stream_id: &u64) -> Option<Url> {
         self.max_stream_datas.borrow_mut().remove(stream_id);
         self.streams.borrow_mut().remove(stream_id)
     }
 
     pub(self) fn contains(&self, stream_id: u64) -> bool {
-        self.streams.borrow().contains(&stream_id)
+        self.streams.borrow().contains_key(&stream_id)
     }
 
     pub(self) fn insert(&self, stream_id: u64, max_stream_data: u64) -> Option<u64> {
@@ -317,7 +323,7 @@ impl FlowShaper {
                 // TODO (ldolfi): use all shaping streams
                 let num_dummy_streams = self.shaping_streams.len();
                 match self.shaping_streams.streams.borrow().iter().next() {
-                    Some(id) => {
+                    Some((id, _)) => {
                         let stream_id = StreamId::new(*id);
                         if let Some(max_stream_data) = self.shaping_streams
                                                            .max_stream_datas
@@ -550,20 +556,26 @@ impl FlowShaper {
     ///
     /// Assumes that no events have been dequeud since the call of the
     /// associated `on_new_stream` call for the `stream_id`.
-    pub fn on_new_padding_stream(&self, stream_id: u64) {
+    pub fn on_new_padding_stream(&self, stream_id: u64, dummy_url: Url) {
         assert!(self.events.cancel_max_stream_data(StreamId::new(stream_id)));
         qdebug!([self], "Removed max stream data event from stream {}", stream_id);
-        self.add_padding_stream(stream_id);
+        self.add_padding_stream(stream_id, dummy_url);
     }
 
-    pub fn add_padding_stream(&self, stream_id: u64) {
-        assert!(self.shaping_streams.add_padding_stream(stream_id));
+    pub fn add_padding_stream(&self, stream_id: u64, dummy_url: Url) {
+        assert!(self.shaping_streams.add_padding_stream(stream_id, dummy_url));
         assert!(self.shaping_streams.insert(stream_id, 0).is_none());
     }
 
-    pub fn remove_dummy_stream(&self, stream_id: u64) {
-        assert!(self.shaping_streams.remove_dummy_stream(&stream_id));
+    pub fn remove_dummy_stream(&self, stream_id: u64) -> Url{
+        let dummy_url = self.shaping_streams.remove_dummy_stream(&stream_id);
+        assert!(dummy_url.is_some());
         qdebug!("Removed dummy stream {} after receiving FIN", stream_id);
+        return dummy_url.unwrap()
+    }
+
+    pub fn reopen_dummy_stream(&self, dummy_url: Url) {
+        self.application_events.reopen_stream(dummy_url);
     }
 
     // returns true if the stream_id is contained in the set of streams
@@ -581,7 +593,7 @@ impl FlowShaper {
         self.events.has_events()
     }
 
-    pub fn next_application_event(&mut self) -> Option<FlowShapingEvent> {
+    pub fn next_application_event(&self) -> Option<FlowShapingEvent> {
         self.application_events.next_event()
     }
 

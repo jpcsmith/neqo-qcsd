@@ -846,13 +846,8 @@ impl Connection {
                     },
                     FlowShapingEvent::SendPaddingFrames(pad_size) => {
                         self.shaper_padding += pad_size;
-                    },
-                    FlowShapingEvent::CloseConnection => {
-                        let st = State::Closed(ConnectionError::Application(0x100));
-                        self.set_state(st);
-                        qinfo!("Closing shaper expired");
-                        return;
                     }
+                    _ => {}
                 };
             }
         }
@@ -2041,7 +2036,9 @@ impl Connection {
                     && self.is_being_shaped()
                     && self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(stream_id.as_u64())
                 {
-                    self.flow_shaper.as_ref().unwrap().borrow().remove_dummy_stream(stream_id.as_u64());
+                    let dummy_url = self.flow_shaper.as_ref().unwrap().borrow().remove_dummy_stream(stream_id.as_u64());
+                    // and immediately reopen
+                    self.flow_shaper.as_ref().unwrap().borrow().reopen_dummy_stream(dummy_url);
                 }
                 if let (_, Some(rs)) = self.obtain_stream(stream_id)? {
                     rs.inbound_stream_frame(fin, offset, data)?;
