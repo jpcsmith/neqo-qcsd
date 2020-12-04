@@ -212,9 +212,9 @@ def plot_server_dummy(data_rx, ax):
     # set the bottoms for multiple bars
     dim = max(len(binned_rx), len(binned))
     bottoms = np.zeros(dim)
-    bottoms[:len(binned)] = binned_rx["size"]
+    bottoms[:len(binned_rx)] = binned_rx["size"]
     ax[1].bar(binned_rx["bins"], binned_rx["size"], width=0.04, color=PALETTE["blue"])
-    ax[1].bar(binned["bins"], binned["size"], width=0.04, bottom=bottoms, color=PALETTE["orange"])
+    ax[1].bar(binned["bins"], binned["size"], width=0.04, bottom=bottoms[:len(binned)], color=PALETTE["orange"])
 
 
     return ax
@@ -240,7 +240,7 @@ def plot_client_dummy(data_tx, ax):
     bottoms = np.zeros(dim)
     bottoms[:len(binned_tx)] = binned_tx["size"]
     ax[1].bar(binned_tx["bins"], binned_tx["size"], width=0.04, color=PALETTE["blue"], label="Normal packets")
-    ax[1].bar(binned["bins"], binned["size"], width=0.04, bottom=bottoms, color=PALETTE["rosepink"], label="Dummy packets")
+    ax[1].bar(binned["bins"], binned["size"], width=0.04, bottom=bottoms[:len(binned)], color=PALETTE["rosepink"], label="Dummy packets")
 
 
     return ax
