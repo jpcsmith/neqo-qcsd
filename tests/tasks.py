@@ -239,8 +239,8 @@ def plot_client_dummy(data_tx, ax):
     dim = max(len(binned_tx), len(binned))
     bottoms = np.zeros(dim)
     bottoms[:len(binned_tx)] = binned_tx["size"]
-    ax[1].bar(binned_tx["bins"], binned_tx["size"], width=0.04, color=PALETTE["blue"])
-    ax[1].bar(binned["bins"], binned["size"], width=0.04, bottom=bottoms, color=PALETTE["rosepink"])
+    ax[1].bar(binned_tx["bins"], binned_tx["size"], width=0.04, color=PALETTE["blue"], label="Normal packets")
+    ax[1].bar(binned["bins"], binned["size"], width=0.04, bottom=bottoms, color=PALETTE["rosepink"], label="Dummy packets")
 
 
     return ax
@@ -304,18 +304,22 @@ def plot_dummy(ctx, pcapfile, pcapfile_unshaped):
     ax[0].grid(color='w', linewidth=1)
     ax[0].set_axisbelow(True)
     ax[0].hlines(0.0, -0.1, data_unshaped["timestamp"].max(), linewidth=1, color='w')
+    ax[0].set_ylabel("Bytes")
 
     ax[1].set_title("Trace with dummy packets")
     ax[1].set_facecolor('0.85')
     ax[1].grid(color='w', linewidth=1)
     ax[1].set_axisbelow(True)
     ax[1].hlines(0.0, -0.1, data["timestamp"].max(), linewidth=1, color='w')
+    ax[1].set_ylabel("Bytes")
 
     ax[2].set_title("Unshaped Trace")
     ax[2].set_facecolor('0.85')
     ax[2].grid(color='w', linewidth=1)
     ax[2].set_axisbelow(True)
     ax[2].hlines(0.0, -0.1, data_unshaped["timestamp"].max(), linewidth=1, color='w')
+    ax[2].set_xlabel("Time [seconds]")
+    ax[2].set_ylabel("Bytes")
     # plots server
     plot_server_dummy(data_rx, ax)
     # plot client
