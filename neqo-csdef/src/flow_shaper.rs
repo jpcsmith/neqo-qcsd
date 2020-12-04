@@ -19,7 +19,7 @@ use crate::stream_id::StreamId;
 
 const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
 
-const DEBUG_PAD_PACKET_SIZE: i32 = 450;
+const DEBUG_PAD_PACKET_SIZE: i32 = 650;
 
 // The value below is taken from the QUIC Connection class and defines the 
 // buffer that is allocated for receiving data.
@@ -76,11 +76,11 @@ pub fn load_trace(filename: &str) -> Result<Trace, TraceLoadError> {
 }
 
 // TODO(ldolfi): possibly use rgsl.randist.rayleigh
-fn rayleigh_cdf_inv(u: f64, sigma: u64) -> f64{
+fn rayleigh_cdf_inv(u: f64, sigma: f64) -> f64{
     let foo = (1.-u).ln();
     let bar = (-2.*foo).sqrt();
 
-    return (sigma as f64)*bar;
+    return sigma*bar;
 }
 
 
@@ -245,7 +245,7 @@ pub struct FlowShaper {
     application_events: FlowShapingApplicationEvents,
 
     // padding parameters
-    padding_params: HashMap <String, u64>,
+    padding_params: HashMap <String, f64>,
     pad_out_target: VecDeque <(u32, u32)>,
     pad_in_target: VecDeque <(u32, u32)>,
     shaping_streams: FlowShapingStreams,
@@ -419,20 +419,20 @@ impl FlowShaper {
 
     // Return the default values for padding trace
     // currently set to parametrs in Gong2020
-    pub fn pparam_defaults() -> [(String, u64); 4] {
+    pub fn pparam_defaults() -> [(String, f64); 4] {
         [
             // Client's padding budget in number of packets
-            ("pad_client_max_n".to_string(), 2500),
+            ("pad_client_max_n".to_string(), 2500.0),
             // minimum padding time in seconds
-            ("pad_max_w".to_string(), 3),
+            ("pad_max_w".to_string(), 0.75),
             // maximum padding time in seconds
-            ("pad_min_w".to_string(), 1),
+            ("pad_min_w".to_string(), 0.1),
             // Client's padding budget in number of packets
-            ("pad_server_max_n".to_string(), 2500),
+            ("pad_server_max_n".to_string(), 2500.0),
         ]
     }
 
-    pub fn set_padding_param(&mut self, k: String, v: u64) {
+    pub fn set_padding_param(&mut self, k: String, v: f64) {
         self.padding_params.insert(k,v);
     }
 
@@ -442,7 +442,7 @@ impl FlowShaper {
         let mut schedule = Vec::new();
         // get params
         let cpacket_budget = match self.padding_params.get("pad_client_max_n") {
-            Some(v) => v,
+            Some(v) => *v as u64,
             None => return Err(TraceLoadError::Parse("padding parameter not found".to_string()))
         };
         let min_w = match self.padding_params.get("pad_min_w") {
@@ -454,12 +454,12 @@ impl FlowShaper {
             None => return Err(TraceLoadError::Parse("padding parameter not found".to_string()))
         };
         let spacket_budget = match self.padding_params.get("pad_server_max_n") {
-            Some(v) => v,
+            Some(v) => *v as u64,
             None => return Err(TraceLoadError::Parse("padding parameter not found".to_string()))
         };
         // sample n_C and w_c
         let _n_c: u64 = rand::thread_rng().gen_range(1,cpacket_budget+1);
-        let _w_c: u64 = rand::thread_rng().gen_range(*min_w,max_w+1);
+        let _w_c: f64 = rand::thread_rng().gen_range(*min_w,*max_w);
         println!("n_c: {}\tw_c: {}", _n_c, _w_c);
         // sample timetable
         let mut count = 0u64;
@@ -473,7 +473,7 @@ impl FlowShaper {
         }
         // sample n_s
         let _n_s: u64 = rand::thread_rng().gen_range(1,spacket_budget+1);
-        let _w_s: u64 = rand::thread_rng().gen_range(*min_w,max_w+1);
+        let _w_s: f64 = rand::thread_rng().gen_range(*min_w,*max_w);
         println!("n_s: {}\tw_s: {}", _n_s, _w_s);
         // sample timetable
         count = 0;
@@ -482,7 +482,9 @@ impl FlowShaper {
             count += 1;
             let u: f64 = rand::thread_rng().gen_range(0.,1.);
             t = rayleigh_cdf_inv(u, _w_s);
-            schedule.push((Duration::from_secs_f64(t), -DEBUG_PAD_PACKET_SIZE as i32));
+            if t >= 0.05 {
+                schedule.push((Duration::from_secs_f64(t), -DEBUG_PAD_PACKET_SIZE as i32));
+            }
             // println!("{}.  {}", count, t);
         }
 

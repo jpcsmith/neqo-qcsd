@@ -298,7 +298,7 @@ def plot_dummy(ctx, pcapfile, pcapfile_unshaped):
     data_tx = data.loc[~outgoing_mask]
 
     # Prepare the graph
-    fig, ax = plt.subplots(3, 1, sharex=True, sharey=False)
+    fig, ax = plt.subplots(3, 1, sharex=True, sharey=True)
     ax[0].set_title("Dummy Trace")
     ax[0].set_facecolor('0.85')
     ax[0].grid(color='w', linewidth=1)

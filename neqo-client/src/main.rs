@@ -335,6 +335,8 @@ impl<'a> Handler<'a> {
                 self.streams.insert(8, None);
                 self.streams.insert(12, None);
                 self.streams.insert(16, None);
+                self.streams.insert(140, None);
+                self.streams.insert(144, None);
                 
                 break;
             }
