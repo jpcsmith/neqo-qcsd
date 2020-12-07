@@ -84,7 +84,7 @@ fn rayleigh_cdf_inv(u: f64, sigma: f64) -> f64{
 }
 
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum FlowShapingEvent {
     SendMaxData(u64),
     SendMaxStreamData { stream_id: u64, new_limit: u64 },
@@ -97,7 +97,14 @@ pub enum FlowShapingEvent {
 struct FlowShapingEvents {
     // This is in a RefCell to allow borrowing a mutable reference in an
     // immutable context
-    events: RefCell<VecDeque<FlowShapingEvent>>
+    events: RefCell<VecDeque<FlowShapingEvent>>,
+    queue: RefCell<VecDeque<FlowShapingEvent>>
+}
+
+impl Display for FlowShapingEvents {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "QCD FlowShapinEvents")
+    }
 }
 
 impl FlowShapingEvents {
@@ -123,6 +130,36 @@ impl FlowShapingEvents {
         self.events.borrow_mut().push_back(event);
     }
 
+    pub(self) fn remove_by_id(&self, id: &u64) {
+        qdebug!([self], "Removing events for stream {}", *id);
+        // queue events not yet consumed
+        let mut queue = VecDeque::<u64>::new();
+        for e in self.events.borrow_mut().iter() {
+            match e {
+                FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit } => {
+                    if *stream_id == *id {
+                        queue.push_back(*new_limit);
+                    }
+                },
+                _ => {}
+            }
+        }
+        // add max MSd to queue
+        let new_limit = queue.iter().max();
+        match new_limit {
+            Some(lim) => self.queue.borrow_mut()
+                             .push_back(FlowShapingEvent::SendMaxStreamData{stream_id: *id, new_limit: *lim}),
+            None => {}
+        }
+        // remove events for id
+        self.events.borrow_mut().retain(|e| match e {
+            FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit } => {
+                *stream_id != *id
+            },
+            _ => true
+        });
+    }
+
     /// Pop the first max_stream_data event with the specified stream 
     /// id. Return true iff the event was found and removed.
     pub(self) fn cancel_max_stream_data(&self, stream_id: StreamId) -> bool {
@@ -143,13 +180,23 @@ impl FlowShapingEvents {
     }
 
     #[must_use]
-    pub fn next_event(&mut self) -> Option<FlowShapingEvent> {
+    pub fn next_event(&self) -> Option<FlowShapingEvent> {
         self.events.borrow_mut().pop_front()
     }
 
     #[must_use]
     pub fn has_events(&self) -> bool {
         !self.events.borrow().is_empty()
+    }
+
+    #[must_use]
+    pub fn has_queue_events(&self) -> bool {
+        !self.queue.borrow().is_empty()
+    }
+
+    #[must_use]
+    pub fn next_queued(&self) -> Option<FlowShapingEvent> {
+        self.queue.borrow_mut().pop_front()
     }
 }
 
@@ -422,7 +469,7 @@ impl FlowShaper {
     pub fn pparam_defaults() -> [(String, f64); 4] {
         [
             // Client's padding budget in number of packets
-            ("pad_client_max_n".to_string(), 2500.0),
+            ("pad_client_max_n".to_string(), 1700.0),
             // minimum padding time in seconds
             ("pad_max_w".to_string(), 0.75),
             // maximum padding time in seconds
@@ -562,6 +609,21 @@ impl FlowShaper {
         assert!(self.events.cancel_max_stream_data(StreamId::new(stream_id)));
         qdebug!([self], "Removed max stream data event from stream {}", stream_id);
         self.add_padding_stream(stream_id, dummy_url);
+        // if has queue events
+        while self.events.has_queue_events() {
+            match self.events.next_queued() {
+                Some(e) => {
+                    match e {
+                        FlowShapingEvent::SendMaxStreamData{ stream_id: _ , new_limit: lim } => {
+                            qdebug!([self], "Adding queues MSD to stream {} with new_limit {}", stream_id, lim);
+                            self.events.send_max_stream_data(StreamId::from(stream_id), lim);
+                        },
+                        _ => {}
+                    }
+                }
+                None => assert!(!self.events.has_queue_events())
+            }
+        }
     }
 
     pub fn add_padding_stream(&self, stream_id: u64, dummy_url: Url) {
@@ -570,6 +632,7 @@ impl FlowShaper {
     }
 
     pub fn remove_dummy_stream(&self, stream_id: u64) -> Url{
+        self.events.remove_by_id(&stream_id);
         let dummy_url = self.shaping_streams.remove_dummy_stream(&stream_id);
         assert!(dummy_url.is_some());
         qdebug!("Removed dummy stream {} after receiving FIN", stream_id);
@@ -586,7 +649,7 @@ impl FlowShaper {
         self.shaping_streams.contains(stream_id)
     }
 
-    pub fn next_event(&mut self) -> Option<FlowShapingEvent> {
+    pub fn next_event(&self) -> Option<FlowShapingEvent> {
         self.events.next_event()
     }
 
