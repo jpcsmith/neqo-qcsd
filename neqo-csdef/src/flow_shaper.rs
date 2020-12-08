@@ -19,7 +19,7 @@ use crate::stream_id::StreamId;
 
 const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
 
-const DEBUG_PAD_PACKET_SIZE: i32 = 650;
+const DEBUG_PAD_PACKET_SIZE: i32 = 1400;
 
 // The value below is taken from the QUIC Connection class and defines the 
 // buffer that is allocated for receiving data.
@@ -233,18 +233,27 @@ impl FlowShapingApplicationEvents {
 
 #[derive(Debug, Default)]
 struct FlowShapingStreams {
-    // Hash set keeping track of stream ids of streams currently being shaped
+    // HashMap keeping track of stream ids of streams currently being shaped
+    // For each id keeps the Url of dummy resource and flag indicating
+    // if the stream is ready to receive MSD
     streams: RefCell<HashMap<u64, Url>>,
+    is_open: RefCell<HashMap<u64, bool>>,
     max_stream_datas: RefCell<HashMap<u64,u64>>,
 }
 
 impl FlowShapingStreams {
     // add a padding stream to the shaping streams
     pub(self) fn add_padding_stream(&self, stream_id: u64, dummy_url: Url) -> bool {
+        self.is_open.borrow_mut().insert(stream_id, false);
         self.streams.borrow_mut().insert(stream_id, dummy_url).is_none()
     }
 
+    pub(self) fn open_stream(&self, stream_id: u64) -> bool {
+        self.is_open.borrow_mut().insert(stream_id, true).is_some()
+    }
+
     pub(self) fn remove_dummy_stream(&self, stream_id: &u64) -> Option<Url> {
+        self.is_open.borrow_mut().remove(stream_id);
         self.max_stream_datas.borrow_mut().remove(stream_id);
         self.streams.borrow_mut().remove(stream_id)
     }
@@ -259,6 +268,21 @@ impl FlowShapingStreams {
 
     pub(self) fn len(&self) -> usize {
         self.streams.borrow().len()
+    }
+
+    pub(self) fn is_open(&self, stream_id: u64) -> bool {
+        if let Some(open) = self.is_open.borrow().get(&stream_id) {
+            return *open;
+        } else {
+            return false;
+        }
+    }
+    // returns true if any of the shaping streams is open
+    pub(self) fn has_open(&self) -> bool {
+        for s in self.is_open.borrow().values() {
+            if *s {return true;}
+        }
+        false
     }
 
     // pub(self) fn get(&self, stream_id: StreamId) -> Option<&u64> {
@@ -361,28 +385,33 @@ impl FlowShaper {
             }
         }
         // dummy packets in
-        if let Some((ts, _)) = self.pad_in_target.front() {
-            let next = Duration::from_millis(u64::from(*ts));
-            if next < since_start {
-                let (_, size) = self.pad_in_target.pop_front()
-                    .expect("the deque to be non-empty");
-                
-                // TODO (ldolfi): use all shaping streams
-                let num_dummy_streams = self.shaping_streams.len();
-                match self.shaping_streams.streams.borrow().iter().next() {
-                    Some((id, _)) => {
-                        let stream_id = StreamId::new(*id);
-                        if let Some(max_stream_data) = self.shaping_streams
-                                                           .max_stream_datas
-                                                           .borrow_mut()
-                                                           .get_mut(id)
-                        {
-                            *max_stream_data += size as u64;
-                            self.events
-                                .send_max_stream_data(stream_id, *max_stream_data);
+        if self.shaping_streams.has_open() {
+            if let Some((ts, _)) = self.pad_in_target.front() {
+                let next = Duration::from_millis(u64::from(*ts));
+                if next < since_start {
+                    let (_, size) = self.pad_in_target.pop_front()
+                        .expect("the deque to be non-empty");
+
+                    // TODO (ldolfi): use all shaping streams
+                    // let num_dummy_streams = self.shaping_streams.len();
+
+                    // find first available dummy stream to transfer data
+                    for (id, _) in self.shaping_streams.streams.borrow().iter() {
+                        if self.shaping_streams.is_open(*id) {
+                            let stream_id = StreamId::new(*id);
+                            if let Some(max_stream_data) = self.shaping_streams
+                                                                .max_stream_datas
+                                                                .borrow_mut()
+                                                                .get_mut(id)
+                            {
+                                *max_stream_data += size as u64;
+                                self.events
+                                    .send_max_stream_data(stream_id, *max_stream_data);
+                            }
+                            break;
                         }
-                    },
-                    _ => { qwarn!([self], "Tried to shape but no shaping streams available.")}
+                    }
+                    
                 }
             }
         }
@@ -465,17 +494,17 @@ impl FlowShaper {
     }
 
     // Return the default values for padding trace
-    // currently set to parametrs in Gong2020
+    // 
     pub fn pparam_defaults() -> [(String, f64); 4] {
         [
             // Client's padding budget in number of packets
-            ("pad_client_max_n".to_string(), 1700.0),
+            ("pad_client_max_n".to_string(), 900.0),
             // minimum padding time in seconds
             ("pad_max_w".to_string(), 0.75),
             // maximum padding time in seconds
             ("pad_min_w".to_string(), 0.1),
             // Client's padding budget in number of packets
-            ("pad_server_max_n".to_string(), 2500.0),
+            ("pad_server_max_n".to_string(), 1200.0),
         ]
     }
 
@@ -592,11 +621,11 @@ impl FlowShaper {
     /// Queue events related to a new stream being created by this
     /// endpoint.
     pub fn on_stream_created(&self, stream_id: u64) {
-        let stream_id = StreamId::new(stream_id);
-        assert!(stream_id.is_client_initiated());
-
-        if stream_id.is_bidi() {
-            self.events.send_max_stream_data(stream_id, RX_STREAM_DATA_WINDOW);
+        let streamId = StreamId::new(stream_id);
+        assert!(streamId.is_client_initiated());
+        
+        if streamId.is_bidi() {
+            self.events.send_max_stream_data(streamId, RX_STREAM_DATA_WINDOW);
             qdebug!([self], "Added send_max_stream_data event to stream {} limit {}", stream_id, RX_STREAM_DATA_WINDOW);
         }
     }
@@ -629,6 +658,11 @@ impl FlowShaper {
     pub fn add_padding_stream(&self, stream_id: u64, dummy_url: Url) {
         assert!(self.shaping_streams.add_padding_stream(stream_id, dummy_url));
         assert!(self.shaping_streams.insert(stream_id, 0).is_none());
+    }
+
+    // signals that the stream is ready to receive MSD frames
+    pub fn open_for_shaping(&self, stream_id: u64) -> bool {
+        self.shaping_streams.open_stream(stream_id)
     }
 
     pub fn remove_dummy_stream(&self, stream_id: u64) -> Url{
