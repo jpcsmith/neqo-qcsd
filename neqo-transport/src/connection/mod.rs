@@ -839,9 +839,11 @@ impl Connection {
                         self.flow_mgr.borrow_mut().max_data(size);
                     },
                     FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit } => {
-                        if let (_, Some(rs)) = self.obtain_stream(StreamId::new(stream_id))
-                                                    .expect("Did not find padding stream") {
+                        // TODO change to queue the MSD if no stream is available
+                        if let Ok((_, Some(rs))) = self.obtain_stream(StreamId::new(stream_id)) {
                             rs.send_flowc_update(new_limit);
+                        } else {
+                            qwarn!([self], "Did not find dummy stream!");
                         }
                     },
                     FlowShapingEvent::SendPaddingFrames(pad_size) => {
@@ -1575,6 +1577,9 @@ impl Connection {
                     if !self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(StreamId::as_u64(*stream_id)) {
                         self.flow_shaper.as_ref().unwrap().borrow()
                             .on_stream_created(stream_id.as_u64());
+                    } else {
+                        assert!(self.flow_shaper.as_ref().unwrap().borrow()
+                            .open_for_shaping(stream_id.as_u64()));
                     }
                 }
             }

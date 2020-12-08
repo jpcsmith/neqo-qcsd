@@ -431,6 +431,7 @@ impl Http3Client {
             .map_err(|e| Error::map_stream_create_errors(&e))?;
 
         // notify flow_shaper of the new stream
+        // TODO(ldolfi): rethink why this needs to be here
         match &self.flow_shaper {
             Some(shaper) => {
                 shaper.borrow().on_stream_created(id);
