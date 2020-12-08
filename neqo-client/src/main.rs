@@ -326,10 +326,7 @@ impl<'a> Handler<'a> {
     fn download_urls(&mut self, client: &mut Http3Client) {
         loop {
             if self.url_queue.is_empty() {
-                // add one more request for padding then break
-                // let pad_url = Url::parse("https://host.docker.internal:7443/img/2nd-big-item.jpg");
-                // self.url_queue.push_back(pad_url.unwrap());
-                // self.download_next(client);
+                // The dummy streams
                 self.streams.insert(0, None);
                 self.streams.insert(4, None);
                 self.streams.insert(8, None);
@@ -337,7 +334,11 @@ impl<'a> Handler<'a> {
                 self.streams.insert(16, None);
                 self.streams.insert(140, None);
                 self.streams.insert(144, None);
-                
+                self.streams.insert(148, None);
+                self.streams.insert(152, None);
+                self.streams.insert(156, None);
+                self.streams.insert(160, None);
+                self.streams.insert(164, None);
                 break;
             }
             if !self.download_next(client) {
