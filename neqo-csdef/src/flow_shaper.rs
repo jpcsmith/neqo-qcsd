@@ -19,7 +19,7 @@ use crate::stream_id::StreamId;
 
 const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
 
-const DEBUG_PAD_PACKET_SIZE: i32 = 1400;
+const DEBUG_PAD_PACKET_SIZE: i32 = 700;
 
 // The value below is taken from the QUIC Connection class and defines the 
 // buffer that is allocated for receiving data.
@@ -176,6 +176,20 @@ impl FlowShapingEvents {
                 true
             },
             None => false
+        }
+    }
+
+
+    pub(self) fn drain_queue_with_id (&self, id: u64) {
+        while let Some(e) =  self.queue.borrow_mut().pop_front() {
+            match e {
+                FlowShapingEvent::SendMaxStreamData{ stream_id: _, new_limit} => {
+                    self.send_max_stream_data(StreamId::from(id), new_limit);
+                },
+                _ => {
+                    qwarn!([self], "Dequeueing events not implemented yet");
+                }
+            }
         }
     }
 
@@ -500,7 +514,7 @@ impl FlowShaper {
             // Client's padding budget in number of packets
             ("pad_client_max_n".to_string(), 900.0),
             // minimum padding time in seconds
-            ("pad_max_w".to_string(), 0.75),
+            ("pad_max_w".to_string(), 2.5),
             // maximum padding time in seconds
             ("pad_min_w".to_string(), 0.1),
             // Client's padding budget in number of packets
@@ -638,7 +652,10 @@ impl FlowShaper {
         assert!(self.events.cancel_max_stream_data(StreamId::new(stream_id)));
         qdebug!([self], "Removed max stream data event from stream {}", stream_id);
         self.add_padding_stream(stream_id, dummy_url);
-        // if has queue events
+        // Queued events should be drained immediately after closing stream
+        // this now is a double safety in case there were no open dummy
+        // streams when the last one was closed.
+        // TODO (ldolfi): use `drain_queue_with_id`
         while self.events.has_queue_events() {
             match self.events.next_queued() {
                 Some(e) => {
@@ -662,6 +679,7 @@ impl FlowShaper {
 
     // signals that the stream is ready to receive MSD frames
     pub fn open_for_shaping(&self, stream_id: u64) -> bool {
+        qdebug!([self], "Opening stream {} for shaping", stream_id);
         self.shaping_streams.open_stream(stream_id)
     }
 
@@ -669,6 +687,18 @@ impl FlowShaper {
         self.events.remove_by_id(&stream_id);
         let dummy_url = self.shaping_streams.remove_dummy_stream(&stream_id);
         assert!(dummy_url.is_some());
+        // check if there are orphaned events
+        // transfer the MSD events to a dummy stream currently open
+        if self.events.has_queue_events() && self.shaping_streams.has_open() {
+            // find first available dummy stream to transfer data
+            for (id, _) in self.shaping_streams.streams.borrow().iter() {
+                if self.shaping_streams.is_open(*id) {
+                    self.events.drain_queue_with_id(*id);
+                    break;
+                }
+            }
+        }
+
         qdebug!("Removed dummy stream {} after receiving FIN", stream_id);
         return dummy_url.unwrap()
     }
