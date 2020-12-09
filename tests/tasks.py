@@ -30,7 +30,7 @@ DEFAULT_NETLOC = {
 
 PCAPFILE = "data/lo0-ns1717-ws2-nc125-wc3.pcapng"
 SERVER_PORTS = [80, 443, 7443]
-DUMMYSTREAMS = ['0', '4', '8', '12', '16']
+DUMMYSTREAMS = ['0', '4', '8', '12', '16', '140', '144', '148', '152', '156', '160', '164']
 
 RATE = 0.05 #ms
 

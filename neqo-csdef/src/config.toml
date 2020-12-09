@@ -1,0 +1,11 @@
+# FlowShaper configs
+
+[debug]
+initial_MD = 3000
+rx_stream_data_window = 1048576
+local_MD = 4611686018427387903
+dummy_size = 700
+dummy_nc = 900
+dummy_ns = 1200
+dummy_maxw = 2.5
+dummy_minw = 0.1
