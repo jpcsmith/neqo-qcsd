@@ -9,6 +9,8 @@ use std::cell::RefCell;
 use rand::Rng; // for rayleigh sampling
 use std::fmt::Display;
 use url::Url;
+use serde::{Serialize, Deserialize};
+use toml::Value;
 
 use neqo_common::{
     qdebug, qinfo, qlog::NeqoQlog, qtrace, qwarn
@@ -27,6 +29,18 @@ const RX_STREAM_DATA_WINDOW: u64 = 0x10_0000; // 1MiB
 // taken from transport connection
 const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
 
+
+#[derive(Deserialize)]
+struct Config {
+    initial_MD: u64,
+    rx_stream_data_window: u64,
+    local_MD: u64,
+    dummy_size: u32,
+    dummy_nc: u32,
+    dummy_ns: u32,
+    dummy_maxw: f64,
+    dummy_minw: f64
+}
 
 #[derive(Debug)]
 pub enum TraceLoadError {
@@ -153,7 +167,7 @@ impl FlowShapingEvents {
         }
         // remove events for id
         self.events.borrow_mut().retain(|e| match e {
-            FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit } => {
+            FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit: _ } => {
                 *stream_id != *id
             },
             _ => true
@@ -514,7 +528,7 @@ impl FlowShaper {
             // Client's padding budget in number of packets
             ("pad_client_max_n".to_string(), 900.0),
             // minimum padding time in seconds
-            ("pad_max_w".to_string(), 2.5),
+            ("pad_max_w".to_string(), 1.25),
             // maximum padding time in seconds
             ("pad_min_w".to_string(), 0.1),
             // Client's padding budget in number of packets
