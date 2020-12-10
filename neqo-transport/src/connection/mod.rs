@@ -433,7 +433,7 @@ impl Connection {
 
         self.flow_shaper = Some(shaper.clone());
         // Set the transport parameters for the remote endpoint to obey
-        for (param, value) in FlowShaper::tparam_defaults().iter() {
+        for (param, value) in shaper.borrow().tparam_defaults().iter() {
             assert!(self.set_local_tparam(
                     *param, tparams::TransportParameter::Integer(*value)
             ).is_ok());

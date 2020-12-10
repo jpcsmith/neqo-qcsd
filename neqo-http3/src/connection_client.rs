@@ -161,7 +161,7 @@ impl Http3Client {
         ).expect("failed to load sample schedule")));
 
         // set padding aprameters
-        for (param, value) in FlowShaper::pparam_defaults().iter() {
+        for (param, value) in shaper.borrow().pparam_defaults().iter() {
             shaper.borrow_mut().set_padding_param(param.to_string(), *value);
         }
         // create padding traces
