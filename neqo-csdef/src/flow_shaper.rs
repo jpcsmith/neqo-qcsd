@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::fs;
 use std::io::{self, BufRead};
 use std::num;
 use std::time::{ Duration, Instant };
@@ -30,8 +31,14 @@ const RX_STREAM_DATA_WINDOW: u64 = 0x10_0000; // 1MiB
 const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
 
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Config {
+    debug: ConfigEntry,
+    t1: ConfigEntry,
+    t2: Option<ConfigEntry>
+}
+#[derive(Debug, Deserialize)]
+struct ConfigEntry {
     initial_MD: u64,
     rx_stream_data_window: u64,
     local_MD: u64,
@@ -327,6 +334,8 @@ impl FlowShapingStreams {
 /// and not the server.
 #[derive(Debug)]
 pub struct FlowShaper {
+    config: ConfigEntry,
+
     // The control interval
     interval: Duration,
 
@@ -483,12 +492,32 @@ impl FlowShaper {
             .collect();
         out_target.sort();
 
+        // load config
+        let toml_string = fs::read_to_string("/Users/luca/Documents/ETHZ2/Thesis/code/neqo-qcd/neqo-csdef/src/config.toml")
+                            .expect("Error reading config");
+        let config: Config = toml::from_str(&toml_string).expect("Could not parse toml.");
+        // let _foo: toml::Value = toml::from_str(&toml_string).expect("Could not parse toml");
+        // println!("{:?}", _foo);
+        // qdebug!("{:?}", _foo["debug"]);
+        // qdebug!("{:?}", _foo["t1"]);
+        // qdebug!("{:?}", _foo["debug"]["dummy_size"]);
+        
+        qdebug!("FLOWSHAPER dummy_size:\t{}", config.debug.dummy_size);
+        qdebug!("FLOWSHAPER dummy_maxw:\t{}", config.debug.dummy_maxw);
+        qdebug!("FLOWSHAPER dummy_minw:\t{}", config.debug.dummy_minw);
+        qdebug!("FLOWSHAPER dummy_ns:\t{}", config.debug.dummy_ns);
+        qdebug!("FLOWSHAPER dummy_ns:\t{}", config.debug.dummy_nc);
+
+        let config = config.debug;// change this for different options
+        let rx_max_data = config.initial_MD;
+
         FlowShaper{
+            config,
             interval,
             in_target: VecDeque::from(in_target),
             out_target: VecDeque::from(out_target),
             start_time: None,
-            rx_max_data: DEBUG_INITIAL_MAX_DATA,
+            rx_max_data,
             rx_progress: 0,
             events: FlowShapingEvents::default(),
             application_events: FlowShapingApplicationEvents::default(),
@@ -506,9 +535,9 @@ impl FlowShaper {
     }
 
     /// Return the initial values for transport parameters
-    pub fn tparam_defaults() -> [(u64, u64); 3] {
+    pub fn tparam_defaults(&self) -> [(u64, u64); 3] {
         [
-            (0x04, LOCAL_MAX_DATA),
+            (0x04, self.config.local_MD),
             // Disable the peer sending data on bidirectional streams openned
             // by this endpoint (initial_max_stream_data_bidi_local)
             (0x05, 20),
@@ -521,18 +550,19 @@ impl FlowShaper {
         ]
     }
 
+
     // Return the default values for padding trace
     // 
-    pub fn pparam_defaults() -> [(String, f64); 4] {
+    pub fn pparam_defaults(&self) -> [(String, f64); 4] {
         [
             // Client's padding budget in number of packets
-            ("pad_client_max_n".to_string(), 900.0),
+            ("pad_client_max_n".to_string(), self.config.dummy_nc.into()),
             // minimum padding time in seconds
-            ("pad_max_w".to_string(), 1.25),
+            ("pad_max_w".to_string(), self.config.dummy_maxw),
             // maximum padding time in seconds
-            ("pad_min_w".to_string(), 0.1),
+            ("pad_min_w".to_string(), self.config.dummy_minw),
             // Client's padding budget in number of packets
-            ("pad_server_max_n".to_string(), 1200.0),
+            ("pad_server_max_n".to_string(), self.config.dummy_ns.into()),
         ]
     }
 
@@ -572,7 +602,7 @@ impl FlowShaper {
             count += 1;
             let u: f64 = rand::thread_rng().gen_range(0.,1.);
             t = rayleigh_cdf_inv(u, _w_c);
-            schedule.push((Duration::from_secs_f64(t), DEBUG_PAD_PACKET_SIZE as i32));
+            schedule.push((Duration::from_secs_f64(t), self.config.dummy_size as i32));
             // println!("{}.  {}", count, t);
         }
         // sample n_s
@@ -587,7 +617,7 @@ impl FlowShaper {
             let u: f64 = rand::thread_rng().gen_range(0.,1.);
             t = rayleigh_cdf_inv(u, _w_s);
             if t >= 0.05 {
-                schedule.push((Duration::from_secs_f64(t), -DEBUG_PAD_PACKET_SIZE as i32));
+                schedule.push((Duration::from_secs_f64(t), -(self.config.dummy_size as i32)));
             }
             // println!("{}.  {}", count, t);
         }
@@ -653,8 +683,8 @@ impl FlowShaper {
         assert!(streamId.is_client_initiated());
         
         if streamId.is_bidi() {
-            self.events.send_max_stream_data(streamId, RX_STREAM_DATA_WINDOW);
-            qdebug!([self], "Added send_max_stream_data event to stream {} limit {}", stream_id, RX_STREAM_DATA_WINDOW);
+            self.events.send_max_stream_data(streamId, self.config.rx_stream_data_window);
+            qdebug!([self], "Added send_max_stream_data event to stream {} limit {}", stream_id, self.config.rx_stream_data_window);
         }
     }
 
