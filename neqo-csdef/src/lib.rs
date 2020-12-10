@@ -3,6 +3,7 @@ pub mod stream_id;
 
 use std::env;
 
+pub const DEBUG_SHAPER_CONFIG: &str = "/Users/luca/Documents/ETHZ2/Thesis/code/neqo-qcd/neqo-csdef/src/config.toml";
 
 /// Returns true iff the CSDEF_NO_SHAPING environment variable is set to a 
 /// non-empty string.
@@ -14,6 +15,13 @@ fn debug_disable_shaping_(env_key: &str) -> bool {
     match env::var(env_key) {
         Ok(s) => s != "",
         _ => false
+    }
+}
+
+pub fn shaper_config_file() -> String {
+    match env::var("CSDEF_SHAPER_CONFIG") {
+        Ok(s) => s,
+        _ => String::from(DEBUG_SHAPER_CONFIG)
     }
 }
 

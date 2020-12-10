@@ -156,7 +156,7 @@ impl Http3Client {
         qtrace!([self], "Enabling connection shaping.");
 
         // Load config
-        let toml_string = fs::read_to_string("/Users/luca/Documents/ETHZ2/Thesis/code/neqo-qcd/neqo-csdef/src/config.toml")
+        let toml_string = fs::read_to_string(neqo_csdef::shaper_config_file())
                             .expect("Error reading config");
         let config: Config = toml::from_str(&toml_string).expect("Could not parse toml.");
         // qdebug!([self],"dummy_size:\t{}", config.debug.dummy_size);
