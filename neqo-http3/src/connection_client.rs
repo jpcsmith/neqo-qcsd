@@ -24,7 +24,7 @@ use neqo_transport::{
     AppError, CongestionControlAlgorithm, Connection, ConnectionEvent, ConnectionId,
     ConnectionIdManager, Output, QuicVersion, StreamId, StreamType, ZeroRttState,
 };
-use neqo_csdef::flow_shaper::{ FlowShaper, FlowShapingEvent };
+use neqo_csdef::flow_shaper::{ FlowShaper, FlowShapingEvent, Config };
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::net::SocketAddr;
@@ -32,6 +32,8 @@ use std::rc::Rc;
 use std::time::{ Duration, Instant };
 
 use url::Url; // for parsing dummy url
+// use toml::from_str; /// for parsing flow_shaper config
+use std::fs;
 
 use crate::{Error, Res};
 
@@ -153,17 +155,30 @@ impl Http3Client {
     fn enable_shaping(&mut self) {
         qtrace!([self], "Enabling connection shaping.");
 
+        // Load config
+        let toml_string = fs::read_to_string("/Users/luca/Documents/ETHZ2/Thesis/code/neqo-qcd/neqo-csdef/src/config.toml")
+                            .expect("Error reading config");
+        let config: Config = toml::from_str(&toml_string).expect("Could not parse toml.");
+        // qdebug!([self],"dummy_size:\t{}", config.debug.dummy_size);
+        // qdebug!([self],"dummy_maxw:\t{}", config.debug.dummy_maxw);
+        // qdebug!([self],"dummy_minw:\t{}", config.debug.dummy_minw);
+        // qdebug!([self],"dummy_ns:\t{}", config.debug.dummy_ns);
+        // qdebug!([self],"dummy_ns:\t{}", config.debug.dummy_nc);
+
+        let config = config.debug; // change this for different config
+
         // TODO (ldolfi): change to new_with_padding_only
         // so pading is part of creation of shaper
         let shaper = Rc::new(RefCell::new(FlowShaper::new_from_file(
+            config,
             DEBUG_SAMPLE_TRACE,
             Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
         ).expect("failed to load sample schedule")));
 
         // set padding aprameters
-        for (param, value) in shaper.borrow().pparam_defaults().iter() {
-            shaper.borrow_mut().set_padding_param(param.to_string(), *value);
-        }
+        // for (param, value) in shaper.borrow().pparam_defaults().iter() {
+        //     shaper.borrow_mut().set_padding_param(param.to_string(), *value);
+        // }
         // create padding traces
         let pad_trace = shaper.borrow().new_padding_trace().unwrap();
         shaper.borrow_mut().set_padding_trace(Duration::from_millis(u64::from(SIGNAL_INTERVAL)),

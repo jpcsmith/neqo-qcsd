@@ -32,13 +32,13 @@ const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
 
 
 #[derive(Debug, Deserialize)]
-struct Config {
-    debug: ConfigEntry,
+pub struct Config {
+    pub debug: ConfigEntry,
     t1: ConfigEntry,
-    t2: Option<ConfigEntry>
+    pt2: Option<ConfigEntry>
 }
 #[derive(Debug, Deserialize)]
-struct ConfigEntry {
+pub struct ConfigEntry {
     initial_MD: u64,
     rx_stream_data_window: u64,
     local_MD: u64,
@@ -460,7 +460,7 @@ impl FlowShaper {
         }
     }
 
-    pub fn new(interval: Duration, trace: &Trace) -> FlowShaper {
+    pub fn new(config: ConfigEntry, interval: Duration, trace: &Trace) -> FlowShaper {
         assert!(trace.len() > 0);
 
         // Bin the trace
@@ -493,22 +493,13 @@ impl FlowShaper {
         out_target.sort();
 
         // load config
-        let toml_string = fs::read_to_string("/Users/luca/Documents/ETHZ2/Thesis/code/neqo-qcd/neqo-csdef/src/config.toml")
-                            .expect("Error reading config");
-        let config: Config = toml::from_str(&toml_string).expect("Could not parse toml.");
         // let _foo: toml::Value = toml::from_str(&toml_string).expect("Could not parse toml");
         // println!("{:?}", _foo);
         // qdebug!("{:?}", _foo["debug"]);
         // qdebug!("{:?}", _foo["t1"]);
         // qdebug!("{:?}", _foo["debug"]["dummy_size"]);
         
-        qdebug!("FLOWSHAPER dummy_size:\t{}", config.debug.dummy_size);
-        qdebug!("FLOWSHAPER dummy_maxw:\t{}", config.debug.dummy_maxw);
-        qdebug!("FLOWSHAPER dummy_minw:\t{}", config.debug.dummy_minw);
-        qdebug!("FLOWSHAPER dummy_ns:\t{}", config.debug.dummy_ns);
-        qdebug!("FLOWSHAPER dummy_ns:\t{}", config.debug.dummy_nc);
-
-        let config = config.debug;// change this for different options
+        // let config = Self::config_default();
         let rx_max_data = config.initial_MD;
 
         FlowShaper{
@@ -530,8 +521,21 @@ impl FlowShaper {
     }
 
     /// Create a new FlowShaper from a CSV trace file
-    pub fn new_from_file(filename: &str, interval: Duration) -> Result<Self, TraceLoadError> {
-        load_trace(filename).map(|trace| Self::new(interval, &trace))
+    pub fn new_from_file(config: ConfigEntry, filename: &str, interval: Duration) -> Result<Self, TraceLoadError> {
+        load_trace(filename).map(|trace| Self::new(config, interval, &trace))
+    }
+
+    fn config_default() -> ConfigEntry {
+        ConfigEntry {
+            initial_MD: 3000,
+            rx_stream_data_window: 1048576,
+            local_MD: 4611686018427387903,
+            dummy_size: 700,
+            dummy_nc: 900,
+            dummy_ns: 1200,
+            dummy_maxw: 2.5,
+            dummy_minw: 0.1
+        }
     }
 
     /// Return the initial values for transport parameters
@@ -566,7 +570,7 @@ impl FlowShaper {
         ]
     }
 
-    pub fn set_padding_param(&mut self, k: String, v: f64) {
+    pub fn set_dummy_param(&mut self, k: String, v: f64) {
         self.padding_params.insert(k,v);
     }
 
@@ -575,25 +579,13 @@ impl FlowShaper {
         qinfo!([self], "Creating padding traces.");
         let mut schedule = Vec::new();
         // get params
-        let cpacket_budget = match self.padding_params.get("pad_client_max_n") {
-            Some(v) => *v as u64,
-            None => return Err(TraceLoadError::Parse("padding parameter not found".to_string()))
-        };
-        let min_w = match self.padding_params.get("pad_min_w") {
-            Some(v) => v,
-            None => return Err(TraceLoadError::Parse("padding parameter not found".to_string()))
-        };
-        let max_w = match self.padding_params.get("pad_max_w") {
-            Some(v) => v,
-            None => return Err(TraceLoadError::Parse("padding parameter not found".to_string()))
-        };
-        let spacket_budget = match self.padding_params.get("pad_server_max_n") {
-            Some(v) => *v as u64,
-            None => return Err(TraceLoadError::Parse("padding parameter not found".to_string()))
-        };
+        let cpacket_budget = self.config.dummy_nc;
+        let min_w = self.config.dummy_minw;
+        let max_w = self.config.dummy_maxw;
+        let spacket_budget = self.config.dummy_ns;
         // sample n_C and w_c
-        let _n_c: u64 = rand::thread_rng().gen_range(1,cpacket_budget+1);
-        let _w_c: f64 = rand::thread_rng().gen_range(*min_w,*max_w);
+        let _n_c: u64 = rand::thread_rng().gen_range(1,(cpacket_budget+1).into());
+        let _w_c: f64 = rand::thread_rng().gen_range(min_w,max_w);
         println!("n_c: {}\tw_c: {}", _n_c, _w_c);
         // sample timetable
         let mut count = 0u64;
@@ -606,8 +598,8 @@ impl FlowShaper {
             // println!("{}.  {}", count, t);
         }
         // sample n_s
-        let _n_s: u64 = rand::thread_rng().gen_range(1,spacket_budget+1);
-        let _w_s: f64 = rand::thread_rng().gen_range(*min_w,*max_w);
+        let _n_s: u64 = rand::thread_rng().gen_range(1,(spacket_budget+1).into());
+        let _w_s: f64 = rand::thread_rng().gen_range(min_w,max_w);
         println!("n_s: {}\tw_s: {}", _n_s, _w_s);
         // sample timetable
         count = 0;
