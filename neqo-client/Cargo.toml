@@ -13,6 +13,7 @@ neqo-transport = { path = "./../neqo-transport" }
 neqo-common = { path="./../neqo-common" }
 neqo-http3 = { path = "./../neqo-http3" }
 neqo-qpack = { path = "./../neqo-qpack" }
+neqo-csdef = { path = "./../neqo-csdef" }
 structopt = "0.3.7"
 url = "1.7.2"
 qlog = "0.3.0"
