@@ -10,9 +10,11 @@ neqo-common = { path = "./../neqo-common" }
 neqo-crypto = { path = "./../neqo-crypto" }
 neqo-transport = { path = "./../neqo-transport" }
 neqo-qpack = { path = "./../neqo-qpack" }
+neqo-csdef = { path = "./../neqo-csdef" }
 log = {version = "0.4.0", default-features = false}
 smallvec = "1.0.0"
 qlog = "0.3.0"
+url = "1.7.2"
 
 [dev-dependencies]
 test-fixture = { path = "../test-fixture" }

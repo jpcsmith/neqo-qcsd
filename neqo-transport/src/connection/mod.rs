@@ -27,7 +27,7 @@ use neqo_crypto::{
     Agent, AntiReplay, AuthenticationStatus, Cipher, Client, HandshakeState, ResumptionToken,
     SecretAgentInfo, Server, ZeroRttChecker,
 };
-use neqo_csdef::flow_shaper::{ self, FlowShaper, Cmd as FsCmd };
+use neqo_csdef::flow_shaper::{ FlowShaper, FlowShapingEvent };
 
 use crate::addr_valid::{AddressValidation, NewTokenState};
 use crate::cc::CongestionControlAlgorithm;
@@ -73,9 +73,6 @@ pub const LOCAL_STREAM_LIMIT_BIDI: u64 = 16;
 pub const LOCAL_STREAM_LIMIT_UNI: u64 = 16;
 
 const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
-const DEBUG_SAMPLE_TRACE: &str = "../data/nytimes.csv";
-const SIGNAL_INTERVAL: u32 = 1;
-const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ZeroRttState {
@@ -278,7 +275,8 @@ pub struct Connection {
     quic_version: QuicVersion,
 
     // Added for flow shaping
-    flow_shaper: Option<FlowShaper>
+    flow_shaper: Option<Rc<RefCell<FlowShaper>>>,
+    shaper_padding: u32
 }
 
 impl Debug for Connection {
@@ -381,27 +379,12 @@ impl Connection {
     ) -> Res<Self> {
         let tphandler = Rc::new(RefCell::new(TransportParametersHandler::default()));
         Self::set_tp_defaults(&mut tphandler.borrow_mut().local);
-        if role == Role::Client && !neqo_csdef::debug_disable_shaping() {
-            tphandler.borrow_mut().local
-                .set_integer(tparams::INITIAL_MAX_DATA, DEBUG_INITIAL_MAX_DATA);
-        }
 
         let local_initial_source_cid = cid_manager.borrow_mut().generate_cid();
         tphandler.borrow_mut().local.set_bytes(
             tparams::INITIAL_SOURCE_CONNECTION_ID,
             local_initial_source_cid.to_vec(),
         );
-
-        let mut flow_shaper = None;
-        if role == Role::Client && !neqo_csdef::debug_disable_shaping() {
-            let trace = flow_shaper::load_trace(DEBUG_SAMPLE_TRACE)
-                    .expect("Load failed");
-            let mut shaper = FlowShaper::new(
-                Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
-                &trace);
-            shaper.start();
-            flow_shaper = Some(shaper);
-        }
 
         let crypto = Crypto::new(agent, protocols, tphandler.clone())?;
 
@@ -435,15 +418,31 @@ impl Connection {
             qlog: NeqoQlog::disabled(),
             release_resumption_token_timer: None,
             quic_version,
-            flow_shaper,
+            flow_shaper: None,
+            shaper_padding: 0u32,
         };
 
         c.stats.borrow_mut().init(format!("{}", c));
         Ok(c)
     }
 
-    /// Return true iff the connection has a FlowShaper, regardless as to 
+    /// Sets the FlowShaper to be used to shape the connection
+    pub fn set_flow_shaper(& mut self, shaper: &Rc<RefCell<FlowShaper>>) {
+        assert!(self.role == Role::Client);
+        assert!(self.state == State::Init, "FlowShaper can only be added while initialising.");
+
+        self.flow_shaper = Some(shaper.clone());
+        // Set the transport parameters for the remote endpoint to obey
+        for (param, value) in FlowShaper::tparam_defaults().iter() {
+            assert!(self.set_local_tparam(
+                    *param, tparams::TransportParameter::Integer(*value)
+            ).is_ok());
+        }
+    }
+
+    /// Return true iff the connection has a FlowShaper, regardless as to
     /// whether shaping has started.
+    #[must_use]
     pub fn is_being_shaped(&self) -> bool {
         self.flow_shaper.is_some()
     }
@@ -830,12 +829,29 @@ impl Connection {
         }
 
 
-        if let Some(shaper) = &mut self.flow_shaper {
-            shaper.process_timer(now)
-                .map(|cmd| match cmd {
-                    FsCmd::IncreaseMaxData(inc) => self.flow_mgr.borrow_mut()
-                        .increase_max_data_by(inc),
-                });
+        if let Some(ref shaper) = self.flow_shaper {
+            let shaper2 = shaper.clone();
+
+            shaper2.borrow_mut().process_timer(now);
+            while shaper2.borrow().has_events() {
+                match shaper2.borrow_mut().next_event().unwrap() {
+                    FlowShapingEvent::SendMaxData(size) => {
+                        self.flow_mgr.borrow_mut().max_data(size);
+                    },
+                    FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit } => {
+                        // TODO change to queue the MSD if no stream is available
+                        if let Ok((_, Some(rs))) = self.obtain_stream(StreamId::new(stream_id)) {
+                            rs.send_flowc_update(new_limit);
+                        } else {
+                            qwarn!([self], "Did not find dummy stream!");
+                        }
+                    },
+                    FlowShapingEvent::SendPaddingFrames(pad_size) => {
+                        self.shaper_padding += pad_size;
+                    }
+                    _ => {}
+                };
+            }
         }
 
         self.cleanup_streams();
@@ -911,6 +927,7 @@ impl Connection {
             if let Some(signal_time) = self.flow_shaper
                     .as_ref()
                     .expect("Being shaped but no shaper?")
+                    .borrow()
                     .next_signal_time()
             {
                 qtrace!([self], "Shape timer {:?}", signal_time);
@@ -1519,14 +1536,25 @@ impl Connection {
 
         // All useful frames are at least 2 bytes.
         while builder.len() + 2 < limit {
-            let remaining = limit - builder.len();
+            let mut remaining = limit - builder.len();
             // Try to get a frame from frame sources
             let mut frame = self.acks.get_frame(now, space);
             // If we are CC limited we can only send acks!
             if !profile.ack_only(space) {
+                
                 if frame.is_none() && space == PNSpace::ApplicationData && self.role == Role::Server
                 {
                     frame = self.state_signaling.send_done();
+                }
+                if frame.is_none() && space == PNSpace::ApplicationData && self.role == Role::Client {
+                    // add shaper padding before anything else
+                    let padd_frame = Frame::Padding;
+                    let padd_size = std::cmp::min(self.shaper_padding, remaining as u32);
+                    for _n in 0..padd_size {
+                        padd_frame.marshal(builder);
+                    }
+                    self.shaper_padding -= padd_size;
+                    remaining = limit - builder.len();
                 }
                 if frame.is_none() {
                     frame = self.crypto.streams.get_frame(space, remaining)
@@ -1542,10 +1570,26 @@ impl Connection {
                 }
             }
 
+            // Consider the stream as created 
+            // TODO(jsmith): 
+            if self.is_being_shaped() {
+                if let Some((Frame::Stream { stream_id, offset: 0, ..}, _)) = &frame {
+                    if !self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(StreamId::as_u64(*stream_id)) {
+                        self.flow_shaper.as_ref().unwrap().borrow()
+                            .on_stream_created(stream_id.as_u64());
+                    } else {
+                        assert!(self.flow_shaper.as_ref().unwrap().borrow()
+                            .open_for_shaping(stream_id.as_u64()));
+                    }
+                }
+            }
+
+
             if let Some((frame, token)) = frame {
                 ack_eliciting |= frame.ack_eliciting();
                 debug_assert_ne!(frame, Frame::Padding);
                 frame.marshal(builder);
+
                 if let Some(t) = token {
                     tokens.push(t);
                 }
@@ -1604,6 +1648,7 @@ impl Connection {
                 self.add_frames(&mut builder, *space, limit, &profile, now);
             if builder.is_empty() {
                 // Nothing to include in this packet.
+                // TODO (ldolfi): possible point where add just padding frames
                 encoder = builder.abort();
                 continue;
             }
@@ -1644,6 +1689,7 @@ impl Connection {
                 }
                 self.loss_recovery.on_packet_sent(sent);
             }
+            // needs_padding = true;
 
             if *space == PNSpace::Handshake {
                 if self.role == Role::Client {
@@ -1668,7 +1714,13 @@ impl Connection {
                     packets.resize(path.mtu(), 0);
                 }
                 self.loss_recovery.on_packet_sent(initial);
-            }
+            } 
+            // else {
+            //     if needs_padding {
+            //         qdebug!([self], "pad not Initial to path MTU {}", path.mtu());
+            //         packets.resize(path.mtu(), 0);
+            //     }
+            // }
             Ok(SendOption::Yes(path.datagram(packets)))
         }
     }
@@ -1984,6 +2036,15 @@ impl Connection {
                 data,
                 ..
             } => {
+                // eliminate immediately the dummy stream
+                if fin
+                    && self.is_being_shaped()
+                    && self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(stream_id.as_u64())
+                {
+                    let dummy_url = self.flow_shaper.as_ref().unwrap().borrow().remove_dummy_stream(stream_id.as_u64());
+                    // and immediately reopen
+                    self.flow_shaper.as_ref().unwrap().borrow().reopen_dummy_stream(dummy_url);
+                }
                 if let (_, Some(rs)) = self.obtain_stream(stream_id)? {
                     rs.inbound_stream_frame(fin, offset, data)?;
                 }
@@ -2485,6 +2546,7 @@ impl Connection {
                         self.events.clone(),
                     ),
                 );
+
                 new_id.as_u64()
             }
             StreamType::BiDi => {
@@ -2543,6 +2605,7 @@ impl Connection {
                         self.events.clone(),
                     ),
                 );
+
                 new_id.as_u64()
             }
         })

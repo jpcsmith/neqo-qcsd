@@ -501,6 +501,22 @@ impl RecvStream {
         }
     }
 
+    // Update the max_stream_data
+    pub fn send_flowc_update(&mut self, new_max_stream_data: u64) {
+        if let RecvStreamState::Recv {
+            max_bytes: _,
+            max_stream_data,
+            recv_buf: _,
+        } = &mut self.state
+        {
+            let new_max = max(*max_stream_data, new_max_stream_data);
+            *max_stream_data = new_max;
+            self.flow_mgr
+                .borrow_mut()
+                .max_stream_data(self.stream_id, new_max);
+        }
+    }
+
     pub fn max_stream_data(&self) -> Option<u64> {
         self.state.max_stream_data()
     }
