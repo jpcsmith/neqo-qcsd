@@ -1,4 +1,5 @@
 pub mod flow_shaper;
+pub mod stream_id;
 
 use std::env;
 

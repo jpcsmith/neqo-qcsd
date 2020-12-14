@@ -15,7 +15,7 @@ use crate::settings::HSettings;
 use crate::Header;
 use crate::RecvMessageEvents;
 use neqo_common::{
-    event::Provider as EventProvider, hex, hex_with_len, qdebug, qinfo, qlog::NeqoQlog, qtrace,
+    event::Provider as EventProvider, hex, hex_with_len, qdebug, qinfo, qwarn, qlog::NeqoQlog, qtrace,
     Datagram, Decoder, Encoder, Role,
 };
 use neqo_crypto::{agent::CertificateInfo, AuthenticationStatus, ResumptionToken, SecretAgentInfo};
@@ -24,13 +24,27 @@ use neqo_transport::{
     AppError, CongestionControlAlgorithm, Connection, ConnectionEvent, ConnectionId,
     ConnectionIdManager, Output, QuicVersion, StreamId, StreamType, ZeroRttState,
 };
+use neqo_csdef::flow_shaper::{ FlowShaper, FlowShapingEvent };
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{ Duration, Instant };
+
+use url::Url; // for parsing dummy url
 
 use crate::{Error, Res};
+
+
+const DEBUG_SAMPLE_TRACE: &str = "../data/pad-trace-n2202-w1.csv";
+const SIGNAL_INTERVAL: u32 = 1;
+// const DEBUG_DUMMY_PATH: &str = "https://host.docker.internal:7443/img/2nd-big-item.jpg";
+const DEBUG_DUMMY_URLS: [&str; 5] = ["https://vanilla.neqo-test.com:7443/img/2nd-big-item.jpg",
+                                    "https://vanilla.neqo-test.com:7443/css/bootstrap.min.css",
+                                    "https://vanilla.neqo-test.com:7443/img/3rd-item.jpg",
+                                    "https://vanilla.neqo-test.com:7443/img/4th-item.jpg",
+                                    "https://vanilla.neqo-test.com:7443/img/5th-item.jpg"];
+
 
 // This is used for filtering send_streams and recv_Streams with a stream_ids greater than or equal a given id.
 // Only the same type (bidirectional or unidirectionsl) streams are filtered.
@@ -76,6 +90,8 @@ pub struct Http3Client {
     base_handler: Http3Connection,
     events: Http3ClientEvents,
     push_handler: Rc<RefCell<PushController>>,
+
+    flow_shaper: Option<Rc<RefCell<FlowShaper>>>
 }
 
 impl Display for Http3Client {
@@ -112,9 +128,11 @@ impl Http3Client {
     }
 
     #[must_use]
-    pub fn new_with_conn(c: Connection, http3_parameters: &Http3Parameters) -> Self {
+    pub fn new_with_conn(
+        c: Connection, http3_parameters: &Http3Parameters,
+    ) -> Self {
         let events = Http3ClientEvents::default();
-        Self {
+        let mut client = Self {
             conn: c,
             base_handler: Http3Connection::new(http3_parameters.qpack_settings),
             events: events.clone(),
@@ -122,12 +140,51 @@ impl Http3Client {
                 http3_parameters.max_concurrent_push_streams,
                 events,
             ))),
+            flow_shaper: None
+        };
+
+        if !neqo_csdef::debug_disable_shaping() {
+            client.enable_shaping();
         }
+
+        client
+    }
+
+    fn enable_shaping(&mut self) {
+        qtrace!([self], "Enabling connection shaping.");
+
+        // TODO (ldolfi): change to new_with_padding_only
+        // so pading is part of creation of shaper
+        let shaper = Rc::new(RefCell::new(FlowShaper::new_from_file(
+            DEBUG_SAMPLE_TRACE,
+            Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
+        ).expect("failed to load sample schedule")));
+
+        // set padding aprameters
+        for (param, value) in FlowShaper::pparam_defaults().iter() {
+            shaper.borrow_mut().set_padding_param(param.to_string(), *value);
+        }
+        // create padding traces
+        let pad_trace = shaper.borrow().new_padding_trace().unwrap();
+        shaper.borrow_mut().set_padding_trace(Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
+                                    &pad_trace
+                                );
+
+        // sets the shaper to the connection
+        self.conn.set_flow_shaper(&shaper);
+
+        shaper.borrow_mut().start();
+        self.flow_shaper = Some(shaper);
     }
 
     #[must_use]
     pub fn role(&self) -> Role {
         self.conn.role()
+    }
+
+    #[must_use]
+    pub fn is_being_shaped(&self) -> bool {
+        self.flow_shaper.is_some()
     }
 
     #[must_use]
@@ -272,10 +329,46 @@ impl Http3Client {
             _ => {}
         }
 
+        // (ldolfi) Before creating a new stream, check wether this is the first fetch
+        // (i.e. there is no data to send) and create a padding stream to pair with that
+        if self.is_being_shaped() {
+            if !self.base_handler.has_data_to_send() {
+                // open dummy stream
+                for pad_url in DEBUG_DUMMY_URLS.iter() {
+                    let pad_url = Url::parse(pad_url).expect("Failed to parse dummy path");
+                    match self.fetch_dummy(
+                            Instant::now(),
+                            "GET",
+                            &pad_url.scheme(),
+                            &pad_url.host_str().unwrap(),
+                            &pad_url.path(),
+                            headers // TODO (ldolfi): eventually disable compression
+                        ) {
+                            Ok(pad_id) => {
+                                println!(
+                                    "Successfully created shaping stream id {} for resource {}",
+                                    pad_id, pad_url
+                                );
+                                // save id and url
+                                self.flow_shaper
+                                    .as_ref()
+                                    .unwrap()
+                                    .borrow()
+                                    .on_new_padding_stream(pad_id, pad_url);
+                            },
+                            Err(e) => {
+                                panic!("Can't open dummy stream {}", e);
+                            }
+                        }
+                }
+            }
+        }
+
         let id = self
             .conn
             .stream_create(StreamType::BiDi)
             .map_err(|e| Error::map_stream_create_errors(&e))?;
+        
 
         // Transform pseudo-header fields
         let mut final_headers = Vec::new();
@@ -297,6 +390,78 @@ impl Http3Client {
 
         // Call immediately send so that at least headers get sent. This will make Firefox faster, since
         // it can send request body immediatly in most cases and does not need to do a complete process loop.
+        if let Err(e) = self
+            .base_handler
+            .send_streams
+            .get_mut(&id)
+            .ok_or(Error::InvalidStreamId)?
+            .send(&mut self.conn, &mut self.base_handler.qpack_encoder)
+        {
+            if e.connection_error() {
+                self.close(now, e.code(), "");
+            }
+            return Err(e);
+        }
+            
+        Ok(id)
+    }
+
+    // Like fetch(), this function creates a stream to fetch a resource, but used instead by the 
+    // flow_shaper as a dummy resource for padding
+    pub fn fetch_dummy(
+        &mut self,
+        now: Instant,
+        method: &str,
+        scheme: &str,
+        host: &str,
+        path: &str,
+        headers: &[Header],
+    ) -> Res<u64> {
+        qinfo!(
+            [self],
+            "Fetch Dummy method={}, scheme={}, host={}, path={}",
+            method,
+            scheme,
+            host,
+            path
+        );
+        let id = self
+            .conn
+            .stream_create(StreamType::BiDi)
+            .map_err(|e| Error::map_stream_create_errors(&e))?;
+
+        // notify flow_shaper of the new stream
+        // TODO(ldolfi): rethink why this needs to be here
+        match &self.flow_shaper {
+            Some(shaper) => {
+                shaper.borrow().on_stream_created(id);
+            },
+            None => {
+                panic!("Tried to add a padding stream without a flow_shaper.");
+            }
+        }
+
+        // TODO (ldolfi): here would go the part where we register the stream 
+        // and prepare a Box for the received message, but do we need it?
+        // Transform pseudo-header fields
+        let mut final_headers = Vec::new();
+        final_headers.push((":method".into(), method.to_owned()));
+        final_headers.push((":scheme".into(), scheme.to_owned()));
+        final_headers.push((":authority".into(), host.to_owned()));
+        final_headers.push((":path".into(), path.to_owned()));
+        final_headers.extend_from_slice(headers);
+
+        self.base_handler.add_streams(
+            id,
+            SendMessage::new_with_headers(id, final_headers, Box::new(self.events.clone())),
+            Box::new(RecvMessage::new(
+                id,
+                Box::new(self.events.clone()),
+                Some(self.push_handler.clone()),
+            )),
+        );
+        
+        // Send the actual request (headers) immediately
         if let Err(e) = self
             .base_handler
             .send_streams
@@ -448,6 +613,9 @@ impl Http3Client {
                 if self.check_result(now, &res) {
                     return;
                 }
+                if self.is_being_shaped() {
+                    self.check_flow_shaping_events();
+                }
                 self.push_handler
                     .borrow_mut()
                     .maybe_send_max_push_id_frame(&mut self.base_handler);
@@ -564,6 +732,51 @@ impl Http3Client {
             }
         }
         Ok(())
+    }
+
+    fn check_flow_shaping_events(&mut self) {
+        qtrace!([self], "Check FlowShaping events");
+        if let Some(shaper) = self.flow_shaper.clone(){
+            while let Some(e) = shaper.borrow().next_application_event() {
+                qdebug!([self], "check_flow_shaping_events - event {:?}.", e);
+                match e {
+                    FlowShapingEvent::CloseConnection => {
+                        self.close(Instant::now(), 0, "kthx4shaping!");
+                    },
+                    FlowShapingEvent::ReopenStream(url) => {
+                        let headers: Header = (String::new(),String::new()); // TODO (ldolfi): figure out headers
+                        match self.fetch_dummy(
+                            Instant::now(),
+                            "GET",
+                            &url.scheme(),
+                            &url.host_str().unwrap(),
+                            &url.path(),
+                            &[headers]
+                        ) {
+                            Ok(stream_id) => {
+                                println!(
+                                    "Successfully created shaping stream id {} for resource {}",
+                                    stream_id, url
+                                );
+                                // save id and url
+                                self.flow_shaper
+                                    .as_ref()
+                                    .unwrap()
+                                    .borrow()
+                                    .on_new_padding_stream(stream_id, url);
+                            },
+                            Err(e) => {
+                                panic!("Can't open dummy stream {}", e);
+                            }
+                        }
+                    },
+                    _ => {}
+                };
+            };
+
+        } else {
+            qwarn!([self], "checking Flowshaping events without a flowshaper!");
+        }
     }
 
     fn handle_stream_readable(&mut self, stream_id: u64) -> Res<()> {

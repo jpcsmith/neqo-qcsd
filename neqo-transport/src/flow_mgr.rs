@@ -22,7 +22,6 @@ use crate::AppError;
 
 pub type FlowControlRecoveryToken = Frame;
 
-
 #[derive(Debug, Default)]
 pub struct FlowMgr {
     // Discriminant as key ensures only 1 of every frame type will be queued.
@@ -38,13 +37,9 @@ pub struct FlowMgr {
 
     used_data: u64,
     max_data: u64,
-
-    remote_max_data: u64,
 }
 
-
 impl FlowMgr {
-
     pub fn conn_credit_avail(&self) -> u64 {
         self.max_data - self.used_data
     }
@@ -87,17 +82,6 @@ impl FlowMgr {
     pub fn max_data(&mut self, maximum_data: u64) {
         let frame = Frame::MaxData { maximum_data };
         self.from_conn.insert(mem::discriminant(&frame), frame);
-
-        self.remote_max_data = maximum_data;
-    }
-
-    /// Increase the remote's maximum data allowance by the specified amount.
-    /// An incremental version of the `max_data` method.
-    pub fn increase_max_data_by(&mut self, increase: u64) {
-        let new_max = self.remote_max_data.saturating_add(increase);
-        if new_max > self.remote_max_data {
-            self.max_data(new_max);
-        }
     }
 
     // -- frames scoped on stream --
