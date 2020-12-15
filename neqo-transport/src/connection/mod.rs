@@ -2694,6 +2694,13 @@ impl Connection {
     pub fn get_pto(&self) -> Duration {
         self.loss_recovery.pto_raw(PNSpace::ApplicationData)
     }
+
+    pub fn is_dummy_stream(&self, stream_id: u64) -> bool {
+        match &self.flow_shaper {
+            Some(shaper) => shaper.borrow().is_shaping_stream(stream_id),
+            None => false
+        }
+    }
 }
 
 impl EventProvider for Connection {
