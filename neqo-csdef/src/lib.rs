@@ -3,7 +3,7 @@ pub mod stream_id;
 
 use std::env;
 
-pub const DEBUG_SHAPER_CONFIG: &str = "/Users/luca/Documents/ETHZ2/Thesis/code/neqo-qcd/neqo-csdef/src/config.toml";
+pub const DEBUG_SHAPER_CONFIG: &str = "/Users/luca/Documents/ETHZ/Thesis/code/neqo-qcd/neqo-csdef/src/config.toml";
 
 /// Returns true iff the CSDEF_NO_SHAPING environment variable is set to a 
 /// non-empty string.
