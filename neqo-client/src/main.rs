@@ -39,6 +39,9 @@ use url::{Origin, Url};
 
 mod dependency_tracker;
 
+use dependency_tracker::UrlDependencyTracker;
+
+
 #[derive(Debug)]
 pub enum ClientError {
     Http3Error(neqo_http3::Error),
@@ -119,6 +122,13 @@ pub struct Args {
     alpn: String,
 
     urls: Vec<Url>,
+
+    #[structopt(long, number_of_values = 1)]
+    /// Read URL dependencies from the the specified file. The file must
+    /// be a header-less CSV with "url, url-dependency" on each line, 
+    /// where url-dependency can be the empty string. All the URLs in
+    /// the file will be added to the list of URLs to download.
+    url_dependencies_from: Option<PathBuf>,
 
     #[structopt(short = "dummy-urls", long, number_of_values = 5)]
     dummy_urls: Vec<Url>,
@@ -321,12 +331,13 @@ fn process_loop(
 }
 
 struct Handler<'a> {
-    streams: HashMap<u64, Option<File>>,
+    streams: HashMap<u64, (Url, Option<File>)>,
     url_queue: VecDeque<Url>,
     dummy_url_queue: VecDeque<Url>,
     all_paths: Vec<PathBuf>,
     args: &'a Args,
     key_update: KeyUpdateState,
+    url_deps: Rc<RefCell<UrlDependencyTracker>>,
 }
 
 impl<'a> Handler<'a> {
@@ -370,10 +381,21 @@ impl<'a> Handler<'a> {
             println!("Deferring requests until first key update");
             return false;
         }
-        let url = self
-            .url_queue
-            .pop_front()
-            .expect("download_next called with empty queue");
+
+        assert!(!self.url_queue.is_empty(), "download_next called with empty queue");
+
+        let url = match self.url_queue.iter()
+            .position(|url| self.url_deps.borrow().is_downloadable(url)) 
+        {
+            Some(index) => { 
+                self.url_queue.swap_remove_front(index).unwrap()
+            }
+            None => {
+                println!("None of the URLs are currently downloadable.");
+                return false;
+            }
+        };
+
         match client.fetch(
             Instant::now(),
             &self.args.method,
@@ -391,7 +413,7 @@ impl<'a> Handler<'a> {
 
                 let out_file = get_output_file(&url, &self.args.output_dir, &mut self.all_paths);
 
-                self.streams.insert(client_stream_id, out_file);
+                self.streams.insert(client_stream_id, (url, out_file));
                 true
             }
             e @ Err(Error::TransportError(TransportError::StreamLimitError))
@@ -434,7 +456,7 @@ impl<'a> Handler<'a> {
 
                 let out_file = get_output_file(&url, &self.args.output_dir, &mut self.all_paths);
 
-                self.streams.insert(client_stream_id, out_file);
+                self.streams.insert(client_stream_id, (url, out_file));
                 true
             }
             e @ Err(Error::TransportError(TransportError::StreamLimitError))
@@ -472,7 +494,7 @@ impl<'a> Handler<'a> {
                     headers,
                     fin,
                 } => match self.streams.get(&stream_id) {
-                    Some(out_file) => {
+                    Some((_, out_file)) => {
                         if out_file.is_none() {
                             println!("READ HEADERS[{}]: fin={} {:?}", stream_id, fin, headers);
                         }
@@ -489,7 +511,7 @@ impl<'a> Handler<'a> {
                             println!("Data on unexpected stream: {}", stream_id);
                             return Ok(false);
                         }
-                        Some(out_file) => loop {
+                        Some((url, out_file)) => loop {
                             let mut data = vec![0; 4096];
                             let (sz, fin) = client
                                 .read_response_data(Instant::now(), stream_id, &mut data)
@@ -511,6 +533,10 @@ impl<'a> Handler<'a> {
                                 if out_file.is_none() {
                                     println!("<FIN[{}]>", stream_id);
                                 }
+
+                                self.url_deps.borrow_mut().resource_downloaded(url);
+                                self.download_urls(client);
+
                                 stream_done = true;
                                 break;
                             }
@@ -568,6 +594,7 @@ fn client(
     remote_addr: SocketAddr,
     hostname: &str,
     urls: &[Url],
+    url_deps: Rc<RefCell<UrlDependencyTracker>>,
 ) -> Res<()> {
     let quic_protocol = match args.alpn.as_str() {
         "h3-27" => QuicVersion::Draft27,
@@ -620,6 +647,7 @@ fn client(
         all_paths: Vec::new(),
         args: &args,
         key_update,
+        url_deps,
     };
 
     process_loop(&local_addr, &remote_addr, &socket, &mut client, &mut h)?;
@@ -659,6 +687,21 @@ fn main() -> Res<()> {
     init();
 
     let mut args = Args::from_args();
+
+    let url_deps = match &args.url_dependencies_from {
+        Some(path_buf) => {
+            let (mut urls, dependencies) = 
+                dependency_tracker::load_dependencies(path_buf.as_path())
+                .expect("Invalid path or dependency csv.");
+
+            urls.retain(|u| !args.urls.contains(u));
+            args.urls.extend(urls);
+
+            UrlDependencyTracker::new(&dependencies)
+        },
+        None => UrlDependencyTracker::new(&[])
+    };
+    let url_deps = Rc::new(RefCell::new(url_deps));
 
     if let Some(testcase) = args.qns_test.as_ref() {
         match testcase.as_str() {
@@ -739,6 +782,7 @@ fn main() -> Res<()> {
                 remote_addr,
                 &format!("{}", host),
                 &urls,
+                url_deps.clone(),
             )?;
         } else if !args.download_in_series {
             let token = if args.resume {
@@ -1104,133 +1148,3 @@ mod old {
         Ok(token)
     }
 }
-
-
-/*
-fn _load_dependencies(reader: &mut impl io::Read) -> Result<(Vec<Url>, Vec<(Url, Url)>), Box<dyn error::Error>> {
-    let mut reader = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .from_reader(reader);
-    let mut urls = HashSet::new();
-    let mut deps = Vec::new();
-
-    for result in reader.records() {
-        let result = result?;
-
-        assert!(&result[0] != "", "First entry shouldnt be empty");
-        urls.insert(Url::parse(&result[0])?);
-        if &result[1] != "" {
-            urls.insert(Url::parse(&result[1])?);
-            deps.push((Url::parse(&result[0])?, Url::parse(&result[1])?));
-        }
-    }
-    Ok((vec![], vec![]))
-}
-
-
-#[derive(Debug, Default)]
-pub struct UrlManager {
-    /// Dependency tuples of (url, dependency) 
-    dependencies: Vec<(Url, Url)>,
-    /// Mapping from stream id to the URL being downloaded
-    stream_mapping: HashMap<u64, Url>,
-}
-
-
-impl UrlManager {
-    pub fn new(dependencies: &[(Url, Url)]) -> UrlManager {
-        UrlManager { 
-            dependencies: dependencies.to_vec(),
-            stream_mapping: HashMap::default(),
-        }
-    }
-
-    /// Record that url is being fetched over a stream with stream_id 
-    pub fn request_started(&mut self, url: &Url, stream_id: &u64) {
-        assert!(!self.stream_mapping.contains_key(stream_id));
-        self.stream_mapping.insert(*stream_id, url.clone());
-    }
-
-    /// Inform the manager that the resource downloaded over stream_id
-    /// has been downloaded.
-    pub fn request_complete(&mut self, stream_id: &u64) {
-        let url = self.stream_mapping.remove(stream_id)
-            .expect("UrlManager should be tracking the stream.");
-
-        self.dependencies.retain(|(_, dep)| *dep != url);
-    }
-
-    /// Return true iff the url has no outstanding dependencies
-    pub fn is_downloadable(&self, url: &Url) -> bool {
-        for (target, _) in self.dependencies.iter() {
-            if target == url {
-                return false;
-            }
-        }
-        true
-    }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn create_manager() -> UrlManager {
-        let url_deps = [
-            (Url::parse("http://a.com/1.png").unwrap(),
-            Url::parse("http://a.com").unwrap()),
-            (Url::parse("http://a.com/2.png").unwrap(),
-            Url::parse("http://a.com").unwrap()),
-        ];
-
-        UrlManager::new(&url_deps)
-    }
-
-    #[test]
-    fn test_is_downloadable() {
-        let deps = create_manager();
-
-        assert!(deps.is_downloadable(&Url::parse("http://a.com").unwrap()));
-        assert!(deps.is_downloadable(&Url::parse("http://b.com").unwrap()));
-        assert!(!deps.is_downloadable(&Url::parse("http://a.com/1.png").unwrap()));
-        assert!(!deps.is_downloadable(&Url::parse("http://a.com/2.png").unwrap()));
-    }
-
-    #[test]
-    fn test_request_complete() {
-        let mut deps = create_manager();
-        let target = Url::parse("http://a.com/1.png").unwrap();
-        let dependency = Url::parse("http://a.com").unwrap();
-
-        deps.request_started(&dependency, &0b100);
-        assert!(!deps.is_downloadable(&target));
-        assert!(deps.is_downloadable(&dependency));
-
-        deps.request_complete(&0b100);
-        assert!(deps.is_downloadable(&target));
-    }
-
-    #[test]
-    fn test_load_dependencies() {
-        let mut data = io::BufReader::new(
-            "https://a.com,\n\
-            https://b.com,\n\
-            https://a.com/1.png,https://a.com\n\
-            https://a.com/2.png,https://a.com\n".as_bytes());
-        let expected_urls = 
-            &["https://a.com", "https://b.com", "https://a.com/1.png", "https://a.com/2.png"]
-            .iter().map(|x| Url::parse(x).unwrap()).collect::<Vec<Url>>();
-        let expected_deps = 
-            &[("https://a.com/1.png", "https://a.com"), 
-              ("https://a.com/2.png", "https://a.com")]
-            .iter().map(|(a, b)| (Url::parse(a).unwrap(), Url::parse(b).unwrap()))
-            .collect::<Vec<(Url, Url)>>();
-
-        let (urls, dependencies) = _load_dependencies(&mut data).unwrap();
-
-        assert_eq!(&urls, expected_urls);
-        assert_eq!(&dependencies, expected_deps);
-    }
-}
-*/
