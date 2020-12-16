@@ -37,7 +37,7 @@ use std::time::Instant;
 use structopt::StructOpt;
 use url::{Origin, Url};
 
-mod url_manager;
+mod dependency_tracker;
 
 #[derive(Debug)]
 pub enum ClientError {

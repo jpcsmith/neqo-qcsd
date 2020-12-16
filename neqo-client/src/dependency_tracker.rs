@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::collections::{ HashMap, HashSet };
+use std::collections::HashSet;
 use std::path::Path;
 use std::{ error, io };
 
@@ -44,8 +44,6 @@ pub fn load_dependencies(filename: &Path)
 pub struct UrlDependencyTracker {
     /// Dependency tuples of (url, dependency) 
     dependencies: Vec<(Url, Url)>,
-    /// Mapping from stream id to the URL being downloaded
-    stream_mapping: HashMap<u64, Url>,
 }
 
 
@@ -53,23 +51,12 @@ impl UrlDependencyTracker {
     pub fn new(dependencies: &[(Url, Url)]) -> UrlDependencyTracker {
         UrlDependencyTracker { 
             dependencies: dependencies.to_vec(),
-            stream_mapping: HashMap::default(),
         }
     }
 
-    /// Record that url is being fetched over a stream with stream_id 
-    pub fn request_started(&mut self, url: &Url, stream_id: &u64) {
-        assert!(!self.stream_mapping.contains_key(stream_id));
-        self.stream_mapping.insert(*stream_id, url.clone());
-    }
-
-    /// Inform the manager that the resource downloaded over stream_id
-    /// has been downloaded.
-    pub fn request_complete(&mut self, stream_id: &u64) {
-        let url = self.stream_mapping.remove(stream_id)
-            .expect("UrlDependencyTracker should be tracking the stream.");
-
-        self.dependencies.retain(|(_, dep)| *dep != url);
+    /// Inform the manager that a resource has been downloaded.
+    pub fn resource_downloaded(&mut self, url: &Url) {
+        self.dependencies.retain(|(_, dep)| dep != url);
     }
 
     /// Return true iff the url has no outstanding dependencies
@@ -116,11 +103,9 @@ mod tests {
         let target = Url::parse("http://a.com/1.png").unwrap();
         let dependency = Url::parse("http://a.com").unwrap();
 
-        deps.request_started(&dependency, &0b100);
         assert!(!deps.is_downloadable(&target));
         assert!(deps.is_downloadable(&dependency));
-
-        deps.request_complete(&0b100);
+        deps.resource_downloaded(&dependency);
         assert!(deps.is_downloadable(&target));
     }
 
