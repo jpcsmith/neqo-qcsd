@@ -1,7 +1,9 @@
-use url::Url;
 use std::fs::File;
 use std::collections::{ HashMap, HashSet };
+use std::path::Path;
 use std::{ error, io };
+
+use url::Url;
 
 
 fn _load_dependencies(reader: &mut impl io::Read) 
@@ -32,15 +34,14 @@ fn _load_dependencies(reader: &mut impl io::Read)
     Ok((urls, deps))
 }
 
-#[allow(dead_code)]
-pub fn load_dependencies(filename: &str) 
+pub fn load_dependencies(filename: &Path) 
        -> Result<(Vec<Url>, Vec<(Url, Url)>), Box<dyn error::Error>> {
     _load_dependencies(&mut File::open(filename)?)
 }
 
 
 #[derive(Debug, Default)]
-pub struct UrlManager {
+pub struct UrlDependencyTracker {
     /// Dependency tuples of (url, dependency) 
     dependencies: Vec<(Url, Url)>,
     /// Mapping from stream id to the URL being downloaded
@@ -48,9 +49,9 @@ pub struct UrlManager {
 }
 
 
-impl UrlManager {
-    pub fn new(dependencies: &[(Url, Url)]) -> UrlManager {
-        UrlManager { 
+impl UrlDependencyTracker {
+    pub fn new(dependencies: &[(Url, Url)]) -> UrlDependencyTracker {
+        UrlDependencyTracker { 
             dependencies: dependencies.to_vec(),
             stream_mapping: HashMap::default(),
         }
@@ -66,12 +67,13 @@ impl UrlManager {
     /// has been downloaded.
     pub fn request_complete(&mut self, stream_id: &u64) {
         let url = self.stream_mapping.remove(stream_id)
-            .expect("UrlManager should be tracking the stream.");
+            .expect("UrlDependencyTracker should be tracking the stream.");
 
         self.dependencies.retain(|(_, dep)| *dep != url);
     }
 
     /// Return true iff the url has no outstanding dependencies
+    #[allow(dead_code)]
     pub fn is_downloadable(&self, url: &Url) -> bool {
         for (target, _) in self.dependencies.iter() {
             if target == url {
@@ -87,7 +89,7 @@ impl UrlManager {
 mod tests {
     use super::*;
 
-    fn create_manager() -> UrlManager {
+    fn create_manager() -> UrlDependencyTracker {
         let url_deps = [
             (Url::parse("http://a.com/1.png").unwrap(),
             Url::parse("http://a.com").unwrap()),
@@ -95,7 +97,7 @@ mod tests {
             Url::parse("http://a.com").unwrap()),
         ];
 
-        UrlManager::new(&url_deps)
+        UrlDependencyTracker::new(&url_deps)
     }
 
     #[test]
