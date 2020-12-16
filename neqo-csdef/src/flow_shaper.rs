@@ -17,6 +17,10 @@ use neqo_common::{
 
 use crate::stream_id::StreamId;
 
+// The value below is taken from the QUIC Connection class and defines the 
+// buffer that is allocated for receiving data.
+const RX_STREAM_DATA_WINDOW: u64 = 0x10_0000; // 1MiB
+
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -508,18 +512,18 @@ impl FlowShaper {
         load_trace(filename).map(|trace| Self::new(config, interval, &trace))
     }
 
-    // fn config_default() -> ConfigEntry {
-    //     ConfigEntry {
-    //         initial_md: 3000,
-    //         rx_stream_data_window: 1048576,
-    //         local_md: 4611686018427387903,
-    //         dummy_size: 700,
-    //         dummy_nc: 900,
-    //         dummy_ns: 1200,
-    //         dummy_maxw: 2.5,
-    //         dummy_minw: 0.1
-    //     }
-    // }
+    fn config_default() -> ConfigEntry {
+        ConfigEntry {
+            initial_md: 3000,
+            rx_stream_data_window: 1048576,
+            local_md: 4611686018427387903,
+            dummy_size: 700,
+            dummy_nc: 900,
+            dummy_ns: 1200,
+            dummy_maxw: 2.5,
+            dummy_minw: 0.1
+        }
+    }
 
     /// Return the initial values for transport parameters
     pub fn tparam_defaults(&self) -> [(u64, u64); 3] {
@@ -768,13 +772,13 @@ mod tests {
                 (Duration::from_millis(2), 1350), (Duration::from_millis(16), -4800),
                 (Duration::from_millis(21), 600), (Duration::from_millis(22), -350),
             ];
-        FlowShaper::new(Duration::from_millis(5), &vec)
+        FlowShaper::new(FlowShaper::config_default(), Duration::from_millis(5), &vec)
     }
 
     #[test]
     fn test_sanity() {
         let trace = load_trace("../data/nytimes.csv").expect("Load failed");
-        FlowShaper::new(Duration::from_millis(10), &trace);
+        FlowShaper::new(FlowShaper::config_default(), Duration::from_millis(10), &trace);
     }
 
     #[test]
@@ -828,7 +832,7 @@ mod tests {
         let mut shaper = create_shaper();
 
         shaper.on_stream_created(CLIENT_BIDI_STREAM_ID);
-        shaper.on_new_padding_stream(CLIENT_BIDI_STREAM_ID);
+        shaper.on_new_padding_stream(CLIENT_BIDI_STREAM_ID, Url::parse("").expect("foo"));
         assert_eq!(shaper.events.next_event(), None);
     }
 
