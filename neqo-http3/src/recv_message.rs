@@ -282,7 +282,6 @@ impl RecvMessage {
                         decoder.decode_header_block(header_block, self.stream_id)?
                     {
                         if conn.is_being_shaped() &&  conn.is_dummy_stream(self.stream_id){
-                            println!("reading dummy headers");
                             self.add_dummy_headers(done, decoder);
                         } else {
                             self.add_headers(Some(headers), done, decoder);
@@ -297,9 +296,8 @@ impl RecvMessage {
                 }
                 RecvMessageState::ReadingData { .. } => {
                     if conn.is_being_shaped() {
-                        println!("Block data_readable event plz");
                         if conn.is_dummy_stream(self.stream_id) {
-                            println!("stop here");
+                            qdebug!([self], "ignoring dummy stream data.");
                             break Ok(());
                         }
                     }

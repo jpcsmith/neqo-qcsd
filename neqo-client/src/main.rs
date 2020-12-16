@@ -476,7 +476,6 @@ impl<'a> Handler<'a> {
                         }
                     }
                     None => {
-                        println!("FIGA");
                         println!("Data on unexpected stream: {}", stream_id);
                         return Ok(false);
                     }
@@ -485,7 +484,6 @@ impl<'a> Handler<'a> {
                     let mut stream_done = false;
                     match self.streams.get_mut(&stream_id) {
                         None => {
-                            println!("CAZZO");
                             println!("Data on unexpected stream: {}", stream_id);
                             return Ok(false);
                         }
