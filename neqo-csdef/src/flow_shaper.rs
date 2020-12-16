@@ -1,34 +1,21 @@
 use std::fs::File;
-use std::fs;
 use std::io::{self, BufRead};
 use std::num;
 use std::time::{ Duration, Instant };
-use std::collections::{ HashMap, VecDeque, HashSet };
+use std::collections::{ HashMap, VecDeque };
 use std::convert::TryFrom;
 use std::cmp::max;
 use std::cell::RefCell;
 use rand::Rng; // for rayleigh sampling
 use std::fmt::Display;
 use url::Url;
-use serde::{Serialize, Deserialize};
-use toml::Value;
+use serde::{Deserialize};
 
 use neqo_common::{
-    qdebug, qinfo, qlog::NeqoQlog, qtrace, qwarn
+    qdebug, qinfo, qwarn
 };
 
 use crate::stream_id::StreamId;
-
-
-const DEBUG_INITIAL_MAX_DATA: u64 = 3000;
-
-const DEBUG_PAD_PACKET_SIZE: i32 = 700;
-
-// The value below is taken from the QUIC Connection class and defines the 
-// buffer that is allocated for receiving data.
-const RX_STREAM_DATA_WINDOW: u64 = 0x10_0000; // 1MiB
-// taken from transport connection
-const LOCAL_MAX_DATA: u64 = 0x3FFF_FFFF_FFFF_FFFF; // 2^62-1
 
 
 #[derive(Debug, Deserialize)]
@@ -39,9 +26,9 @@ pub struct Config {
 }
 #[derive(Debug, Deserialize)]
 pub struct ConfigEntry {
-    initial_MD: u64,
+    initial_md: u64,
     rx_stream_data_window: u64,
-    local_MD: u64,
+    local_md: u64,
     dummy_size: u32,
     dummy_nc: u32,
     dummy_ns: u32,
@@ -129,9 +116,9 @@ impl Display for FlowShapingEvents {
 }
 
 impl FlowShapingEvents {
-    pub(self) fn send_max_data(&self, new_limit: u64) {
-        self.insert(FlowShapingEvent::SendMaxData(new_limit));
-    }
+    // pub(self) fn send_max_data(&self, new_limit: u64) {
+    //     self.insert(FlowShapingEvent::SendMaxData(new_limit));
+    // }
 
     pub fn send_max_stream_data(&self, stream_id: StreamId, new_limit: u64) {
         self.insert(FlowShapingEvent::SendMaxStreamData {
@@ -141,10 +128,6 @@ impl FlowShapingEvents {
 
     pub(self) fn send_pad_frames(&self, pad_size: u32) {
         self.insert(FlowShapingEvent::SendPaddingFrames(pad_size));
-    }
-
-    pub(self) fn send_connection_close(&self) {
-        self.insert(FlowShapingEvent::CloseConnection)
     }
 
     fn insert(&self, event: FlowShapingEvent) {
@@ -301,9 +284,9 @@ impl FlowShapingStreams {
         self.max_stream_datas.borrow_mut().insert(stream_id, max_stream_data)
     }
 
-    pub(self) fn len(&self) -> usize {
-        self.streams.borrow().len()
-    }
+    // pub(self) fn len(&self) -> usize {
+    //     self.streams.borrow().len()
+    // }
 
     pub(self) fn is_open(&self, stream_id: u64) -> bool {
         if let Some(open) = self.is_open.borrow().get(&stream_id) {
@@ -500,7 +483,7 @@ impl FlowShaper {
         // qdebug!("{:?}", _foo["debug"]["dummy_size"]);
         
         // let config = Self::config_default();
-        let rx_max_data = config.initial_MD;
+        let rx_max_data = config.initial_md;
 
         FlowShaper{
             config,
@@ -525,23 +508,23 @@ impl FlowShaper {
         load_trace(filename).map(|trace| Self::new(config, interval, &trace))
     }
 
-    fn config_default() -> ConfigEntry {
-        ConfigEntry {
-            initial_MD: 3000,
-            rx_stream_data_window: 1048576,
-            local_MD: 4611686018427387903,
-            dummy_size: 700,
-            dummy_nc: 900,
-            dummy_ns: 1200,
-            dummy_maxw: 2.5,
-            dummy_minw: 0.1
-        }
-    }
+    // fn config_default() -> ConfigEntry {
+    //     ConfigEntry {
+    //         initial_md: 3000,
+    //         rx_stream_data_window: 1048576,
+    //         local_md: 4611686018427387903,
+    //         dummy_size: 700,
+    //         dummy_nc: 900,
+    //         dummy_ns: 1200,
+    //         dummy_maxw: 2.5,
+    //         dummy_minw: 0.1
+    //     }
+    // }
 
     /// Return the initial values for transport parameters
     pub fn tparam_defaults(&self) -> [(u64, u64); 3] {
         [
-            (0x04, self.config.local_MD),
+            (0x04, self.config.local_md),
             // Disable the peer sending data on bidirectional streams openned
             // by this endpoint (initial_max_stream_data_bidi_local)
             (0x05, 20),
@@ -671,11 +654,11 @@ impl FlowShaper {
     /// Queue events related to a new stream being created by this
     /// endpoint.
     pub fn on_stream_created(&self, stream_id: u64) {
-        let streamId = StreamId::new(stream_id);
-        assert!(streamId.is_client_initiated());
+        let stream_id = StreamId::new(stream_id);
+        assert!(stream_id.is_client_initiated());
         
-        if streamId.is_bidi() {
-            self.events.send_max_stream_data(streamId, self.config.rx_stream_data_window);
+        if stream_id.is_bidi() {
+            self.events.send_max_stream_data(stream_id, self.config.rx_stream_data_window);
             qdebug!([self], "Added send_max_stream_data event to stream {} limit {}", stream_id, self.config.rx_stream_data_window);
         }
     }
