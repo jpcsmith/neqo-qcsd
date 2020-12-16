@@ -32,6 +32,7 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::rc::Rc;
 use std::time::Instant;
+// use neqo_csdef::flow_shaper;
 
 use structopt::StructOpt;
 use url::{Origin, Url};
@@ -116,6 +117,9 @@ pub struct Args {
     alpn: String,
 
     urls: Vec<Url>,
+
+    #[structopt(short = "dummy-urls", long, number_of_values = 5)]
+    dummy_urls: Vec<Url>,
 
     #[structopt(short = "m", default_value = "GET")]
     method: String,
@@ -317,6 +321,7 @@ fn process_loop(
 struct Handler<'a> {
     streams: HashMap<u64, Option<File>>,
     url_queue: VecDeque<Url>,
+    dummy_url_queue: VecDeque<Url>,
     all_paths: Vec<PathBuf>,
     args: &'a Args,
     key_update: KeyUpdateState,
@@ -327,21 +332,32 @@ impl<'a> Handler<'a> {
         loop {
             if self.url_queue.is_empty() {
                 // The dummy streams
-                self.streams.insert(0, None);
-                self.streams.insert(4, None);
-                self.streams.insert(8, None);
-                self.streams.insert(12, None);
-                self.streams.insert(16, None);
-                self.streams.insert(140, None);
-                self.streams.insert(144, None);
-                self.streams.insert(148, None);
-                self.streams.insert(152, None);
-                self.streams.insert(156, None);
-                self.streams.insert(160, None);
-                self.streams.insert(164, None);
+                // self.streams.insert(0, None);
+                // self.streams.insert(4, None);
+                // self.streams.insert(8, None);
+                // self.streams.insert(12, None);
+                // self.streams.insert(16, None);
+                // self.streams.insert(140, None);
+                // self.streams.insert(144, None);
+                // self.streams.insert(148, None);
+                // self.streams.insert(152, None);
+                // self.streams.insert(156, None);
+                // self.streams.insert(160, None);
+                // self.streams.insert(164, None);
                 break;
             }
             if !self.download_next(client) {
+                break;
+            }
+        }
+    }
+
+    fn download_dummy_urls(&mut self, client: &mut Http3Client) {
+        loop {
+            if self.dummy_url_queue.is_empty(){
+                break;
+            }
+            if !self.download_next_dummy(client) {
                 break;
             }
         }
@@ -389,9 +405,53 @@ impl<'a> Handler<'a> {
         }
     }
 
+    fn download_next_dummy(&mut self, client: &mut Http3Client) -> bool {
+        if self.key_update.needed() {
+            println!("Deferring requests until first key update");
+            return false;
+        }
+        let url = self
+            .dummy_url_queue
+            .pop_front()
+            .expect("download_next_dummy called with empty queue");
+        match client.fetch_dummy(
+            Instant::now(),
+            &self.args.method,
+            &url.scheme(),
+            &url.host_str().unwrap(),
+            &url.path(),
+            &to_headers(&self.args.header),
+        ) {
+            Ok(client_stream_id) => {
+                println!(
+                    "Successfully created dummy stream id {} for {}",
+                    client_stream_id, url
+                );
+
+                let _ = client.stream_close_send(client_stream_id);
+
+                let out_file = get_output_file(&url, &self.args.output_dir, &mut self.all_paths);
+
+                self.streams.insert(client_stream_id, out_file);
+                true
+            }
+            e @ Err(Error::TransportError(TransportError::StreamLimitError))
+            | e @ Err(Error::StreamLimitError)
+            | e @ Err(Error::Unavailable) => {
+                println!("Cannot create dummy stream {:?}", e);
+                self.dummy_url_queue.push_front(url);
+                false
+            }
+            Err(e) => {
+                panic!("Can't create dummy stream {}", e);
+            }
+        }
+    }
+
     fn maybe_key_update(&mut self, c: &mut Http3Client) -> Res<()> {
         self.key_update.maybe_update(|| c.initiate_key_update())?;
         self.download_urls(c);
+        self.download_dummy_urls(c);
         Ok(())
     }
 
@@ -469,6 +529,9 @@ impl<'a> Handler<'a> {
                 }
                 Http3ClientEvent::StateChange(Http3State::Connected)
                 | Http3ClientEvent::RequestsCreatable => {
+                    if !neqo_csdef::debug_disable_shaping(){
+                        self.download_dummy_urls(client);
+                    }
                     self.download_urls(client);
                 }
                 _ => {
@@ -512,6 +575,13 @@ fn client(
         _ => QuicVersion::default(),
     };
 
+    let mut dummy_urls: VecDeque<Url> = VecDeque::new();
+    if !neqo_csdef::debug_disable_shaping() {
+        for url in &args.dummy_urls{
+            dummy_urls.push_back(url.clone());
+        }
+    }
+
     let mut transport = Connection::new_client(
         hostname,
         &[&args.alpn],
@@ -544,6 +614,7 @@ fn client(
     let mut h = Handler {
         streams: HashMap::new(),
         url_queue: VecDeque::from(urls.to_vec()),
+        dummy_url_queue: VecDeque::from(dummy_urls),
         all_paths: Vec::new(),
         args: &args,
         key_update,
