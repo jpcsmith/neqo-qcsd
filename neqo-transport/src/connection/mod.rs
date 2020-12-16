@@ -433,7 +433,7 @@ impl Connection {
 
         self.flow_shaper = Some(shaper.clone());
         // Set the transport parameters for the remote endpoint to obey
-        for (param, value) in FlowShaper::tparam_defaults().iter() {
+        for (param, value) in shaper.borrow().tparam_defaults().iter() {
             assert!(self.set_local_tparam(
                     *param, tparams::TransportParameter::Integer(*value)
             ).is_ok());
@@ -2693,6 +2693,13 @@ impl Connection {
     #[cfg(test)]
     pub fn get_pto(&self) -> Duration {
         self.loss_recovery.pto_raw(PNSpace::ApplicationData)
+    }
+
+    pub fn is_dummy_stream(&self, stream_id: u64) -> bool {
+        match &self.flow_shaper {
+            Some(shaper) => shaper.borrow().is_shaping_stream(stream_id),
+            None => false
+        }
     }
 }
 
