@@ -147,15 +147,15 @@ impl RecvMessage {
 
     // slightly different function that avoid sending connection events
     // for dummy headers
-    fn add_dummy_headers(&mut self, fin: bool, decoder: &mut QPackDecoder) {
-        if fin {
-            self.set_closed(decoder);
-        } else {
-            self.state = RecvMessageState::WaitingForData {
-                frame_reader: HFrameReader::new(),
-            };
-        }
-    }
+    // fn add_dummy_headers(&mut self, fin: bool, decoder: &mut QPackDecoder) {
+    //     if fin {
+    //         self.set_closed(decoder);
+    //     } else {
+    //         self.state = RecvMessageState::WaitingForData {
+    //             frame_reader: HFrameReader::new(),
+    //         };
+    //     }
+    // }
 
     fn set_state_to_close_pending(
         &mut self,
@@ -281,11 +281,12 @@ impl RecvMessage {
                     if let Some(headers) =
                         decoder.decode_header_block(header_block, self.stream_id)?
                     {
-                        if conn.is_being_shaped() &&  conn.is_dummy_stream(self.stream_id){
-                            self.add_dummy_headers(done, decoder);
-                        } else {
-                            self.add_headers(Some(headers), done, decoder);
-                        }
+                        // if conn.is_being_shaped() &&  conn.is_dummy_stream(self.stream_id){
+                        //     self.add_dummy_headers(done, decoder);
+                        // } else {
+                        //     self.add_headers(Some(headers), done, decoder);
+                        // }
+                        self.add_headers(Some(headers), done, decoder);
                         if done {
                             break Ok(());
                         }
@@ -295,12 +296,12 @@ impl RecvMessage {
                     }
                 }
                 RecvMessageState::ReadingData { .. } => {
-                    if conn.is_being_shaped() {
-                        if conn.is_dummy_stream(self.stream_id) {
-                            qdebug!([self], "ignoring dummy stream data.");
-                            break Ok(());
-                        }
-                    }
+                    // if conn.is_being_shaped() {
+                    //     if conn.is_dummy_stream(self.stream_id) {
+                    //         qdebug!([self], "ignoring dummy stream data.");
+                    //         break Ok(());
+                    //     }
+                    // }
                     if post_readable_event {
                         self.conn_events.data_readable(self.stream_id);
                     }

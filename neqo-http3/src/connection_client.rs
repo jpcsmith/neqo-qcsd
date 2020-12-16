@@ -933,7 +933,24 @@ impl EventProvider for Http3Client {
     /// correctly handles cases where handling one event can obsolete
     /// previously-queued events, or cause new events to be generated.
     fn next_event(&mut self) -> Option<Self::Event> {
-        self.events.next_event()
+        // filtering the events related to flow shaping so that
+        // they don't reach the client
+        let e = self.events.next_event();
+        match e {
+            Some(Http3ClientEvent::HeaderReady{stream_id, ..})
+            | Some(Http3ClientEvent::DataReadable{ stream_id}) => {
+                if self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(stream_id) {
+                    qdebug!([self], "Ignoring client event for dummy stream {}", stream_id);
+                    self.next_event()
+                } else {
+                    e
+                }
+            },
+            _ => {
+                e
+            }
+        }
+
     }
 }
 
