@@ -44,7 +44,7 @@ def parse_data(ctx, pcapfile):
 def plot_server_dummy(data_rx, ax):
     """ Plots the dummy packets from the server (RX) side
     """
-    dummy_mask = data_rx["quic.stream_id"].isin(DUMMYSTREAMS)
+    dummy_mask = data_rx["quic.stream_id"].str.split(',').map(lambda ls: any(id in ls for id in DUMMYSTREAMS))
     data_dummy = data_rx.loc[dummy_mask]
     # data_dummy["size"] = data_dummy["size"].abs()
     data_rx_filtered = data_rx.drop(data_dummy.index)
@@ -71,7 +71,8 @@ def plot_client_dummy(data_tx, ax):
     """ Plot dummy 
     """
     # TODO get also padding in other packets with regex (\W(0)\W)|(\A0)|(\W0\Z)
-    pad_mask = data_tx["quic.frame_type"] == '0'
+    regex = '(\W(0)\W)|(\A0)|(\W0\Z)'
+    pad_mask = data_tx["quic.frame_type"].str.contains(regex)
     data_pad = data_tx.loc[pad_mask]
     data_tx_filtered = data_tx.drop(data_pad.index)
 
@@ -93,11 +94,11 @@ def plot_client_dummy(data_tx, ax):
 
 
 
-def make_binned(data, rate, keepZeros=False): 
-    binned = data.copy() 
-    bins = np.arange(0, np.ceil(binned["timestamp"].max()), rate) 
-    binned["bins"] =  pd.cut(binned["timestamp"], bins=bins, right=False, labels=bins[:-1]) 
-    binned = binned.groupby("bins")["size"].sum() 
+def make_binned(data, rate, keepZeros=False):
+    binned = data.copy()
+    bins = np.arange(0, np.ceil(binned["timestamp"].max()), rate)
+    binned["bins"] =  pd.cut(binned["timestamp"], bins=bins, right=False, labels=bins[:-1])
+    binned = binned.groupby("bins")["size"].sum()
     if keepZeros:
         binned = binned.reset_index()
     else:

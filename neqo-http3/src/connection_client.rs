@@ -939,7 +939,7 @@ impl EventProvider for Http3Client {
         match e {
             Some(Http3ClientEvent::HeaderReady{stream_id, ..})
             | Some(Http3ClientEvent::DataReadable{ stream_id}) => {
-                if self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(stream_id) {
+                if self.is_being_shaped() && self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(stream_id) {
                     qdebug!([self], "Ignoring client event for dummy stream {}", stream_id);
                     self.next_event()
                 } else {
