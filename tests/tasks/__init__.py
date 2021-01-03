@@ -2,6 +2,8 @@
 """
 # pylint: disable=too-many-arguments
 import os
+import csv
+import sys
 import time
 import signal
 from contextlib import contextmanager
@@ -18,6 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 from typing import Optional
 
 from invoke import task
+from . import url_graph
 
 
 NEQO_LOG = "neqo_transport=info,debug"
@@ -42,6 +45,13 @@ PALETTE = {'blue': '#4898de',
            'coral': '#ffae75',
            'orange': '#f7b819'}
 
+
+@task
+def deps_from_har(_, filename):
+    """Extract URL and dependencies from a har file.
+    """
+    writer = csv.writer(sys.stdout)
+    writer.writerows(url_graph.extract_from_har(filename))
 
 
 def _load_urls(name: str, netloc: str, local: bool):
@@ -220,7 +230,7 @@ def plot_server_dummy(data_rx, ax):
     return ax
 
 def plot_client_dummy(data_tx, ax):
-    """ Plot dummy 
+    """ Plot dummy
     """
     # print("plot client dummy")
     # TODO get also padding in other packets with regex (\W(0)\W)|(\A0)|(\W0\Z)
@@ -266,11 +276,11 @@ def plot_unshaped(data, ax):
 
     return ax
 
-def make_binned(data, rate, keepZeros=False): 
+def make_binned(data, rate, keepZeros=False):
     binned = data.copy()
-    bins = np.arange(0, np.ceil(binned["timestamp"].max()), rate) 
-    binned["bins"] =  pd.cut(binned["timestamp"], bins=bins, right=False, labels=bins[:-1]) 
-    binned = binned.groupby("bins")["size"].sum() 
+    bins = np.arange(0, np.ceil(binned["timestamp"].max()), rate)
+    binned["bins"] =  pd.cut(binned["timestamp"], bins=bins, right=False, labels=bins[:-1])
+    binned = binned.groupby("bins")["size"].sum()
     if keepZeros:
         binned = binned.reset_index()
     else:
