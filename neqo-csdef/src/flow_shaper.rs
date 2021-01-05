@@ -6,10 +6,14 @@ use std::collections::{ HashMap, VecDeque };
 use std::convert::TryFrom;
 use std::cmp::max;
 use std::cell::RefCell;
+use std::env; // for reading env variables
 use rand::Rng; // for rayleigh sampling
 use std::fmt::Display;
 use url::Url;
 use serde::{Deserialize};
+extern crate csv; // for writng debug
+use std::fs::OpenOptions;
+use csv::Writer;
 
 use neqo_common::{
     qdebug, qinfo, qwarn
@@ -20,6 +24,37 @@ use crate::stream_id::StreamId;
 // The value below is taken from the QUIC Connection class and defines the 
 // buffer that is allocated for receiving data.
 const RX_STREAM_DATA_WINDOW: u64 = 0x10_0000; // 1MiB
+
+fn debug_check_var_(env_key: &str) -> bool {
+    match env::var(env_key) {
+        Ok(s) => s != "",
+        _ => false
+    }
+}
+
+fn debug_save_ids_path() -> String {
+    match env::var("CSDEF_DUMMY_ID") {
+        Ok(s) => s,
+        _ => String::from("")
+    }
+}
+
+fn debug_enable_save_ids() -> bool {
+    debug_check_var_("CSDEF_DUMMY_ID")
+}
+
+
+fn debug_save_dummy_path() -> String {
+    match env::var("CSDEF_DUMMY_SCHEDULE") {
+        Ok(s) => s,
+        _ => String::from("")
+    }
+}
+
+fn debug_enable_save_dummy() -> bool {
+    debug_check_var_("CSDEF_DUMMY_SCHEDULE")
+}
+
 
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +79,7 @@ pub struct ConfigEntry {
 pub enum TraceLoadError {
     Io(io::Error),
     Parse(String),
+    Csv(String),
 }
 
 impl From<num::ParseIntError> for TraceLoadError {
@@ -61,6 +97,12 @@ impl From<num::ParseFloatError> for TraceLoadError {
 impl From<io::Error> for TraceLoadError {
     fn from(err: io::Error) -> TraceLoadError {
         TraceLoadError::Io(err)
+    }
+}
+
+impl From<csv::Error> for TraceLoadError {
+    fn from(err: csv::Error) -> TraceLoadError {
+        TraceLoadError::Csv(err.to_string())
     }
 }
 
@@ -601,6 +643,16 @@ impl FlowShaper {
             // println!("{}.  {}", count, t);
         }
 
+        if debug_enable_save_dummy() {
+            let csv_path = debug_save_dummy_path();
+            let mut wtr = Writer::from_path(csv_path)?;
+            // wtr.write_record(schedule.into_iter().map(|(d, s)| (d.as_secs_f64(), s)))?;
+            for (d, s) in schedule.iter() {
+                wtr.write_record(&[d.as_secs_f64().to_string(), s.to_string()])?;
+            }
+            wtr.flush()?;
+        }
+
         return Ok(schedule);
     }
 
@@ -703,6 +755,21 @@ impl FlowShaper {
     // signals that the stream is ready to receive MSD frames
     pub fn open_for_shaping(&self, stream_id: u64) -> bool {
         qdebug!([self], "Opening stream {} for shaping", stream_id);
+        
+        if debug_enable_save_ids(){
+            let csv_path = debug_save_ids_path();
+            let csv_file = OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .append(true)
+                            .open(csv_path)
+                            .unwrap();
+            let mut wtr = csv::Writer::from_writer(csv_file);
+            // let mut wtr = Writer::from_path(csv_path).expect("Failed opening dummy stream id csv file");
+            wtr.write_record(&[stream_id.to_string()]).expect("Failed writing dummy stream id");
+            wtr.flush().expect("Failed saving dummy stream id");
+        }
+
         self.shaping_streams.open_stream(stream_id)
     }
 
@@ -808,7 +875,7 @@ mod tests {
     #[test]
     fn test_on_stream_created_uni() {
         // It's a unidirectional stream, so we do not queue any events
-        let mut shaper = create_shaper();
+        let  shaper = create_shaper();
         shaper.on_stream_created(CLIENT_UNI_STREAM_ID);
         assert_eq!(shaper.next_event(), None);
     }
@@ -816,7 +883,7 @@ mod tests {
     #[test]
     fn test_on_stream_created_bidi() {
         // It's a unidirectional stream, so we do not queue any events
-        let mut shaper = create_shaper();
+        let  shaper = create_shaper();
         shaper.on_stream_created(CLIENT_BIDI_STREAM_ID);
         assert_eq!(
             shaper.events.next_event(),
@@ -829,7 +896,7 @@ mod tests {
     fn test_on_stream_created_bidi_padding() {
         // If a stream is identified as being for a padding URL, its max data
         // should not be increased
-        let mut shaper = create_shaper();
+        let  shaper = create_shaper();
 
         shaper.on_stream_created(CLIENT_BIDI_STREAM_ID);
         shaper.on_new_padding_stream(CLIENT_BIDI_STREAM_ID, Url::parse("").expect("foo"));
@@ -838,7 +905,7 @@ mod tests {
 
     #[test]
     fn test_on_stream_incoming_uni() {
-        let mut shaper = create_shaper();
+        let  shaper = create_shaper();
         shaper.on_stream_incoming(SERVER_UNI_STREAM_ID);
 
         // Incoming Unidirectional streams are not blocked initially, as we do not 
