@@ -489,6 +489,27 @@ impl FlowShaper {
         }
     }
 
+    pub fn new_with_dummy_only(config: ConfigEntry, interval: Duration) -> FlowShaper {
+        let rx_max_data = config.initial_md;
+
+        FlowShaper{
+            config,
+            interval,
+            in_target: VecDeque::new(),
+            out_target: VecDeque::new(),
+            start_time: None,
+            rx_max_data,
+            rx_progress: 0,
+            events: FlowShapingEvents::default(),
+            application_events: FlowShapingApplicationEvents::default(),
+            padding_params: HashMap::new(),
+            pad_out_target: VecDeque::new(),
+            pad_in_target: VecDeque::new(),
+            shaping_streams: FlowShapingStreams::default(),
+            shaping_streams_max_data: HashMap::new(),
+        }
+    }
+
     pub fn new(config: ConfigEntry, interval: Duration, trace: &Trace) -> FlowShaper {
         assert!(trace.len() > 0);
 

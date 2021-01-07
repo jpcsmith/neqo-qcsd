@@ -38,7 +38,7 @@ use std::fs;
 use crate::{Error, Res};
 
 
-const DEBUG_SAMPLE_TRACE: &str = "../data/pad-trace-n2202-w1.csv";
+// const DEBUG_SAMPLE_TRACE: &str = "../data/pad-trace-n2202-w1.csv";
 const SIGNAL_INTERVAL: u32 = 1;
 // const DEBUG_DUMMY_PATH: &str = "https://host.docker.internal:7443/img/2nd-big-item.jpg";
 // const DEBUG_DUMMY_URLS: [&str; 5] = ["https://vanilla.neqo-test.com:7443/img/2nd-big-item.jpg",
@@ -169,11 +169,10 @@ impl Http3Client {
 
         // TODO (ldolfi): change to new_with_padding_only
         // so pading is part of creation of shaper
-        let shaper = Rc::new(RefCell::new(FlowShaper::new_from_file(
+        let shaper = Rc::new(RefCell::new(FlowShaper::new_with_dummy_only(
             config,
-            DEBUG_SAMPLE_TRACE,
             Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
-        ).expect("failed to load sample schedule")));
+        )));
 
         // set padding aprameters
         // for (param, value) in shaper.borrow().pparam_defaults().iter() {
