@@ -71,7 +71,12 @@ def neqo_request(conn, name, netloc=None, local=False, shaping=True, log=False):
     The argument netloc is an optional network locality such as
     localhost:443 that replaces the default.
     """
-    urls = ' '.join(_load_urls(name, netloc, local))
+    # urls = ' '.join(_load_urls(name, netloc, local))
+    dummy_urls = (  "https://${HOST}/img/2nd-big-item.jpg " 
+                      "https://${HOST}/css/bootstrap.min.css " 
+                      "https://${HOST}/img/3rd-item.jpg " 
+                      "https://${HOST}/img/4th-item.jpg " 
+                      "https://${HOST}/img/5th-item.jpg" )
 
     client_binary = {
         "linux": "../target/debug/neqo-client",
@@ -80,11 +85,11 @@ def neqo_request(conn, name, netloc=None, local=False, shaping=True, log=False):
                    "/lib/ -e SSLKEYLOGFILE=out.log")
                    + (" -e RUST_LOG=")+(NEQO_LOG if log else "")
                    + (" -e CSDEF_NO_SHAPING=")+("" if shaping else "yes")
-                   + (" neqo-qcd ../target/debug/neqo-client")
+                   + (" neqo-qcd pwd && ../target/debug/neqo-client")
     }[platform]
 
 
-    conn.run(f"{client_binary} {urls}", echo=True, env={
+    conn.run(f"{client_binary} --dummy-urls {dummy_urls} --url-dependencies-from 'deps-sample.csv'" , echo=True, env={
         "SSLKEYLOGFILE": "out.log",
         "RUST_LOG": NEQO_LOG if log else "",
         "CSDEF_NO_SHAPING": "" if shaping else "yes"
