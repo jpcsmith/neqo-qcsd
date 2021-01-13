@@ -156,16 +156,23 @@ impl Http3Client {
         qtrace!([self], "Enabling connection shaping.");
 
         // Load config
-        let toml_string = fs::read_to_string(neqo_csdef::shaper_config_file())
-                            .expect("Error reading config");
-        let config: Config = toml::from_str(&toml_string).expect("Could not parse toml.");
+        let config = match neqo_csdef::shaper_config_file() {
+            Some(config_file) => {
+                let toml_string = fs::read_to_string(config_file)
+                    .expect("Error reading config");
+
+                let config: Config = toml::from_str(&toml_string)
+                    .expect("Could not parse toml.");
+
+                config.debug
+            }
+            None => FlowShaper::config_default()
+        };
         // qdebug!([self],"dummy_size:\t{}", config.debug.dummy_size);
         // qdebug!([self],"dummy_maxw:\t{}", config.debug.dummy_maxw);
         // qdebug!([self],"dummy_minw:\t{}", config.debug.dummy_minw);
         // qdebug!([self],"dummy_ns:\t{}", config.debug.dummy_ns);
         // qdebug!([self],"dummy_ns:\t{}", config.debug.dummy_nc);
-
-        let config = config.debug; // change this for different config
 
         // TODO (ldolfi): change to new_with_padding_only
         // so pading is part of creation of shaper
