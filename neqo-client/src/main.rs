@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::rc::Rc;
 use std::time::Instant;
-// use neqo_csdef::flow_shaper;
+use neqo_csdef::flow_shaper;
 
 use structopt::StructOpt;
 use url::{Origin, Url};
@@ -702,6 +702,13 @@ fn main() -> Res<()> {
         None => UrlDependencyTracker::new(&[])
     };
     let url_deps = Rc::new(RefCell::new(url_deps));
+
+    // If there are no dummy-urls, extract them from the list of URLs
+    if args.dummy_urls.is_empty() {
+        args.dummy_urls.extend(
+            flow_shaper::select_padding_urls(&args.urls, 5)
+        );
+    }
 
     if let Some(testcase) = args.qns_test.as_ref() {
         match testcase.as_str() {
