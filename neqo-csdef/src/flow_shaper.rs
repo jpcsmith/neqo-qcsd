@@ -1,5 +1,5 @@
 use std::time::{ Duration, Instant };
-use std::collections::{ HashMap, VecDeque };
+use std::collections::{ HashMap, VecDeque, HashSet };
 use std::convert::TryFrom;
 use std::cmp::max;
 use std::cell::RefCell;
@@ -808,17 +808,30 @@ impl FlowShaper {
 /// Prefers image URLs (png, jpg) followed by script URLs (js) and 
 /// decides based on the extension of the URL's path.
 pub fn select_padding_urls(urls: &[Url], count: usize) -> Vec<Url> {
-    let mut result: Vec<Url> = vec![];
+    let mut result: Vec<&Url> = vec![];
 
     result.extend(urls.iter().filter(
             |u| u.path().ends_with(".png") || u.path().ends_with(".jpg")
-        ).cloned());
-    result.extend(urls.iter().filter(|u| u.path().ends_with(".js")).cloned());
+        ));
+    result.extend(urls.iter().filter(|u| u.path().ends_with(".js")));
+
+    if result.len() >= count {
+        return result.iter().take(count).cloned().cloned().collect()
+    }
+
+    // Use arbitrary additional URLs to make the required number
+    let mut result: HashSet<&Url> = result.iter().cloned().collect();
+    for url in urls {
+        result.insert(url);
+
+        if result.len() == count {
+            break;
+        }
+    }
 
     assert!(result.len() >= count, "Not enough URLs to be used for padding.");
-    result.resize(count, Url::parse("http://a.com").unwrap());
+    return result.iter().cloned().cloned().collect()
 
-    result
 }
 
 
@@ -869,7 +882,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Not enough URLs")]
     fn test_select_padding_urls_insufficient_urls() {
         let urls = vec![
             Url::parse("https://b.com/script.js").unwrap(),
@@ -878,7 +890,10 @@ mod tests {
             Url::parse("https://b.com").unwrap(),
         ];
 
-        select_padding_urls(&urls, 3);
+        assert_eq!(
+            select_padding_urls(&urls, 3).iter().collect::<HashSet<&Url>>(),
+            urls[0..3].iter().collect::<HashSet<&Url>>()
+        );
     }
 
     #[test]
