@@ -1,5 +1,10 @@
 pub mod flow_shaper;
 pub mod stream_id;
+pub use crate::error::{
+    Error, ErrorKind, Result
+};
+
+mod error;
 
 use std::env;
 
@@ -18,10 +23,10 @@ fn debug_disable_shaping_(env_key: &str) -> bool {
     }
 }
 
-pub fn shaper_config_file() -> String {
+pub fn shaper_config_file() -> Option<String> {
     match env::var("CSDEF_SHAPER_CONFIG") {
-        Ok(s) => s,
-        _ => String::from(DEBUG_SHAPER_CONFIG)
+        Ok(s) => Some(s),
+        Err(_) => None
     }
 }
 

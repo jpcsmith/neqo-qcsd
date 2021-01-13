@@ -1,6 +1,3 @@
-use std::fs::File;
-use std::io::{self, BufRead};
-use std::num;
 use std::time::{ Duration, Instant };
 use std::collections::{ HashMap, VecDeque };
 use std::convert::TryFrom;
@@ -11,15 +8,15 @@ use rand::Rng; // for rayleigh sampling
 use std::fmt::Display;
 use url::Url;
 use serde::{Deserialize};
-extern crate csv; // for writng debug
 use std::fs::OpenOptions;
-use csv::Writer;
+use csv::{self, Writer};
 
 use neqo_common::{
     qdebug, qinfo, qwarn
 };
 
 use crate::stream_id::StreamId;
+use crate::Result;
 
 // The value below is taken from the QUIC Connection class and defines the 
 // buffer that is allocated for receiving data.
@@ -75,55 +72,18 @@ pub struct ConfigEntry {
     dummy_minw: f64
 }
 
-#[derive(Debug)]
-pub enum TraceLoadError {
-    Io(io::Error),
-    Parse(String),
-    Csv(String),
-}
-
-impl From<num::ParseIntError> for TraceLoadError {
-    fn from(err: num::ParseIntError) -> TraceLoadError {
-        TraceLoadError::Parse(err.to_string())
-    }
-}
-
-impl From<num::ParseFloatError> for TraceLoadError {
-    fn from(err: num::ParseFloatError) -> TraceLoadError {
-        TraceLoadError::Parse(err.to_string())
-    }
-}
-
-impl From<io::Error> for TraceLoadError {
-    fn from(err: io::Error) -> TraceLoadError {
-        TraceLoadError::Io(err)
-    }
-}
-
-impl From<csv::Error> for TraceLoadError {
-    fn from(err: csv::Error) -> TraceLoadError {
-        TraceLoadError::Csv(err.to_string())
-    }
-}
-
-
 type Trace = Vec<(Duration, i32)>;
 
-pub fn load_trace(filename: &str) -> Result<Trace, TraceLoadError> {
-    let mut packets = Vec::new();
+pub fn load_trace(filename: &str) -> Result<Trace> {
+    let mut packets: Trace = Vec::new();
 
-    let file = File::open(filename)?;
-    for line in io::BufReader::new(file).lines() {
-        let line = line?;
-        let mut line_iter = line.split(",");
-        let timestamp: f64 = line_iter.next()
-            .ok_or(TraceLoadError::Parse("no timestamp".to_owned()))
-            .and_then(|s| s.parse::<f64>().map_err(TraceLoadError::from))?;
-        let size: i32 = line_iter.next()
-            .ok_or(TraceLoadError::Parse("no size".to_owned()))
-            .and_then(|s| s.parse::<i32>().map_err(TraceLoadError::from))?;
+    let mut reader = csv::ReaderBuilder::new()
+        .has_headers(false)
+        .from_path(filename)?;
 
-        packets.push((Duration::from_secs_f64(timestamp), size));
+    for result in reader.deserialize() {
+        let record: (f64, i32) = result?;
+        packets.push((Duration::from_secs_f64(record.0), record.1));
     }
 
     Ok(packets)
@@ -571,11 +531,11 @@ impl FlowShaper {
     }
 
     /// Create a new FlowShaper from a CSV trace file
-    pub fn new_from_file(config: ConfigEntry, filename: &str, interval: Duration) -> Result<Self, TraceLoadError> {
+    pub fn new_from_file(config: ConfigEntry, filename: &str, interval: Duration) -> Result<Self> {
         load_trace(filename).map(|trace| Self::new(config, interval, &trace))
     }
 
-    fn config_default() -> ConfigEntry {
+    pub fn config_default() -> ConfigEntry {
         ConfigEntry {
             initial_md: 3000,
             rx_stream_data_window: 1048576,
@@ -625,7 +585,7 @@ impl FlowShaper {
     }
 
     // creates new Trace of dummy packets sampled from rayleigh distribution
-    pub fn new_padding_trace(&self) -> Result<Trace, TraceLoadError>{
+    pub fn new_padding_trace(&self) -> Result<Trace>{
         qinfo!([self], "Creating padding traces.");
         let mut schedule = Vec::new();
         // get params
@@ -843,6 +803,24 @@ impl FlowShaper {
     }
 }
 
+/// Select count padding URLs from the slice of URLs.
+///
+/// Prefers image URLs (png, jpg) followed by script URLs (js) and 
+/// decides based on the extension of the URL's path.
+pub fn select_padding_urls(urls: &[Url], count: usize) -> Vec<Url> {
+    let mut result: Vec<Url> = vec![];
+
+    result.extend(urls.iter().filter(
+            |u| u.path().ends_with(".png") || u.path().ends_with(".jpg")
+        ).cloned());
+    result.extend(urls.iter().filter(|u| u.path().ends_with(".js")).cloned());
+
+    assert!(result.len() >= count, "Not enough URLs to be used for padding.");
+    result.resize(count, Url::parse("http://a.com").unwrap());
+
+    result
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -864,8 +842,50 @@ mod tests {
     }
 
     #[test]
+    fn test_select_padding_urls() {
+        let urls = vec![
+            Url::parse("https://a.com").unwrap(),
+            Url::parse("https://a.com/image.png").unwrap(),
+            Url::parse("https://a.com/image.jpg").unwrap(),
+            Url::parse("https://b.com").unwrap(),
+        ];
+        assert_eq!(select_padding_urls(&urls, 2)[..], urls[1..3]);
+
+        let urls = vec![
+            Url::parse("https://a.com").unwrap(),
+            Url::parse("https://a.com/image.png").unwrap(),
+            Url::parse("https://b.com").unwrap(),
+            Url::parse("https://b.com/image-2.jpg").unwrap(),
+        ];
+        assert_eq!(select_padding_urls(&urls, 2), vec![urls[1].clone(), urls[3].clone()]);
+
+        let urls = vec![
+            Url::parse("https://b.com/script.js").unwrap(),
+            Url::parse("https://a.com/image.png").unwrap(),
+            Url::parse("https://a.com").unwrap(),
+            Url::parse("https://b.com").unwrap(),
+        ];
+        assert_eq!(select_padding_urls(&urls, 2), vec![urls[1].clone(), urls[0].clone()]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Not enough URLs")]
+    fn test_select_padding_urls_insufficient_urls() {
+        let urls = vec![
+            Url::parse("https://b.com/script.js").unwrap(),
+            Url::parse("https://a.com/image.png").unwrap(),
+            Url::parse("https://a.com").unwrap(),
+            Url::parse("https://b.com").unwrap(),
+        ];
+
+        select_padding_urls(&urls, 3);
+    }
+
+    #[test]
     fn test_sanity() {
         let trace = load_trace("../data/nytimes.csv").expect("Load failed");
+
+        assert_eq!(trace[0], (Duration::from_secs(0), 74));
         FlowShaper::new(FlowShaper::config_default(), Duration::from_millis(10), &trace);
     }
 
