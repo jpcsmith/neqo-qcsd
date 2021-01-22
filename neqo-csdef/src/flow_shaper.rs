@@ -367,10 +367,19 @@ impl FlowShaper {
     /// Report the next instant at which the FlowShaper should be called for
     /// processing events.
     pub fn next_signal_time(&self) -> Option<Instant> {
-        self.in_target.front()
-            .map(|(ts, _)| Duration::from_millis(u64::from(*ts)))
+        self.next_signal_offset()
+            .map(u64::from)
+            .map(Duration::from_millis)
             .zip(self.start_time)
             .map(|(dur, start)| max(start + dur, Instant::now()))
+    }
+
+    fn next_signal_offset(&self) -> Option<u32> {
+        vec![self.in_target.front(), self.out_target.front(), 
+             self.pad_in_target.front(), self.pad_out_target.front()]
+                 .iter()
+                 .filter_map(|x| x.map(|(ts, _)| *ts))
+                 .min()
     }
 
     pub fn process_timer(&mut self, now: Instant) {
@@ -854,6 +863,15 @@ mod tests {
         FlowShaper::new(FlowShaper::config_default(), Duration::from_millis(5), &vec)
     }
 
+    fn create_shaper_with_trace(vec: Vec<(u64, i32)>, interval: u64) -> FlowShaper {
+        let vec = vec
+            .into_iter()
+            .map(|(time, size)| (Duration::from_millis(time), size)).collect();
+
+        FlowShaper::new(
+            FlowShaper::config_default(), Duration::from_millis(interval), &vec)
+    }
+
     #[test]
     fn test_select_padding_urls() {
         let urls = vec![
@@ -905,13 +923,33 @@ mod tests {
     }
 
     #[test]
+    fn test_next_signal_offset() {
+        let shaper = create_shaper_with_trace(
+            vec![(100, 1500), (150, -1350), (200, 700)], 1);
+        assert_eq!(shaper.next_signal_offset().unwrap(), 100);
+
+        let shaper = create_shaper_with_trace(
+            vec![(2, 1350), (16, -4800), (21, 600), (22, -350)], 1);
+        assert_eq!(shaper.next_signal_offset().unwrap(), 2);
+
+        let shaper = create_shaper_with_trace(
+            vec![(0, 1350), (16, -4800), (21, 600), (22, -350)], 1);
+        assert_eq!(shaper.next_signal_offset().unwrap(), 0);
+
+        let shaper = create_shaper_with_trace(
+            vec![(2, 1350), (16, -4800), (21, 600), (22, -350)], 5);
+        assert_eq!(shaper.next_signal_offset().unwrap(), 0);
+    }
+
+    #[test]
     fn test_next_signal_time() {
         let mut shaper = create_shaper();
         assert_eq!(shaper.next_signal_time(), None);
 
         shaper.start();
-        assert_eq!(shaper.next_signal_time(),
-                   Some(shaper.start_time.unwrap() + Duration::from_millis(15)))
+        // next_signal_time() also will take the greater of the time and now
+        assert!(shaper.next_signal_time() 
+                > Some(shaper.start_time.unwrap() + Duration::from_millis(0)))
     }
 
     #[test]
