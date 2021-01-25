@@ -1,4 +1,5 @@
 pub mod flow_shaper;
+pub mod defences;
 pub mod stream_id;
 pub use crate::error::{
     Error, ErrorKind, Result
@@ -29,6 +30,16 @@ pub fn shaper_config_file() -> Option<String> {
         Err(_) => None
     }
 }
+
+pub fn dummy_schedule_log_file() -> Option<String> {
+    match env::var("CSDEF_DUMMY_SCHEDULE") {
+        Ok(s) => Some(s),
+        Err(_) => None
+    }
+
+}
+
+
 
 
 #[cfg(test)]
