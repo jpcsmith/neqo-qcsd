@@ -2,10 +2,8 @@ use std::time::Duration;
 use rand::Rng; // for rayleigh sampling
 use csv::{self, Writer};
 use neqo_common::qinfo;
-use crate::Result;
-use crate::dummy_schedule_log_file;
-
-type Trace = Vec<(Duration, i32)>;
+use crate::{ Result, Trace, dummy_schedule_log_file };
+use crate::defences::Defence;
 
 
 // TODO(ldolfi): possibly use rgsl.randist.rayleigh
@@ -68,18 +66,14 @@ impl FrontDefence {
         }).take(n_packets as usize).collect()
     }
 
-    pub fn create_trace(&self) -> Result<Trace> {
+    pub fn create_trace(&self) -> Trace {
         qinfo!("Creating padding traces.");
 
-        let result: Trace = self.sample_timestamps(self.config.n_server_packets)
+        self.sample_timestamps(self.config.n_server_packets)
             .into_iter()
             .map(|(t, l)| (t, l * -1))
             .chain(self.sample_timestamps(self.config.n_client_packets))
-            .collect();
-
-        self.log_trace(&result)?;
-
-        Ok(result)
+            .collect()
     }
 
     fn log_trace(&self, trace: &Trace) -> Result<()> {
@@ -96,6 +90,11 @@ impl FrontDefence {
     }
 }
 
+impl Defence for FrontDefence {
+    fn trace(&self) -> Trace { self.create_trace() }
+    fn is_padding_only(&self) -> bool { true }
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -105,7 +104,7 @@ mod tests {
     fn test_font_create_trace() {
         let trace = FrontDefence::new(FrontConfig{ 
             packet_size: 500, ..Default::default() 
-        }).create_trace().unwrap();
+        }).create_trace();
 
         // All packets should be of absolute size 500
         assert!(trace.iter().all(|(_, l)| l.abs() == 500));
