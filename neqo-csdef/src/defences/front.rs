@@ -1,8 +1,7 @@
 use std::time::Duration;
 use rand::Rng; // for rayleigh sampling
-use csv::{self, Writer};
 use neqo_common::qinfo;
-use crate::{ Result, Trace, dummy_schedule_log_file };
+use crate::Trace;
 use crate::defences::Defence;
 
 
@@ -76,18 +75,6 @@ impl FrontDefence {
             .collect()
     }
 
-    fn log_trace(&self, trace: &Trace) -> Result<()> {
-        if let Some(csv_path) = dummy_schedule_log_file() {
-            let mut wtr = Writer::from_path(csv_path)?;
-
-            for (d, s) in trace.iter() {
-                wtr.write_record(&[d.as_secs_f64().to_string(), s.to_string()])?;
-            }
-            wtr.flush()?;
-        }
-
-        Ok(())
-    }
 }
 
 impl Defence for FrontDefence {

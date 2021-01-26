@@ -1,7 +1,7 @@
 use std::time::{ Duration, Instant };
 use std::collections::{ HashMap, VecDeque, HashSet };
 use std::convert::TryFrom;
-use csv::{self};
+use csv::{self, Writer};
 use serde::{Deserialize};
 use std::cell::RefCell;
 use std::cmp::max;
@@ -14,7 +14,7 @@ use neqo_common::{ qdebug, qwarn };
 
 use crate::stream_id::StreamId;
 use crate::defences::Defence;
-use crate::Result;
+use crate::{ Result, dummy_schedule_log_file };
 
 
 fn debug_check_var_(env_key: &str) -> bool {
@@ -69,6 +69,19 @@ pub fn load_trace(filename: &str) -> Result<Trace> {
     }
 
     Ok(packets)
+}
+
+fn log_trace(trace: &Trace) -> Result<()> {
+    if let Some(csv_path) = dummy_schedule_log_file() {
+        let mut wtr = Writer::from_path(csv_path)?;
+
+        for (d, s) in trace.iter() {
+            wtr.write_record(&[d.as_secs_f64().to_string(), s.to_string()])?;
+        }
+        wtr.flush()?;
+    }
+
+    Ok(())
 }
 
 
@@ -372,8 +385,10 @@ impl Display for FlowShaper {
 
 
 impl FlowShaper {
+
     pub fn new(config: Config, trace: &Trace, pad_only_mode: bool) -> FlowShaper {
         assert!(trace.len() > 0);
+        log_trace(trace).expect("Unable to log trace.");
 
         // Bin the trace
         let mut bins: HashMap<(u32, bool), i32> = HashMap::new();
