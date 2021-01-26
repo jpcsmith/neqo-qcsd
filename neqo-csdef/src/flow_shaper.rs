@@ -34,12 +34,23 @@ fn debug_enable_save_ids() -> bool {
     debug_check_var_("CSDEF_DUMMY_ID")
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct Config {
     control_interval: Duration,
     initial_md: u64,
     rx_stream_data_window: u64,
     local_md: u64,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            control_interval: Duration::from_millis(5),
+            initial_md: 3000,
+            rx_stream_data_window: 1048576,
+            local_md: 4611686018427387903,
+        }
+    }
 }
 
 type Trace = Vec<(Duration, i32)>;
