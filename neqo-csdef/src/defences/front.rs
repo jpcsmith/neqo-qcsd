@@ -3,6 +3,7 @@ use rand::Rng; // for rayleigh sampling
 use csv::{self, Writer};
 use neqo_common::qinfo;
 use crate::Result;
+use crate::dummy_schedule_log_file;
 
 type Trace = Vec<(Duration, i32)>;
 
@@ -58,7 +59,7 @@ impl FrontDefence {
         let n_packets: u64 = rand::thread_rng().gen_range(1, (n_packets + 1).into());
         let weight: f64 = rand::thread_rng().gen_range(
             config.peak_minimum, config.peak_maximum);
-        println!("n_packets: {}\tw_c: {}", n_packets, weight);
+        println!("n_packets: {}\tw: {}", n_packets, weight);
 
         std::iter::repeat_with(move || {
             let timestamp = rayleigh_cdf_inv(rand::thread_rng().gen_range(0.,1.), weight);
@@ -82,7 +83,7 @@ impl FrontDefence {
     }
 
     fn log_trace(&self, trace: &Trace) -> Result<()> {
-        if let Some(csv_path) = crate::dummy_schedule_log_file() {
+        if let Some(csv_path) = dummy_schedule_log_file() {
             let mut wtr = Writer::from_path(csv_path)?;
 
             for (d, s) in trace.iter() {
