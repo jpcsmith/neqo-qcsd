@@ -1,18 +1,19 @@
 use std::time::{ Duration, Instant };
 use std::collections::{ HashMap, VecDeque, HashSet };
 use std::convert::TryFrom;
-use std::cmp::max;
+use csv::{self};
+use serde::{Deserialize};
 use std::cell::RefCell;
+use std::cmp::max;
 use std::env; // for reading env variables
 use std::fmt::Display;
-use url::Url;
-use serde::{Deserialize};
 use std::fs::OpenOptions;
-use csv::{self};
+use url::Url;
 
 use neqo_common::{ qdebug, qwarn };
 
 use crate::stream_id::StreamId;
+use crate::defences::Defence;
 use crate::Result;
 
 
@@ -320,6 +321,14 @@ impl FlowShaperBuilder {
 
     pub fn from_trace(self, trace: &Trace) -> FlowShaper {
         FlowShaper::new(self.config, trace, self.pad_only_mode)
+    }
+    
+    pub fn from_defence(self, defence: &impl Defence) -> FlowShaper {
+        let mut mut_self = self;
+        mut_self.pad_only_mode(defence.is_padding_only());
+
+        let unmut_self = mut_self;
+        unmut_self.from_trace(&defence.trace())
     }
 
     /// Create a new FlowShaper from a CSV trace file

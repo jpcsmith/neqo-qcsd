@@ -1,13 +1,15 @@
 pub mod flow_shaper;
 pub mod defences;
 pub mod stream_id;
+mod error;
+
 pub use crate::error::{
     Error, ErrorKind, Result
 };
 
-mod error;
-
 use std::env;
+use std::time::Duration;
+
 
 pub const DEBUG_SHAPER_CONFIG: &str = "/Users/luca/Documents/ETHZ/Thesis/code/neqo-qcd/neqo-csdef/src/config.toml";
 
@@ -39,7 +41,7 @@ pub fn dummy_schedule_log_file() -> Option<String> {
 
 }
 
-
+pub type Trace = Vec<(Duration, i32)>;
 
 
 #[cfg(test)]
