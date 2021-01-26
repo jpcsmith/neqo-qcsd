@@ -4,23 +4,17 @@ use std::convert::TryFrom;
 use std::cmp::max;
 use std::cell::RefCell;
 use std::env; // for reading env variables
-use rand::Rng; // for rayleigh sampling
 use std::fmt::Display;
 use url::Url;
 use serde::{Deserialize};
 use std::fs::OpenOptions;
-use csv::{self, Writer};
+use csv::{self};
 
-use neqo_common::{
-    qdebug, qinfo, qwarn
-};
+use neqo_common::{ qdebug, qwarn };
 
 use crate::stream_id::StreamId;
 use crate::Result;
 
-// The value below is taken from the QUIC Connection class and defines the 
-// buffer that is allocated for receiving data.
-const RX_STREAM_DATA_WINDOW: u64 = 0x10_0000; // 1MiB
 
 fn debug_check_var_(env_key: &str) -> bool {
     match env::var(env_key) {
@@ -40,36 +34,12 @@ fn debug_enable_save_ids() -> bool {
     debug_check_var_("CSDEF_DUMMY_ID")
 }
 
-
-fn debug_save_dummy_path() -> String {
-    match env::var("CSDEF_DUMMY_SCHEDULE") {
-        Ok(s) => s,
-        _ => String::from("")
-    }
-}
-
-fn debug_enable_save_dummy() -> bool {
-    debug_check_var_("CSDEF_DUMMY_SCHEDULE")
-}
-
-
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct Config {
-    pub debug: ConfigEntry,
-    t1: ConfigEntry,
-    pt2: Option<ConfigEntry>
-}
-#[derive(Debug, Deserialize)]
-pub struct ConfigEntry {
+    control_interval: Duration,
     initial_md: u64,
     rx_stream_data_window: u64,
     local_md: u64,
-    dummy_size: u32,
-    dummy_nc: u32,
-    dummy_ns: u32,
-    dummy_maxw: f64,
-    dummy_minw: f64
 }
 
 type Trace = Vec<(Duration, i32)>;
@@ -87,14 +57,6 @@ pub fn load_trace(filename: &str) -> Result<Trace> {
     }
 
     Ok(packets)
-}
-
-// TODO(ldolfi): possibly use rgsl.randist.rayleigh
-fn rayleigh_cdf_inv(u: f64, sigma: f64) -> f64{
-    let foo = (1.-u).ln();
-    let bar = (-2.*foo).sqrt();
-
-    return sigma*bar;
 }
 
 
@@ -318,36 +280,68 @@ impl FlowShapingStreams {
     // }
 }
 
+#[derive(Debug, Default)]
+pub struct FlowShaperBuilder {
+    config: Config,
+
+    pad_only_mode: bool,
+}
+
+impl FlowShaperBuilder {
+    pub fn new() -> Self {
+        FlowShaperBuilder::default()
+    }
+
+    pub fn config(&mut self, config: Config) -> &mut Self {
+        self.config = config;
+        self
+    }
+
+    pub fn control_interval(&mut self, interval: Duration) -> &mut Self {
+        self.config.control_interval = interval;
+        self
+    }
+
+    pub fn pad_only_mode(&mut self, pad_only_mode: bool) -> &mut Self {
+        self.pad_only_mode = pad_only_mode;
+        self
+    }
+
+    pub fn from_trace(self, trace: &Trace) -> FlowShaper {
+        FlowShaper::new(self.config, trace, self.pad_only_mode)
+    }
+
+    /// Create a new FlowShaper from a CSV trace file
+    pub fn from_csv(self, filename: &str) -> Result<FlowShaper> {
+        load_trace(filename)
+            .map(|trace| FlowShaper::new(self.config, &trace, self.pad_only_mode))
+    }
+}
+
 
 /// Shaper for the connection. Assumes that it operates on the client,
 /// and not the server.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FlowShaper {
-    config: ConfigEntry,
+    /// General configuration
+    config: Config,
+    /// Whether we are padding or shaping
+    pad_only_mode: bool,
 
-    // The control interval
-    interval: Duration,
-
+    /// The target traces
     out_target: VecDeque<(u32, u32)>,
     in_target: VecDeque<(u32, u32)>,
 
+    /// The time that the flow shaper was started
     start_time: Option<Instant>,
 
-    // The current maximum amount of data that may be received
-    // on the connection.
-    rx_max_data: u64,
-    rx_progress: u64,
-
+    /// Event Queues
     events: FlowShapingEvents,
     application_events: FlowShapingApplicationEvents,
 
-    // padding parameters
-    padding_params: HashMap <String, f64>,
-    pad_out_target: VecDeque <(u32, u32)>,
-    pad_in_target: VecDeque <(u32, u32)>,
-    shaping_streams: FlowShapingStreams,
-    shaping_streams_max_data: HashMap <StreamId, u64>,
-
+    /// Streams used for sending chaff traffic
+    chaff_streams: FlowShapingStreams,
+    chaff_streams_max_data: HashMap <StreamId, u64>,
 }
 
 impl Display for FlowShaper {
@@ -358,133 +352,12 @@ impl Display for FlowShaper {
 
 
 impl FlowShaper {
-    /// Start shaping the traffic using the current time as the reference
-    /// point.
-    pub fn start(&mut self) {
-        self.start_time = Some(Instant::now());
-    }
-
-    /// Report the next instant at which the FlowShaper should be called for
-    /// processing events.
-    pub fn next_signal_time(&self) -> Option<Instant> {
-        self.next_signal_offset()
-            .map(u64::from)
-            .map(Duration::from_millis)
-            .zip(self.start_time)
-            .map(|(dur, start)| max(start + dur, Instant::now()))
-    }
-
-    fn next_signal_offset(&self) -> Option<u32> {
-        vec![self.in_target.front(), self.out_target.front(), 
-             self.pad_in_target.front(), self.pad_out_target.front()]
-                 .iter()
-                 .filter_map(|x| x.map(|(ts, _)| *ts))
-                 .min()
-    }
-
-    pub fn process_timer(&mut self, now: Instant) {
-        if let Some(start_time) = self.start_time {
-            self.process_timer_(now.duration_since(start_time));
-        }
-    }
-
-    fn process_timer_(&mut self, since_start: Duration) {
-        // if let Some((ts, _)) = self.in_target.front() {
-        //     let next = Duration::from_millis(u64::from(*ts));
-        //     if next < since_start {
-        //         let (_, size) = self.in_target.pop_front()
-        //             .expect("the deque to be non-empty");
-
-        //         self.rx_progress = self.rx_progress.saturating_add(u64::from(size));
-        //         if self.rx_progress > self.rx_max_data {
-        //             // TODO (ldolfi): use all shaping streams
-        //             match self.shaping_streams.streams.borrow().iter().next() {
-        //                 Some(id) => {
-        //                     self.events.send_max_stream_data(StreamId::new(*id), self.rx_progress);
-        //                     // self.shaping_streams_max_data.insert(StreamId::new(*id), self.rx_progress);
-        //                     self.shaping_streams.insert(*id, self.rx_progress);
-        //                 },
-        //                 _ => { qwarn!("Tried to shape but no shaping streams available.")}
-        //             }
-        //         }
-        //     }
-        // }
-        // dummy packets out
-        if let Some((ts, _)) = self.pad_out_target.front() {
-            let next = Duration::from_millis(u64::from(*ts));
-            if next < since_start {
-                let (_, size) = self.pad_out_target.pop_front()
-                    .expect("the deque to be non-empty");
-                
-                self.events.send_pad_frames(size);
-            }
-        }
-        // dummy packets in
-        if self.shaping_streams.has_open() {
-            if let Some((ts, _)) = self.pad_in_target.front() {
-                let next = Duration::from_millis(u64::from(*ts));
-                if next < since_start {
-                    let (_, size) = self.pad_in_target.pop_front()
-                        .expect("the deque to be non-empty");
-
-                    // TODO (ldolfi): use all shaping streams
-                    // let num_dummy_streams = self.shaping_streams.len();
-
-                    // find first available dummy stream to transfer data
-                    for (id, _) in self.shaping_streams.streams.borrow().iter() {
-                        if self.shaping_streams.is_open(*id) {
-                            let stream_id = StreamId::new(*id);
-                            if let Some(max_stream_data) = self.shaping_streams
-                                                                .max_stream_datas
-                                                                .borrow_mut()
-                                                                .get_mut(id)
-                            {
-                                *max_stream_data += size as u64;
-                                self.events
-                                    .send_max_stream_data(stream_id, *max_stream_data);
-                            }
-                            break;
-                        }
-                    }
-                    
-                }
-            }
-        }
-
-        // check dequeues empty, if so send connection close event
-        // TODO (ldolfi): use check only on dequeues actually in use
-        if self.pad_in_target.is_empty() && self.pad_out_target.is_empty() {
-            self.application_events.send_connection_close();
-        }
-    }
-
-    pub fn new_with_dummy_only(config: ConfigEntry, interval: Duration) -> FlowShaper {
-        let rx_max_data = config.initial_md;
-
-        FlowShaper{
-            config,
-            interval,
-            in_target: VecDeque::new(),
-            out_target: VecDeque::new(),
-            start_time: None,
-            rx_max_data,
-            rx_progress: 0,
-            events: FlowShapingEvents::default(),
-            application_events: FlowShapingApplicationEvents::default(),
-            padding_params: HashMap::new(),
-            pad_out_target: VecDeque::new(),
-            pad_in_target: VecDeque::new(),
-            shaping_streams: FlowShapingStreams::default(),
-            shaping_streams_max_data: HashMap::new(),
-        }
-    }
-
-    pub fn new(config: ConfigEntry, interval: Duration, trace: &Trace) -> FlowShaper {
+    pub fn new(config: Config, trace: &Trace, pad_only_mode: bool) -> FlowShaper {
         assert!(trace.len() > 0);
 
         // Bin the trace
         let mut bins: HashMap<(u32, bool), i32> = HashMap::new();
-        let interval_ms = interval.as_millis();
+        let interval_ms = config.control_interval.as_millis();
 
         for (timestamp, size) in trace.iter() {
             let timestamp = timestamp.as_millis();
@@ -511,51 +384,97 @@ impl FlowShaper {
             .collect();
         out_target.sort();
 
-        // load config
-        // let _foo: toml::Value = toml::from_str(&toml_string).expect("Could not parse toml");
-        // println!("{:?}", _foo);
-        // qdebug!("{:?}", _foo["debug"]);
-        // qdebug!("{:?}", _foo["t1"]);
-        // qdebug!("{:?}", _foo["debug"]["dummy_size"]);
-        
-        // let config = Self::config_default();
-        let rx_max_data = config.initial_md;
-
         FlowShaper{
             config,
-            interval,
             in_target: VecDeque::from(in_target),
             out_target: VecDeque::from(out_target),
-            start_time: None,
-            rx_max_data,
-            rx_progress: 0,
-            events: FlowShapingEvents::default(),
-            application_events: FlowShapingApplicationEvents::default(),
-            padding_params: HashMap::new(),
-            pad_out_target: VecDeque::new(),
-            pad_in_target: VecDeque::new(),
-            shaping_streams: FlowShapingStreams::default(),
-            shaping_streams_max_data: HashMap::new(),
+            pad_only_mode: pad_only_mode,
+            ..FlowShaper::default()
         }
     }
 
-    /// Create a new FlowShaper from a CSV trace file
-    pub fn new_from_file(config: ConfigEntry, filename: &str, interval: Duration) -> Result<Self> {
-        load_trace(filename).map(|trace| Self::new(config, interval, &trace))
+
+    /// Start shaping the traffic using the current time as the reference
+    /// point.
+    pub fn start(&mut self) {
+        self.start_time = Some(Instant::now());
     }
 
-    pub fn config_default() -> ConfigEntry {
-        ConfigEntry {
-            initial_md: 3000,
-            rx_stream_data_window: 1048576,
-            local_md: 4611686018427387903,
-            dummy_size: 700,
-            dummy_nc: 900,
-            dummy_ns: 1200,
-            dummy_maxw: 2.5,
-            dummy_minw: 0.1
+    /// Report the next instant at which the FlowShaper should be called for
+    /// processing events.
+    pub fn next_signal_time(&self) -> Option<Instant> {
+        self.next_signal_offset()
+            .map(u64::from)
+            .map(Duration::from_millis)
+            .zip(self.start_time)
+            .map(|(dur, start)| max(start + dur, Instant::now()))
+    }
+
+    fn next_signal_offset(&self) -> Option<u32> {
+        vec![self.in_target.front(), self.out_target.front()]
+                 .iter()
+                 .filter_map(|x| x.map(|(ts, _)| *ts))
+                 .min()
+    }
+
+    pub fn process_timer(&mut self, now: Instant) {
+        if let Some(start_time) = self.start_time {
+            self.process_timer_(now.duration_since(start_time));
         }
     }
+
+    fn process_timer_(&mut self, since_start: Duration) {
+        if self.pad_only_mode {
+            // dummy packets out
+            if let Some((ts, _)) = self.out_target.front() {
+                let next = Duration::from_millis(u64::from(*ts));
+                if next < since_start {
+                    let (_, size) = self.out_target.pop_front()
+                        .expect("the deque to be non-empty");
+                    
+                    self.events.send_pad_frames(size);
+                }
+            }
+            // dummy packets in
+            if self.chaff_streams.has_open() {
+                if let Some((ts, _)) = self.in_target.front() {
+                    let next = Duration::from_millis(u64::from(*ts));
+                    if next < since_start {
+                        let (_, size) = self.in_target.pop_front()
+                            .expect("the deque to be non-empty");
+
+                        // TODO (ldolfi): use all shaping streams
+                        // let num_dummy_streams = self.chaff_streams.len();
+
+                        // find first available dummy stream to transfer data
+                        for (id, _) in self.chaff_streams.streams.borrow().iter() {
+                            if self.chaff_streams.is_open(*id) {
+                                let stream_id = StreamId::new(*id);
+                                if let Some(max_stream_data) = self.chaff_streams
+                                                                    .max_stream_datas
+                                                                    .borrow_mut()
+                                                                    .get_mut(id)
+                                {
+                                    *max_stream_data += size as u64;
+                                    self.events
+                                        .send_max_stream_data(stream_id, *max_stream_data);
+                                }
+                                break;
+                            }
+                        }
+                        
+                    }
+                }
+            }
+
+            // check dequeues empty, if so send connection close event
+            // TODO (ldolfi): use check only on dequeues actually in use
+            if self.in_target.is_empty() && self.out_target.is_empty() {
+                self.application_events.send_connection_close();
+            }
+        }
+    }
+
 
     /// Return the initial values for transport parameters
     pub fn tparam_defaults(&self) -> [(u64, u64); 3] {
@@ -571,121 +490,6 @@ impl FlowShaper {
             // they open (initial_max_stream_data_uni)
             // (0x07, 20),
         ]
-    }
-
-
-    // Return the default values for padding trace
-    // 
-    pub fn pparam_defaults(&self) -> [(String, f64); 4] {
-        [
-            // Client's padding budget in number of packets
-            ("pad_client_max_n".to_string(), self.config.dummy_nc.into()),
-            // minimum padding time in seconds
-            ("pad_max_w".to_string(), self.config.dummy_maxw),
-            // maximum padding time in seconds
-            ("pad_min_w".to_string(), self.config.dummy_minw),
-            // Client's padding budget in number of packets
-            ("pad_server_max_n".to_string(), self.config.dummy_ns.into()),
-        ]
-    }
-
-    pub fn set_dummy_param(&mut self, k: String, v: f64) {
-        self.padding_params.insert(k,v);
-    }
-
-    // creates new Trace of dummy packets sampled from rayleigh distribution
-    pub fn new_padding_trace(&self) -> Result<Trace>{
-        qinfo!([self], "Creating padding traces.");
-        let mut schedule = Vec::new();
-        // get params
-        let cpacket_budget = self.config.dummy_nc;
-        let min_w = self.config.dummy_minw;
-        let max_w = self.config.dummy_maxw;
-        let spacket_budget = self.config.dummy_ns;
-        // sample n_C and w_c
-        let _n_c: u64 = rand::thread_rng().gen_range(1,(cpacket_budget+1).into());
-        let _w_c: f64 = rand::thread_rng().gen_range(min_w,max_w);
-        println!("n_c: {}\tw_c: {}", _n_c, _w_c);
-        // sample timetable
-        let mut count = 0u64;
-        let mut t;
-        while count < _n_c {
-            count += 1;
-            let u: f64 = rand::thread_rng().gen_range(0.,1.);
-            t = rayleigh_cdf_inv(u, _w_c);
-            schedule.push((Duration::from_secs_f64(t), self.config.dummy_size as i32));
-            // println!("{}.  {}", count, t);
-        }
-        // sample n_s
-        let _n_s: u64 = rand::thread_rng().gen_range(1,(spacket_budget+1).into());
-        let _w_s: f64 = rand::thread_rng().gen_range(min_w,max_w);
-        println!("n_s: {}\tw_s: {}", _n_s, _w_s);
-        // sample timetable
-        count = 0;
-        let mut t;
-        while count < _n_s {
-            count += 1;
-            let u: f64 = rand::thread_rng().gen_range(0.,1.);
-            t = rayleigh_cdf_inv(u, _w_s);
-            if t >= 0.05 {
-                schedule.push((Duration::from_secs_f64(t), -(self.config.dummy_size as i32)));
-            }
-            // println!("{}.  {}", count, t);
-        }
-
-        if debug_enable_save_dummy() {
-            let csv_path = debug_save_dummy_path();
-            let mut wtr = Writer::from_path(csv_path)?;
-            // wtr.write_record(schedule.into_iter().map(|(d, s)| (d.as_secs_f64(), s)))?;
-            for (d, s) in schedule.iter() {
-                wtr.write_record(&[d.as_secs_f64().to_string(), s.to_string()])?;
-            }
-            wtr.flush()?;
-        }
-
-        return Ok(schedule);
-    }
-
-    pub fn set_padding_trace(&mut self, interval: Duration, trace: &Trace) {
-        assert!(trace.len() > 0);
-
-        // Bin the trace
-        let mut bins: HashMap<(u32, bool), i32> = HashMap::new();
-        let interval_ms = interval.as_millis();
-
-        for (timestamp, size) in trace.iter() {
-            let timestamp = timestamp.as_millis();
-            let bin = u32::try_from(timestamp - (timestamp % interval_ms))
-                .expect("timestamp in millis to fit in u32");
-
-            assert!(*size != 0, "trace sizes should be non-zero");
-            bins.entry((bin, *size > 0))
-                .and_modify(|e| *e += size)
-                .or_insert(*size);
-        }
-        // padding frames should now be added here according to schedule
-        // let mut pad_out_target: Vec<(u32, u32)> = bins
-        //     .iter()
-        //     .map(|((ts, _), size)| (*ts, u32::try_from(*size).unwrap()))
-        //     .collect();
-        // pad_out_target.sort();
-
-        let mut pad_in_target: Vec<(u32, u32)> = bins
-            .iter()
-            .filter(|&((_, inc), _)| !*inc)
-            .map(|((ts, _), size)| (*ts, u32::try_from(size.abs()).unwrap()))
-            .collect();
-        pad_in_target.sort();
-
-        let mut pad_out_target: Vec<(u32, u32)> = bins
-            .iter()
-            .filter(|((_, inc), _)| *inc)
-            .map(|((ts, _), size)| (*ts, u32::try_from(*size).unwrap()))
-            .collect();
-        pad_out_target.sort();
-
-        self.pad_out_target = VecDeque::from(pad_out_target);
-        self.pad_in_target = VecDeque::from(pad_in_target);
     }
 
     /// Queue events related to a new stream being created by the peer.
@@ -738,8 +542,8 @@ impl FlowShaper {
     }
 
     pub fn add_padding_stream(&self, stream_id: u64, dummy_url: Url) {
-        assert!(self.shaping_streams.add_padding_stream(stream_id, dummy_url));
-        assert!(self.shaping_streams.insert(stream_id, 0).is_none());
+        assert!(self.chaff_streams.add_padding_stream(stream_id, dummy_url));
+        assert!(self.chaff_streams.insert(stream_id, 0).is_none());
     }
 
     // signals that the stream is ready to receive MSD frames
@@ -760,19 +564,19 @@ impl FlowShaper {
             wtr.flush().expect("Failed saving dummy stream id");
         }
 
-        self.shaping_streams.open_stream(stream_id)
+        self.chaff_streams.open_stream(stream_id)
     }
 
     pub fn remove_dummy_stream(&self, stream_id: u64) -> Url{
         self.events.remove_by_id(&stream_id);
-        let dummy_url = self.shaping_streams.remove_dummy_stream(&stream_id);
+        let dummy_url = self.chaff_streams.remove_dummy_stream(&stream_id);
         assert!(dummy_url.is_some());
         // check if there are orphaned events
         // transfer the MSD events to a dummy stream currently open
-        if self.events.has_queue_events() && self.shaping_streams.has_open() {
+        if self.events.has_queue_events() && self.chaff_streams.has_open() {
             // find first available dummy stream to transfer data
-            for (id, _) in self.shaping_streams.streams.borrow().iter() {
-                if self.shaping_streams.is_open(*id) {
+            for (id, _) in self.chaff_streams.streams.borrow().iter() {
+                if self.chaff_streams.is_open(*id) {
                     self.events.drain_queue_with_id(*id);
                     break;
                 }
@@ -790,7 +594,7 @@ impl FlowShaper {
     // returns true if the stream_id is contained in the set of streams
     // being currently shaped
     pub fn is_shaping_stream(&self, stream_id: u64) -> bool {
-        self.shaping_streams.contains(stream_id)
+        self.chaff_streams.contains(stream_id)
     }
 
     pub fn next_event(&self) -> Option<FlowShapingEvent> {
@@ -848,6 +652,10 @@ pub fn select_padding_urls(urls: &[Url], count: usize) -> Vec<Url> {
 mod tests {
     use super::*;
 
+    // The value below is taken from the QUIC Connection class and defines the 
+    // buffer that is allocated for receiving data.
+    const RX_STREAM_DATA_WINDOW: u64 = 0x10_0000; // 1MiB
+
     type FSE = FlowShapingEvent;
 
     const CLIENT_BIDI_STREAM_ID: u64 = 0b100;
@@ -860,7 +668,7 @@ mod tests {
                 (Duration::from_millis(2), 1350), (Duration::from_millis(16), -4800),
                 (Duration::from_millis(21), 600), (Duration::from_millis(22), -350),
             ];
-        FlowShaper::new(FlowShaper::config_default(), Duration::from_millis(5), &vec)
+        FlowShaper::new(Config::default(), &vec, true)
     }
 
     fn create_shaper_with_trace(vec: Vec<(u64, i32)>, interval: u64) -> FlowShaper {
@@ -869,7 +677,10 @@ mod tests {
             .map(|(time, size)| (Duration::from_millis(time), size)).collect();
 
         FlowShaper::new(
-            FlowShaper::config_default(), Duration::from_millis(interval), &vec)
+            Config{
+                control_interval: Duration::from_millis(interval), 
+                ..Config::default()
+            }, &vec, true)
     }
 
     #[test]
@@ -919,7 +730,7 @@ mod tests {
         let trace = load_trace("../data/nytimes.csv").expect("Load failed");
 
         assert_eq!(trace[0], (Duration::from_secs(0), 74));
-        FlowShaper::new(FlowShaper::config_default(), Duration::from_millis(10), &trace);
+        FlowShaper::new(Config::default(), &trace, true);
     }
 
     #[test]
