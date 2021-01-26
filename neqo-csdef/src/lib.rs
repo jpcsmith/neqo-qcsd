@@ -7,11 +7,11 @@ pub use crate::error::{
     Error, ErrorKind, Result
 };
 
-use std::env;
+use std::{ env, fs, io };
 use std::time::Duration;
+use serde::Deserialize;
 
-
-pub const DEBUG_SHAPER_CONFIG: &str = "/Users/luca/Documents/ETHZ/Thesis/code/neqo-qcd/neqo-csdef/src/config.toml";
+pub type Trace = Vec<(Duration, i32)>;
 
 /// Returns true iff the CSDEF_NO_SHAPING environment variable is set to a 
 /// non-empty string.
@@ -41,7 +41,20 @@ pub fn dummy_schedule_log_file() -> Option<String> {
 
 }
 
-pub type Trace = Vec<(Duration, i32)>;
+
+#[derive(Debug, Deserialize)]
+pub struct ConfigFile {
+    pub flow_shaper: Option<flow_shaper::Config>,
+    pub front_defence: Option<defences::FrontConfig>
+}
+
+impl ConfigFile {
+    pub fn load(filename: &str) -> Result<ConfigFile> {
+        let toml_string = fs::read_to_string(filename)?;
+        toml::from_str(&toml_string)
+            .or(Err(Error::from(io::Error::new(io::ErrorKind::Other, "Invalid TOML file."))))
+    }
+}
 
 
 #[cfg(test)]

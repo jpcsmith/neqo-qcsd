@@ -24,22 +24,22 @@ use neqo_transport::{
     AppError, CongestionControlAlgorithm, Connection, ConnectionEvent, ConnectionId,
     ConnectionIdManager, Output, QuicVersion, StreamId, StreamType, ZeroRttState,
 };
-use neqo_csdef::flow_shaper::{ FlowShaper, FlowShapingEvent, Config };
+use neqo_csdef::ConfigFile;
+use neqo_csdef::flow_shaper::{ FlowShaper, FlowShaperBuilder, FlowShapingEvent };
+use neqo_csdef::defences::{ FrontDefence, FrontConfig };
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::time::{ Duration, Instant };
+use std::time::Instant;
 
 use url::Url; // for parsing dummy url
 // use toml::from_str; /// for parsing flow_shaper config
-use std::fs;
 
 use crate::{Error, Res};
 
 
 // const DEBUG_SAMPLE_TRACE: &str = "../data/pad-trace-n2202-w1.csv";
-const SIGNAL_INTERVAL: u32 = 1;
 // const DEBUG_DUMMY_PATH: &str = "https://host.docker.internal:7443/img/2nd-big-item.jpg";
 // const DEBUG_DUMMY_URLS: [&str; 5] = ["https://vanilla.neqo-test.com:7443/img/2nd-big-item.jpg",
 //                                     "https://vanilla.neqo-test.com:7443/css/bootstrap.min.css",
@@ -155,41 +155,25 @@ impl Http3Client {
     fn enable_shaping(&mut self) {
         qtrace!([self], "Enabling connection shaping.");
 
-        // Load config
-        let config = match neqo_csdef::shaper_config_file() {
-            Some(config_file) => {
-                let toml_string = fs::read_to_string(config_file)
-                    .expect("Error reading config");
+        let mut builder = FlowShaperBuilder::new();
+        let mut front_config = FrontConfig::default();
 
-                let config: Config = toml::from_str(&toml_string)
-                    .expect("Could not parse toml.");
+        if let Some(filename) = neqo_csdef::shaper_config_file() {
+            let configs = ConfigFile::load(&filename)
+                .expect("Unable to load config file");
 
-                config.debug
+            if let Some(config) = configs.flow_shaper {
+                builder.config(config);
             }
-            None => FlowShaper::config_default()
-        };
-        // qdebug!([self],"dummy_size:\t{}", config.debug.dummy_size);
-        // qdebug!([self],"dummy_maxw:\t{}", config.debug.dummy_maxw);
-        // qdebug!([self],"dummy_minw:\t{}", config.debug.dummy_minw);
-        // qdebug!([self],"dummy_ns:\t{}", config.debug.dummy_ns);
-        // qdebug!([self],"dummy_ns:\t{}", config.debug.dummy_nc);
 
-        // TODO (ldolfi): change to new_with_padding_only
-        // so pading is part of creation of shaper
-        let shaper = Rc::new(RefCell::new(FlowShaper::new_with_dummy_only(
-            config,
-            Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
-        )));
+            if let Some(config) = configs.front_defence {
+                front_config = config;
+            }
+        }
 
-        // set padding aprameters
-        // for (param, value) in shaper.borrow().pparam_defaults().iter() {
-        //     shaper.borrow_mut().set_padding_param(param.to_string(), *value);
-        // }
-        // create padding traces
-        let pad_trace = shaper.borrow().new_padding_trace().unwrap();
-        shaper.borrow_mut().set_padding_trace(Duration::from_millis(u64::from(SIGNAL_INTERVAL)),
-                                    &pad_trace
-                                );
+        let shaper = Rc::new(
+            RefCell::new(builder.from_defence(&FrontDefence::new(front_config)))
+            );
 
         // sets the shaper to the connection
         self.conn.set_flow_shaper(&shaper);
