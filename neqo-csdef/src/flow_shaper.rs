@@ -37,7 +37,8 @@ fn debug_enable_save_ids() -> bool {
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    control_interval: Duration,
+    /// The control interval in milliseconds
+    control_interval: u64,
     initial_md: u64,
     rx_stream_data_window: u64,
     local_md: u64,
@@ -46,7 +47,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            control_interval: Duration::from_millis(5),
+            control_interval: 5,
             initial_md: 3000,
             rx_stream_data_window: 1048576,
             local_md: 4611686018427387903,
@@ -322,7 +323,7 @@ impl FlowShaperBuilder {
         self
     }
 
-    pub fn control_interval(&mut self, interval: Duration) -> &mut Self {
+    pub fn control_interval(&mut self, interval: u64) -> &mut Self {
         self.config.control_interval = interval;
         self
     }
@@ -392,7 +393,7 @@ impl FlowShaper {
 
         // Bin the trace
         let mut bins: HashMap<(u32, bool), i32> = HashMap::new();
-        let interval_ms = config.control_interval.as_millis();
+        let interval_ms: u128 = config.control_interval as u128;
 
         for (timestamp, size) in trace.iter() {
             let timestamp = timestamp.as_millis();
@@ -712,10 +713,8 @@ mod tests {
             .map(|(time, size)| (Duration::from_millis(time), size)).collect();
 
         FlowShaper::new(
-            Config{
-                control_interval: Duration::from_millis(interval), 
-                ..Config::default()
-            }, &vec, true)
+            Config{ control_interval: interval, ..Config::default() },
+            &vec, true)
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use std::time::Duration;
 use rand::Rng; // for rayleigh sampling
 use neqo_common::qinfo;
+use serde::Deserialize;
 use crate::Trace;
 use crate::defences::Defence;
 
@@ -14,7 +15,7 @@ fn rayleigh_cdf_inv(u: f64, sigma: f64) -> f64{
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct FrontConfig {
     /// The number of dummy bursts sent by the client
     pub n_client_packets: u32,
