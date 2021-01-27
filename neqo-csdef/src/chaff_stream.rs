@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use url::Url;
+use neqo_common::qtrace;
 use crate::stream_id::StreamId;
 use crate::events::FlowShapingEvents;
 
@@ -41,6 +42,7 @@ impl ChaffStream {
     }
 
     pub fn close(&mut self) {
+        qtrace!([self], "state {:?} -> Closed", self.state);
         self.state = ChaffStreamState::Closed{};
     }
 
@@ -56,6 +58,12 @@ impl ChaffStream {
             },
             _ => panic!("Cannot pull data for stream in current state!")
         };
+    }
+}
+
+impl ::std::fmt::Display for ChaffStream {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "ChaffStream({})", self.stream_id)
     }
 }
 

@@ -628,7 +628,9 @@ impl Http3Client {
                 if self.check_result(now, &res) {
                     return;
                 }
+                qtrace!([self], "Checking if being shaped.");
                 if self.is_being_shaped() {
+                    qtrace!([self], "Is being shaped.");
                     self.check_flow_shaping_events();
                 }
                 self.push_handler

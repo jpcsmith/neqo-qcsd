@@ -1571,7 +1571,6 @@ impl Connection {
             }
 
             // Consider the stream as created
-            // TODO(jsmith):
             if self.is_being_shaped() {
                 if let Some((Frame::Stream { stream_id, offset: 0, ..}, _)) = &frame {
                     if !self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(StreamId::as_u64(*stream_id)) {
