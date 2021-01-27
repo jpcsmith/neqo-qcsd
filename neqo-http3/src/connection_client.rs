@@ -929,24 +929,45 @@ impl EventProvider for Http3Client {
     /// correctly handles cases where handling one event can obsolete
     /// previously-queued events, or cause new events to be generated.
     fn next_event(&mut self) -> Option<Self::Event> {
-        // filtering the events related to flow shaping so that
-        // they don't reach the client
-        let e = self.events.next_event();
-        match e {
-            Some(Http3ClientEvent::HeaderReady{stream_id, ..})
-            | Some(Http3ClientEvent::DataReadable{ stream_id}) => {
-                if self.is_being_shaped() && self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(stream_id) {
-                    qdebug!([self], "Ignoring client event for dummy stream {}", stream_id);
-                    self.next_event()
-                } else {
-                    e
-                }
-            },
-            _ => {
-                e
-            }
+        if !self.is_being_shaped() {
+            return self.events.next_event();
         }
 
+        // filtering the events related to flow shaping so that
+        // they don't reach the client
+        loop {
+            let event = self.events.next_event();
+            match event {
+                Some(Http3ClientEvent::HeaderReady{ stream_id, .. })
+                    if self.flow_shaper.as_ref().unwrap().borrow()
+                        .is_shaping_stream(stream_id) => {
+                            qdebug!([self], "Ignoring HeaderReady for chaff stream {}",
+                                    stream_id);
+                            continue;
+                    },
+                Some(Http3ClientEvent::DataReadable{ stream_id })
+                    if self.flow_shaper.as_ref().unwrap().borrow()
+                        .is_shaping_stream(stream_id) => {
+                            qdebug!([self], "Draining data on chaff stream {}", stream_id);
+                            drain_stream(self, stream_id);
+                            continue;
+                    },
+                other => return other
+            };
+        }
+    }
+}
+
+fn drain_stream(client: &mut Http3Client, stream_id: u64) {
+    let mut data: Vec<u8> = vec![0; 4096];
+
+    loop {
+        match client.read_response_data(Instant::now(), stream_id, &mut data) {
+            Ok((0, _fin)) => break,
+            Err(Error::InvalidStreamId) => break,
+            Err(error) => panic!(error),
+            _ => continue
+        };
     }
 }
 
