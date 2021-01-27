@@ -9,7 +9,7 @@ use std::fmt::Display;
 use std::fs::OpenOptions;
 use url::Url;
 
-use neqo_common::{ qdebug, qwarn };
+use neqo_common::{ qdebug, qwarn, qtrace };
 
 use crate::{ Result, dummy_schedule_log_file };
 use crate::stream_id::StreamId;
@@ -275,6 +275,7 @@ FlowShaper{ config,
     /// Start shaping the traffic using the current time as the reference
     /// point.
     pub fn start(&mut self) {
+        qtrace!([self], "starting shaping.");
         self.start_time = Some(Instant::now());
     }
 
@@ -310,6 +311,7 @@ FlowShaper{ config,
                     let (_, size) = self.out_target.pop_front()
                         .expect("the deque to be non-empty");
 
+                    qtrace!([self], "sending {} padding bytes", size);
                     self.events.send_pad_frames(size);
                 }
             }
@@ -321,12 +323,14 @@ FlowShaper{ config,
                     if next < since_start {
                         let (_, size) = self.in_target.pop_front()
                             .expect("the deque to be non-empty");
+                        qtrace!([self], "pulling {} padding bytes", size);
 
                         // find first available dummy stream to transfer data
-                        if let Some((_, stream)) = self.chaff_streams
-                            .iter_mut().find(|(_, stream)| stream.is_open()) {
-                                stream.pull_data(size as u64, &mut self.events);
-                        }
+                        let (_, stream) = self.chaff_streams
+                            .iter_mut()
+                            .find(|(_, stream)| stream.is_open())
+                            .expect("chaff_streams has some open stream");
+                        stream.pull_data(size as u64, &mut self.events);
                     }
                 }
             } else {
@@ -335,6 +339,7 @@ FlowShaper{ config,
 
             // check dequeues empty, if so send connection close event
             if self.in_target.is_empty() && self.out_target.is_empty() {
+                qtrace!([self], "shaping complete, closing connection");
                 self.application_events.send_connection_close();
             }
         }
@@ -371,10 +376,12 @@ FlowShaper{ config,
     pub fn on_stream_created(&self, stream_id: u64) {
         let stream_id = StreamId::new(stream_id);
         assert!(stream_id.is_client_initiated());
+        qtrace!([self], "notified of stream {} being created", stream_id);
 
         if stream_id.is_bidi() {
             self.events.send_max_stream_data(&stream_id, self.config.rx_stream_data_window);
-            qdebug!([self], "Added send_max_stream_data event to stream {} limit {}", stream_id, self.config.rx_stream_data_window);
+            qdebug!([self], "Added send_max_stream_data event to stream {} limit {}",
+                    stream_id, self.config.rx_stream_data_window);
         }
     }
 
@@ -408,6 +415,7 @@ FlowShaper{ config,
     }
 
     pub fn add_padding_stream(&mut self, stream_id: u64, dummy_url: Url) {
+        qtrace!([self], "adding a padding stream for {}: {}", stream_id, dummy_url);
         assert!(self.chaff_streams.add_padding_stream(stream_id, dummy_url));
     }
 
@@ -424,8 +432,8 @@ FlowShaper{ config,
                             .open(csv_path)
                             .unwrap();
             let mut wtr = csv::Writer::from_writer(csv_file);
-            // let mut wtr = Writer::from_path(csv_path).expect("Failed opening dummy stream id csv file");
-            wtr.write_record(&[stream_id.to_string()]).expect("Failed writing dummy stream id");
+            wtr.write_record(&[stream_id.to_string()])
+                .expect("Failed writing dummy stream id");
             wtr.flush().expect("Failed saving dummy stream id");
         }
 
@@ -434,6 +442,7 @@ FlowShaper{ config,
     }
 
     pub fn remove_dummy_stream(&mut self, stream_id: u64) -> Url{
+        qtrace!([self], "removing chaff stream {}", stream_id);
         self.events.remove_by_id(&stream_id);
         let dummy_url = self.chaff_streams.remove_dummy_stream(&stream_id);
 
@@ -455,6 +464,7 @@ FlowShaper{ config,
     }
 
     pub fn reopen_dummy_stream(&self, dummy_url: Url) {
+        qtrace!([self], "reopenning dummy stream for URL {}", dummy_url);
         self.application_events.reopen_stream(dummy_url);
     }
 
