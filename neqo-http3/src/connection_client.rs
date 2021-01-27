@@ -15,7 +15,7 @@ use crate::settings::HSettings;
 use crate::Header;
 use crate::RecvMessageEvents;
 use neqo_common::{
-    event::Provider as EventProvider, hex, hex_with_len, qdebug, qinfo, qwarn, qlog::NeqoQlog, qtrace,
+    event::Provider as EventProvider, hex, hex_with_len, qdebug, qinfo, qlog::NeqoQlog, qtrace,
     Datagram, Decoder, Encoder, Role,
 };
 use neqo_crypto::{agent::CertificateInfo, AuthenticationStatus, ResumptionToken, SecretAgentInfo};
@@ -374,7 +374,7 @@ impl Http3Client {
             .conn
             .stream_create(StreamType::BiDi)
             .map_err(|e| Error::map_stream_create_errors(&e))?;
-        
+
 
         // Transform pseudo-header fields
         let mut final_headers = Vec::new();
@@ -408,11 +408,11 @@ impl Http3Client {
             }
             return Err(e);
         }
-            
+
         Ok(id)
     }
 
-    // Like fetch(), this function creates a stream to fetch a resource, but used instead by the 
+    // Like fetch(), this function creates a stream to fetch a resource, but used instead by the
     // flow_shaper as a dummy resource for padding
     pub fn fetch_dummy(
         &mut self,
@@ -439,9 +439,10 @@ impl Http3Client {
         // notify flow_shaper of the new stream
         match &self.flow_shaper {
             Some(shaper) => {
-                shaper.borrow().on_stream_created(id);
-                shaper.borrow()
-                      .on_new_padding_stream(id, Url::parse(
+                let mut shaper = shaper.borrow_mut();
+
+                shaper.on_stream_created(id);
+                shaper.on_new_padding_stream(id, Url::parse(
                             &format!("{}://{}{}", scheme, host, path)
                         )
                       .expect("could not parse dummy Url"));
@@ -451,7 +452,7 @@ impl Http3Client {
             }
         }
 
-        // TODO (ldolfi): here would go the part where we register the stream 
+        // TODO (ldolfi): here would go the part where we register the stream
         // and prepare a Box for the received message, but do we need it?
         // Transform pseudo-header fields
         let mut final_headers = Vec::new();
@@ -470,7 +471,7 @@ impl Http3Client {
                 Some(self.push_handler.clone()),
             )),
         );
-        
+
         // Send the actual request (headers) immediately
         if let Err(e) = self
             .base_handler
@@ -749,48 +750,51 @@ impl Http3Client {
     }
 
     fn check_flow_shaping_events(&mut self) {
+        assert!(matches!(self.flow_shaper, Some(_)));
         qtrace!([self], "Check FlowShaping events");
-        if let Some(shaper) = self.flow_shaper.clone(){
-            while let Some(e) = shaper.borrow().next_application_event() {
-                qdebug!([self], "check_flow_shaping_events - event {:?}.", e);
-                match e {
-                    FlowShapingEvent::CloseConnection => {
-                        self.close(Instant::now(), 0, "kthx4shaping!");
-                    },
-                    FlowShapingEvent::ReopenStream(url) => {
-                        let headers: Header = (String::new(),String::new()); // TODO (ldolfi): figure out headers
-                        match self.fetch_dummy(
-                            Instant::now(),
-                            "GET",
-                            &url.scheme(),
-                            &url.host_str().unwrap(),
-                            &url.path(),
-                            &[headers]
-                        ) {
-                            Ok(stream_id) => {
-                                println!(
-                                    "Successfully created new dummy stream id {} for resource {}",
-                                    stream_id, url
-                                );
-                                // // save id and url
-                                // self.flow_shaper
-                                //     .as_ref()
-                                //     .unwrap()
-                                //     .borrow()
-                                //     .on_new_padding_stream(stream_id, url);
-                            },
-                            Err(e) => {
-                                panic!("Can't open dummy stream {}", e);
-                            }
-                        }
-                    },
-                    _ => {}
-                };
-            };
 
-        } else {
-            qwarn!([self], "checking Flowshaping events without a flowshaper!");
-        }
+        while let Some(e) = self.flow_shaper.as_ref().and_then(
+            |fs| fs.borrow().next_application_event()
+        ) {
+            qdebug!([self], "check_flow_shaping_events - event {:?}.", e);
+            match e {
+                FlowShapingEvent::CloseConnection => {
+                    self.close(Instant::now(), 0, "kthx4shaping!");
+                },
+                FlowShapingEvent::ReopenStream(url) => {
+                    let headers: Header = (String::new(),String::new()); // TODO (ldolfi): figure out headers
+                    match self.fetch_dummy(
+                        Instant::now(),
+                        "GET",
+                        &url.scheme(),
+                        &url.host_str().unwrap(),
+                        &url.path(),
+                        &[headers]
+                    ) {
+                        Ok(stream_id) => {
+                            println!(
+                                "Successfully created new dummy stream id {} for resource {}",
+                                stream_id, url
+                            );
+                            // // save id and url
+                            // self.flow_shaper
+                            //     .as_ref()
+                            //     .unwrap()
+                            //     .borrow()
+                            //     .on_new_padding_stream(stream_id, url);
+                        },
+                        Err(e) => {
+                            panic!("Can't open dummy stream {}", e);
+                        }
+                    }
+                },
+                _ => {}
+            };
+        };
+
+        // } else {
+        //     qwarn!([self], "checking Flowshaping events without a flowshaper!");
+        // }
     }
 
     fn handle_stream_readable(&mut self, stream_id: u64) -> Res<()> {

@@ -1,7 +1,9 @@
 pub mod flow_shaper;
 pub mod defences;
 pub mod stream_id;
+mod events;
 mod error;
+mod chaff_stream;
 
 pub use crate::error::{
     Error, ErrorKind, Result
@@ -13,7 +15,7 @@ use serde::Deserialize;
 
 pub type Trace = Vec<(Duration, i32)>;
 
-/// Returns true iff the CSDEF_NO_SHAPING environment variable is set to a 
+/// Returns true iff the CSDEF_NO_SHAPING environment variable is set to a
 /// non-empty string.
 pub fn debug_disable_shaping() -> bool {
     debug_disable_shaping_("CSDEF_NO_SHAPING")
@@ -82,7 +84,7 @@ mod tests {
         let key = "CSDEF_NO_SHAPING_T3";
         env::set_var(&key, "y");
         assert!(debug_disable_shaping_(&key));
-        
+
         env::set_var(&key, "true");
         assert!(debug_disable_shaping_(&key));
 
