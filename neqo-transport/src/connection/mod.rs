@@ -1541,7 +1541,7 @@ impl Connection {
             let mut frame = self.acks.get_frame(now, space);
             // If we are CC limited we can only send acks!
             if !profile.ack_only(space) {
-                
+
                 if frame.is_none() && space == PNSpace::ApplicationData && self.role == Role::Server
                 {
                     frame = self.state_signaling.send_done();
@@ -1570,15 +1570,15 @@ impl Connection {
                 }
             }
 
-            // Consider the stream as created 
-            // TODO(jsmith): 
+            // Consider the stream as created
+            // TODO(jsmith):
             if self.is_being_shaped() {
                 if let Some((Frame::Stream { stream_id, offset: 0, ..}, _)) = &frame {
                     if !self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(StreamId::as_u64(*stream_id)) {
                         self.flow_shaper.as_ref().unwrap().borrow()
                             .on_stream_created(stream_id.as_u64());
                     } else {
-                        assert!(self.flow_shaper.as_ref().unwrap().borrow()
+                        assert!(self.flow_shaper.as_ref().unwrap().borrow_mut()
                             .open_for_shaping(stream_id.as_u64()));
                     }
                 }
@@ -1714,7 +1714,7 @@ impl Connection {
                     packets.resize(path.mtu(), 0);
                 }
                 self.loss_recovery.on_packet_sent(initial);
-            } 
+            }
             // else {
             //     if needs_padding {
             //         qdebug!([self], "pad not Initial to path MTU {}", path.mtu());
@@ -2041,7 +2041,7 @@ impl Connection {
                     && self.is_being_shaped()
                     && self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(stream_id.as_u64())
                 {
-                    let dummy_url = self.flow_shaper.as_ref().unwrap().borrow().remove_dummy_stream(stream_id.as_u64());
+                    let dummy_url = self.flow_shaper.as_ref().unwrap().borrow_mut().remove_dummy_stream(stream_id.as_u64());
                     // and immediately reopen
                     self.flow_shaper.as_ref().unwrap().borrow().reopen_dummy_stream(dummy_url);
                 }
