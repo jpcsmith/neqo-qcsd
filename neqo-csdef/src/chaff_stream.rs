@@ -23,28 +23,32 @@ pub(crate) struct ChaffStream {
     url: Url,
     state: ChaffStreamState,
     events: Rc<RefCell<FlowShapingEvents>>,
+    initial_msd: u64,
 }
 
 impl ChaffStream {
     pub fn new(
         stream_id: u64,
         url: Url,
-        events: Rc<RefCell<FlowShapingEvents>>
+        events: Rc<RefCell<FlowShapingEvents>>,
+        initial_msd: u64,
     ) -> Self {
         ChaffStream {
             stream_id: StreamId::new(stream_id),
             url,
             state: ChaffStreamState::Created,
-            events 
+            events,
+            initial_msd,
         }
     }
 
     pub fn open(&mut self) {
         match self.state {
             ChaffStreamState::Created => {
-                // TODO: This should not be zero but instead w.e. is the size that
-                // they actually are openned at according to the config
-                self.state = ChaffStreamState::Open{ max_stream_data: 0 };
+                // TODO: This should not be zero or hard-coded but instead
+                // w.e. is the size that they actually are openned at according
+                // to the config
+                self.state = ChaffStreamState::Open{ max_stream_data: 20 };
             },
             _ => panic!("Cannot open stream from current state!")
         };
@@ -64,7 +68,7 @@ impl ChaffStream {
             ChaffStreamState::Open{ ref mut max_stream_data } => {
                 *max_stream_data += size;
                 self.events.borrow_mut()
-                    .send_max_stream_data(&self.stream_id, *max_stream_data);
+                    .send_max_stream_data(&self.stream_id, *max_stream_data, size);
             },
             _ => panic!("Cannot pull data for stream in current state!")
         };
@@ -86,6 +90,11 @@ impl ChaffStreamMap {
     // add a padding stream to the shaping streams
     pub fn insert(&mut self, stream: ChaffStream) {
         assert!(self.0.insert(stream.stream_id.as_u64(), stream).is_none())
+    }
+
+    #[allow(dead_code)]
+    pub fn get_mut(&mut self, stream_id: &u64) -> Option<&mut ChaffStream> {
+        self.0.get_mut(stream_id)
     }
 
     pub fn open_stream(&mut self, stream_id: &u64) {
@@ -111,6 +120,7 @@ impl ChaffStreamMap {
         self.0.iter().any(|(_, stream)| stream.is_open())
     }
 
+    #[allow(dead_code)]
     pub fn iter(&self) -> std::collections::hash_map::Iter<u64, ChaffStream> {
         self.0.iter()
     }

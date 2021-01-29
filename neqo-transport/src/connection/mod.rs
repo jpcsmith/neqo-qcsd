@@ -838,10 +838,12 @@ impl Connection {
                     FlowShapingEvent::SendMaxData(size) => {
                         self.flow_mgr.borrow_mut().max_data(size);
                     },
-                    FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit } => {
+                    FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit, increase } => {
                         // TODO change to queue the MSD if no stream is available
                         if let Ok((_, Some(rs))) = self.obtain_stream(StreamId::new(stream_id)) {
+                            assert_eq!(rs.max_stream_data().unwrap(), new_limit - increase);
                             rs.send_flowc_update(new_limit);
+                            assert_eq!(rs.max_stream_data().unwrap(), new_limit);
                         } else {
                             qwarn!([self], "Did not find dummy stream!");
                         }
