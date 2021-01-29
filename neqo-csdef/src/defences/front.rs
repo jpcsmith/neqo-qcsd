@@ -34,7 +34,7 @@ impl Default for FrontConfig {
         FrontConfig{
             n_client_packets: 900,
             n_server_packets: 1200,
-            packet_size: 700,
+            packet_size: 1450,
             peak_minimum: 0.1,
             peak_maximum: 2.5
         }
