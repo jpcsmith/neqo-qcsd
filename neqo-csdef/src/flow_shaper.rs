@@ -37,7 +37,7 @@ fn debug_enable_save_ids() -> bool {
     debug_check_var_("CSDEF_DUMMY_ID")
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     /// The control interval in milliseconds
     control_interval: u64,
@@ -179,22 +179,19 @@ impl FlowShaperBuilder {
         self
     }
 
-    pub fn from_trace(self, trace: &Trace) -> FlowShaper {
-        FlowShaper::new(self.config, trace, self.pad_only_mode)
+    pub fn from_trace(&self, trace: &Trace) -> FlowShaper {
+        FlowShaper::new(self.config.clone(), trace, self.pad_only_mode)
     }
 
-    pub fn from_defence(self, defence: &impl Defence) -> FlowShaper {
-        let mut mut_self = self;
-        mut_self.pad_only_mode(defence.is_padding_only());
-
-        let unmut_self = mut_self;
-        unmut_self.from_trace(&defence.trace())
+    pub fn from_defence(&mut self, defence: &impl Defence) -> FlowShaper {
+        self.pad_only_mode(defence.is_padding_only());
+        self.from_trace(&defence.trace())
     }
 
     /// Create a new FlowShaper from a CSV trace file
-    pub fn from_csv(self, filename: &str) -> Result<FlowShaper> {
+    pub fn from_csv(&self, filename: &str) -> Result<FlowShaper> {
         load_trace(filename)
-            .map(|trace| FlowShaper::new(self.config, &trace, self.pad_only_mode))
+            .map(|trace| FlowShaper::new(self.config.clone(), &trace, self.pad_only_mode))
     }
 }
 

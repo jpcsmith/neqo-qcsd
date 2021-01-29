@@ -171,9 +171,15 @@ impl Http3Client {
             }
         }
 
-        let shaper = Rc::new(
-            RefCell::new(builder.from_defence(&FrontDefence::new(front_config)))
-            );
+        let shaper = Rc::new(RefCell::new(
+                match neqo_csdef::debug_use_trace_file() {
+                    Some(filename) => { 
+                        builder.pad_only_mode(true)
+                            .from_csv(&filename)
+                            .expect("unable to create shaper from trace file")
+                    },
+                    None => builder.from_defence(&FrontDefence::new(front_config))
+                }));
 
         // sets the shaper to the connection
         self.conn.set_flow_shaper(&shaper);
