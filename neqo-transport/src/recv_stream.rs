@@ -357,6 +357,7 @@ pub struct RecvStream {
     state: RecvStreamState,
     flow_mgr: Rc<RefCell<FlowMgr>>,
     conn_events: ConnectionEvents,
+    automatic_flowc_updates: bool,
 }
 
 impl RecvStream {
@@ -371,6 +372,7 @@ impl RecvStream {
             state: RecvStreamState::new(max_stream_data),
             flow_mgr,
             conn_events,
+            automatic_flowc_updates: true,
         }
     }
 
@@ -479,20 +481,30 @@ impl RecvStream {
 
     /// If we should tell the sender they have more credit, return an offset
     pub fn maybe_send_flowc_update(&mut self) {
+        if !self.automatic_flowc_updates {
+            return;
+        }
+
         // Only ever needed if actively receiving and not in SizeKnown state
         if let RecvStreamState::Recv {
-            max_bytes,
             max_stream_data,
             recv_buf,
+            ..
         } = &mut self.state
         {
+            // This algo would usually use the initial max_bytes, but since we
+            // set that to very low values sometimes, use the buffer size 
+            // as max_bytes was originally set to it
+            let max_bytes = u64::try_from(RECV_BUFFER_SIZE)
+                .expect("buffer size cannot be cast as u64");
+
             // Algo: send an update if app has consumed more than half
             // the data in the current window
             // TODO(agrover@mozilla.com): This algo is not great but
             // should prevent Silly Window Syndrome. Spec refers to using
             // highest seen offset somehow? RTT maybe?
-            let maybe_new_max = recv_buf.retired() + *max_bytes;
-            if maybe_new_max > (*max_bytes / 2) + *max_stream_data {
+            let maybe_new_max = recv_buf.retired() + max_bytes;
+            if maybe_new_max > (max_bytes / 2) + *max_stream_data {
                 *max_stream_data = maybe_new_max;
                 self.flow_mgr
                     .borrow_mut()
@@ -501,12 +513,11 @@ impl RecvStream {
         }
     }
 
-    // Update the max_stream_data
+    /// Update the max_stream_data
     pub fn send_flowc_update(&mut self, new_max_stream_data: u64) {
         if let RecvStreamState::Recv {
-            max_bytes: _,
             max_stream_data,
-            recv_buf: _,
+            ..
         } = &mut self.state
         {
             let new_max = max(*max_stream_data, new_max_stream_data);
@@ -515,6 +526,10 @@ impl RecvStream {
                 .borrow_mut()
                 .max_stream_data(self.stream_id, new_max);
         }
+    }
+
+    pub fn disable_automatic_flowc(&mut self) {
+        self.automatic_flowc_updates = false;
     }
 
     pub fn max_stream_data(&self) -> Option<u64> {

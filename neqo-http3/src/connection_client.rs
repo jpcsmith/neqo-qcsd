@@ -442,21 +442,21 @@ impl Http3Client {
             .stream_create(StreamType::BiDi)
             .map_err(|e| Error::map_stream_create_errors(&e))?;
 
-        // notify flow_shaper of the new stream
-        match &self.flow_shaper {
-            Some(shaper) => {
-                let mut shaper = shaper.borrow_mut();
+        {
+            let mut shaper = self.flow_shaper
+                .as_ref()
+                .expect("cannot add dummy stream without flow shaper")
+                .borrow_mut();
 
-                shaper.on_stream_created(id);
-                shaper.on_new_padding_stream(id, Url::parse(
-                            &format!("{}://{}{}", scheme, host, path)
-                        )
-                      .expect("could not parse dummy Url"));
-            },
-            None => {
-                panic!("Tried to add a padding stream without a flow_shaper.");
-            }
+            // notify flow_shaper of the new stream
+            shaper.on_stream_created(id);
+            shaper.on_new_padding_stream(id, Url::parse(
+                        &format!("{}://{}{}", scheme, host, path)
+                    )
+                  .expect("could not parse dummy Url"));
+            self.conn.disable_automatic_flowc(id);
         }
+
 
         // TODO (ldolfi): here would go the part where we register the stream
         // and prepare a Box for the received message, but do we need it?
