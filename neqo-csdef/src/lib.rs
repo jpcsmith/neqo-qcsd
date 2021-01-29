@@ -28,6 +28,13 @@ fn debug_disable_shaping_(env_key: &str) -> bool {
     }
 }
 
+pub fn debug_use_trace_file() -> Option<String> {
+    match env::var("CSDEF_INPUT_TRACE") {
+        Ok(s) => Some(s),
+        Err(_) => None
+    }
+}
+
 pub fn shaper_config_file() -> Option<String> {
     match env::var("CSDEF_SHAPER_CONFIG") {
         Ok(s) => Some(s),
