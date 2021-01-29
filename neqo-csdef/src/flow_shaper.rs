@@ -20,6 +20,8 @@ use crate::chaff_stream::{ ChaffStream, ChaffStreamMap };
 use crate::events::{ FlowShapingEvents, FlowShapingApplicationEvents };
 pub use crate::events::{ FlowShapingEvent };
 
+const BLOCKED_STREAM_LIMIT: u64 = 20;
+
 
 fn debug_check_var_(env_key: &str) -> bool {
     match env::var(env_key) {
@@ -287,13 +289,13 @@ FlowShaper{ config,
             (0x04, self.config.local_md),
             // Disable the peer sending data on bidirectional streams openned
             // by this endpoint (initial_max_stream_data_bidi_local)
-            (0x05, 20),
+            (0x05, BLOCKED_STREAM_LIMIT),
             // Disable the peer sending data on bidirectional streams that
             // they open (initial_max_stream_data_bidi_remote)
-            (0x06, 20),
+            (0x06, BLOCKED_STREAM_LIMIT),
             // Disable the peer sending data on unidirectional streams that
             // they open (initial_max_stream_data_uni)
-            // (0x07, 20),
+            // (0x07, BLOCKED_STREAM_LIMIT),
         ]
     }
 
@@ -314,8 +316,10 @@ FlowShaper{ config,
         qtrace!([self], "notified of stream {} being created", stream_id);
 
         if stream_id.is_bidi() {
-            self.events.borrow_mut()
-                .send_max_stream_data(&stream_id, self.config.rx_stream_data_window);
+            self.events.borrow_mut().send_max_stream_data(
+                &stream_id,
+                self.config.rx_stream_data_window,
+                self.config.rx_stream_data_window - BLOCKED_STREAM_LIMIT);
             qdebug!([self], "Added send_max_stream_data event to stream {} limit {}",
                     stream_id, self.config.rx_stream_data_window);
         }
@@ -329,33 +333,14 @@ FlowShaper{ config,
         assert!(self.events.borrow_mut()
                 .cancel_max_stream_data(StreamId::new(stream_id)));
         qdebug!([self], "Removed max stream data event from stream {}", stream_id);
+
         self.add_padding_stream(stream_id, dummy_url);
-        // Queued events should be drained immediately after closing stream
-        // this now is a double safety in case there were no open dummy
-        // streams when the last one was closed.
-        // TODO (ldolfi): use `drain_queue_with_id`
-        // FIXME(jsmith) This does not track the stream's size in the chaff_streams mapping
-        while self.events.borrow().has_queue_events() {
-            match self.events.borrow_mut().next_queued() {
-                Some(e) => {
-                    match e {
-                        FlowShapingEvent::SendMaxStreamData{ stream_id: _ , new_limit: lim } => {
-                            qdebug!([self], "Adding queues MSD to stream {} with new_limit {}", stream_id, lim);
-                            self.events.borrow_mut()
-                                .send_max_stream_data(&StreamId::from(stream_id), lim);
-                        },
-                        _ => {}
-                    }
-                }
-                None => assert!(!self.events.borrow().has_queue_events())
-            }
-        }
     }
 
-    pub fn add_padding_stream(&mut self, stream_id: u64, dummy_url: Url) {
+    fn add_padding_stream(&mut self, stream_id: u64, dummy_url: Url) {
         qtrace!([self], "adding a padding stream for {}: {}", stream_id, dummy_url);
         self.chaff_streams.insert(
-            ChaffStream::new(stream_id, dummy_url, self.events.clone()));
+            ChaffStream::new(stream_id, dummy_url, self.events.clone(), BLOCKED_STREAM_LIMIT));
     }
 
     // signals that the stream is ready to receive MSD frames
@@ -377,7 +362,27 @@ FlowShaper{ config,
         }
 
         self.chaff_streams.open_stream(&stream_id);
+
+        // Queued events should be drained immediately after closing stream
+        // this now is a double safety in case there were no open dummy
+        // streams when the last one was closed.
+        self.maybe_send_queued_msd();
+
         true
+    }
+
+    fn maybe_send_queued_msd(&mut self) {
+        // FIXME(jsmith): This needs to account for available bytes
+        // Better yet, it would better to just push the queued MSD
+        // back onto the trace so that it is handled in the main code
+        let queued_msd = self.events.borrow_mut().drain_queued_msd();
+        if  queued_msd > 0 {
+            if let Some((_, stream)) = self.chaff_streams.iter_mut()
+                .filter(|(_, stream)| stream.is_open())
+                .next() {
+                    stream.pull_data(queued_msd);
+            }
+        }
     }
 
     pub fn remove_dummy_stream(&mut self, stream_id: u64) -> Url{
@@ -385,18 +390,7 @@ FlowShaper{ config,
         self.events.borrow_mut().remove_by_id(&stream_id);
         let dummy_url = self.chaff_streams.remove_dummy_stream(&stream_id);
 
-        // check if there are orphaned events
-        // transfer the MSD events to a dummy stream currently open
-        if self.events.borrow().has_queue_events() && self.chaff_streams.has_open() {
-            // find first available dummy stream to transfer data
-            // FIXME(jsmith): This needs to account for the amount of available bytes on the new stream
-            for (id, stream) in self.chaff_streams.iter() {
-                if stream.is_open() {
-                    self.events.borrow_mut().drain_queue_with_id(*id);
-                    break;
-                }
-            }
-        }
+        self.maybe_send_queued_msd();
 
         qdebug!("Removed dummy stream {} after receiving FIN", stream_id);
         dummy_url
@@ -607,7 +601,8 @@ mod tests {
         assert_eq!(
             shaper.events.borrow_mut().next_event(),
             Some(FSE::SendMaxStreamData {
-                stream_id: CLIENT_BIDI_STREAM_ID, new_limit: RX_STREAM_DATA_WINDOW
+                stream_id: CLIENT_BIDI_STREAM_ID, new_limit: RX_STREAM_DATA_WINDOW,
+                increase: RX_STREAM_DATA_WINDOW - BLOCKED_STREAM_LIMIT
             }));
     }
 

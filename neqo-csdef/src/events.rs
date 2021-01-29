@@ -3,14 +3,18 @@ use std::cell::RefCell;
 use std::fmt::Display;
 use url::Url;
 
-use neqo_common::{ qdebug, qwarn };
+use neqo_common::qdebug;
 use crate::stream_id::StreamId;
 
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum FlowShapingEvent {
     SendMaxData(u64),
-    SendMaxStreamData { stream_id: u64, new_limit: u64 },
+    SendMaxStreamData {
+        stream_id: u64,
+        new_limit: u64,
+        increase: u64,
+    },
     SendPaddingFrames(u32),
     CloseConnection,
     ReopenStream(Url),
@@ -18,10 +22,11 @@ pub enum FlowShapingEvent {
 
 #[derive(Debug, Default)]
 pub(crate) struct FlowShapingEvents {
-    // This is in a RefCell to allow borrowing a mutable reference in an
-    // immutable context
+    /// This is in a RefCell to allow borrowing a mutable reference in an
+    /// immutable context
     events: RefCell<VecDeque<FlowShapingEvent>>,
-    queue: RefCell<VecDeque<FlowShapingEvent>>
+    /// Queued MSD budget that needs to be sent.
+    queued_msd: u64,
 }
 
 impl Display for FlowShapingEvents {
@@ -31,13 +36,9 @@ impl Display for FlowShapingEvents {
 }
 
 impl FlowShapingEvents {
-    // pub(self) fn send_max_data(&self, new_limit: u64) {
-    //     self.insert(FlowShapingEvent::SendMaxData(new_limit));
-    // }
-
-    pub fn send_max_stream_data(&self, stream_id: &StreamId, new_limit: u64) {
+    pub fn send_max_stream_data(&self, stream_id: &StreamId, new_limit: u64, increase: u64) {
         self.insert(FlowShapingEvent::SendMaxStreamData {
-            stream_id: stream_id.as_u64(), new_limit
+            stream_id: stream_id.as_u64(), new_limit, increase
         });
     }
 
@@ -49,34 +50,27 @@ impl FlowShapingEvents {
         self.events.borrow_mut().push_back(event);
     }
 
-    pub fn remove_by_id(&self, id: &u64) {
+    pub fn remove_by_id(&mut self, id: &u64) {
         qdebug!([self], "Removing events for stream {}", *id);
-        // queue events not yet consumed
-        let mut queue = VecDeque::<u64>::new();
-        for e in self.events.borrow_mut().iter() {
-            match e {
-                FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit } => {
-                    if *stream_id == *id {
-                        queue.push_back(*new_limit);
-                    }
-                },
-                _ => {}
-            }
+
+        type FSE = FlowShapingEvent;
+
+        let mut events = self.events.borrow_mut();
+
+        let maybe_increase = events.iter()
+            .filter_map(|e| match e {
+                FSE::SendMaxStreamData{ stream_id, increase, ..  }
+                    if stream_id == id =>  Some(increase),
+                _ => None
+            }).max();
+
+        if let Some(size) = maybe_increase  {
+            self.queued_msd += size
         }
-        // add max MSd to queue
-        let new_limit = queue.iter().max();
-        match new_limit {
-            Some(lim) => self.queue.borrow_mut()
-                             .push_back(FlowShapingEvent::SendMaxStreamData{stream_id: *id, new_limit: *lim}),
-            None => {}
-        }
+
         // remove events for id
-        self.events.borrow_mut().retain(|e| match e {
-            FlowShapingEvent::SendMaxStreamData{ stream_id, new_limit: _ } => {
-                *stream_id != *id
-            },
-            _ => true
-        });
+        events.retain(|e| !matches!(e, FSE::SendMaxStreamData{ stream_id, .. }
+                                    if stream_id == id));
     }
 
     /// Pop the first max_stream_data event with the specified stream
@@ -98,18 +92,11 @@ impl FlowShapingEvents {
         }
     }
 
-    // FIXME(jsmith): This does not keep track of the max stream data
-    pub fn drain_queue_with_id (&self, id: u64) {
-        while let Some(e) =  self.queue.borrow_mut().pop_front() {
-            match e {
-                FlowShapingEvent::SendMaxStreamData{ stream_id: _, new_limit} => {
-                    self.send_max_stream_data(&StreamId::from(id), new_limit);
-                },
-                _ => {
-                    qwarn!([self], "Dequeueing events not implemented yet");
-                }
-            }
-        }
+    /// Returns the queued MSD and sets it back to zero
+    pub fn drain_queued_msd(&mut self) -> u64 {
+        let result = self.queued_msd;
+        self.queued_msd = 0;
+        result
     }
 
     #[must_use]
@@ -120,16 +107,6 @@ impl FlowShapingEvents {
     #[must_use]
     pub fn has_events(&self) -> bool {
         !self.events.borrow().is_empty()
-    }
-
-    #[must_use]
-    pub fn has_queue_events(&self) -> bool {
-        !self.queue.borrow().is_empty()
-    }
-
-    #[must_use]
-    pub fn next_queued(&self) -> Option<FlowShapingEvent> {
-        self.queue.borrow_mut().pop_front()
     }
 }
 
