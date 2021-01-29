@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::cell::RefCell;
 use url::Url;
 use neqo_common::qtrace;
 use crate::stream_id::StreamId;
@@ -20,14 +22,21 @@ pub(crate) struct ChaffStream {
     stream_id: StreamId,
     url: Url,
     state: ChaffStreamState,
+    events: Rc<RefCell<FlowShapingEvents>>,
 }
 
 impl ChaffStream {
-    pub fn new(stream_id: u64, url: Url) -> Self {
+    pub fn new(
+        stream_id: u64,
+        url: Url,
+        events: Rc<RefCell<FlowShapingEvents>>
+    ) -> Self {
         ChaffStream {
             stream_id: StreamId::new(stream_id),
             url,
-            state: ChaffStreamState::Created }
+            state: ChaffStreamState::Created,
+            events 
+        }
     }
 
     pub fn open(&mut self) {
@@ -50,11 +59,12 @@ impl ChaffStream {
         matches!(self.state, ChaffStreamState::Open{..})
     }
 
-    pub fn pull_data(&mut self, size: u64, events: &mut FlowShapingEvents) {
+    pub fn pull_data(&mut self, size: u64) {
         match self.state {
             ChaffStreamState::Open{ ref mut max_stream_data } => {
                 *max_stream_data += size;
-                events.send_max_stream_data(&self.stream_id, *max_stream_data);
+                self.events.borrow_mut()
+                    .send_max_stream_data(&self.stream_id, *max_stream_data);
             },
             _ => panic!("Cannot pull data for stream in current state!")
         };
@@ -74,9 +84,8 @@ pub(crate) struct ChaffStreamMap(HashMap<u64, ChaffStream>);
 
 impl ChaffStreamMap {
     // add a padding stream to the shaping streams
-    pub fn add_padding_stream(&mut self, stream_id: u64, dummy_url: Url) -> bool {
-        self.0.insert(stream_id, ChaffStream::new(stream_id, dummy_url))
-            .is_none()
+    pub fn insert(&mut self, stream: ChaffStream) {
+        assert!(self.0.insert(stream.stream_id.as_u64(), stream).is_none())
     }
 
     pub fn open_stream(&mut self, stream_id: &u64) {

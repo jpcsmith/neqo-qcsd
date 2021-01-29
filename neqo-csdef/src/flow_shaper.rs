@@ -1,12 +1,14 @@
-use std::time::{ Duration, Instant };
+use std::cmp::max;
+use std::rc::Rc;
+use std::cell::RefCell;
 use std::collections::{ HashMap, VecDeque, HashSet };
 use std::convert::TryFrom;
-use csv::{self, Writer};
-use serde::{Deserialize};
-use std::cmp::max;
 use std::env; // for reading env variables
 use std::fmt::Display;
 use std::fs::OpenOptions;
+use std::time::{ Duration, Instant };
+use csv::{self, Writer};
+use serde::{Deserialize};
 use url::Url;
 
 use neqo_common::{ qdebug, qwarn, qtrace };
@@ -14,7 +16,7 @@ use neqo_common::{ qdebug, qwarn, qtrace };
 use crate::{ Result, dummy_schedule_log_file };
 use crate::stream_id::StreamId;
 use crate::defences::Defence;
-use crate::chaff_stream::ChaffStreamMap;
+use crate::chaff_stream::{ ChaffStream, ChaffStreamMap };
 use crate::events::{ FlowShapingEvents, FlowShapingApplicationEvents };
 pub use crate::events::{ FlowShapingEvent };
 
@@ -149,7 +151,7 @@ pub struct FlowShaper {
     start_time: Option<Instant>,
 
     /// Event Queues
-    events: FlowShapingEvents,
+    events: Rc<RefCell<FlowShapingEvents>>,
     application_events: FlowShapingApplicationEvents,
 
     /// Streams used for sending chaff traffic
@@ -245,7 +247,7 @@ FlowShaper{ config,
                         .expect("the deque to be non-empty");
 
                     qtrace!([self], "sending {} padding bytes", size);
-                    self.events.send_pad_frames(size);
+                    self.events.borrow_mut().send_pad_frames(size);
                 }
             }
 
@@ -263,7 +265,7 @@ FlowShaper{ config,
                             .iter_mut()
                             .find(|(_, stream)| stream.is_open())
                             .expect("chaff_streams has some open stream");
-                        stream.pull_data(size as u64, &mut self.events);
+                        stream.pull_data(size as u64);
                     }
                 }
             } else {
@@ -312,7 +314,8 @@ FlowShaper{ config,
         qtrace!([self], "notified of stream {} being created", stream_id);
 
         if stream_id.is_bidi() {
-            self.events.send_max_stream_data(&stream_id, self.config.rx_stream_data_window);
+            self.events.borrow_mut()
+                .send_max_stream_data(&stream_id, self.config.rx_stream_data_window);
             qdebug!([self], "Added send_max_stream_data event to stream {} limit {}",
                     stream_id, self.config.rx_stream_data_window);
         }
@@ -323,7 +326,8 @@ FlowShaper{ config,
     /// Assumes that no events have been dequeud since the call of the
     /// associated `on_new_stream` call for the `stream_id`.
     pub fn on_new_padding_stream(&mut self, stream_id: u64, dummy_url: Url) {
-        assert!(self.events.cancel_max_stream_data(StreamId::new(stream_id)));
+        assert!(self.events.borrow_mut()
+                .cancel_max_stream_data(StreamId::new(stream_id)));
         qdebug!([self], "Removed max stream data event from stream {}", stream_id);
         self.add_padding_stream(stream_id, dummy_url);
         // Queued events should be drained immediately after closing stream
@@ -331,25 +335,27 @@ FlowShaper{ config,
         // streams when the last one was closed.
         // TODO (ldolfi): use `drain_queue_with_id`
         // FIXME(jsmith) This does not track the stream's size in the chaff_streams mapping
-        while self.events.has_queue_events() {
-            match self.events.next_queued() {
+        while self.events.borrow().has_queue_events() {
+            match self.events.borrow_mut().next_queued() {
                 Some(e) => {
                     match e {
                         FlowShapingEvent::SendMaxStreamData{ stream_id: _ , new_limit: lim } => {
                             qdebug!([self], "Adding queues MSD to stream {} with new_limit {}", stream_id, lim);
-                            self.events.send_max_stream_data(&StreamId::from(stream_id), lim);
+                            self.events.borrow_mut()
+                                .send_max_stream_data(&StreamId::from(stream_id), lim);
                         },
                         _ => {}
                     }
                 }
-                None => assert!(!self.events.has_queue_events())
+                None => assert!(!self.events.borrow().has_queue_events())
             }
         }
     }
 
     pub fn add_padding_stream(&mut self, stream_id: u64, dummy_url: Url) {
         qtrace!([self], "adding a padding stream for {}: {}", stream_id, dummy_url);
-        assert!(self.chaff_streams.add_padding_stream(stream_id, dummy_url));
+        self.chaff_streams.insert(
+            ChaffStream::new(stream_id, dummy_url, self.events.clone()));
     }
 
     // signals that the stream is ready to receive MSD frames
@@ -376,17 +382,17 @@ FlowShaper{ config,
 
     pub fn remove_dummy_stream(&mut self, stream_id: u64) -> Url{
         qtrace!([self], "removing chaff stream {}", stream_id);
-        self.events.remove_by_id(&stream_id);
+        self.events.borrow_mut().remove_by_id(&stream_id);
         let dummy_url = self.chaff_streams.remove_dummy_stream(&stream_id);
 
         // check if there are orphaned events
         // transfer the MSD events to a dummy stream currently open
-        if self.events.has_queue_events() && self.chaff_streams.has_open() {
+        if self.events.borrow().has_queue_events() && self.chaff_streams.has_open() {
             // find first available dummy stream to transfer data
             // FIXME(jsmith): This needs to account for the amount of available bytes on the new stream
             for (id, stream) in self.chaff_streams.iter() {
                 if stream.is_open() {
-                    self.events.drain_queue_with_id(*id);
+                    self.events.borrow_mut().drain_queue_with_id(*id);
                     break;
                 }
             }
@@ -408,12 +414,12 @@ FlowShaper{ config,
     }
 
     pub fn next_event(&self) -> Option<FlowShapingEvent> {
-        self.events.next_event()
+        self.events.borrow_mut().next_event()
     }
 
     #[must_use]
     pub fn has_events(&self) -> bool {
-        self.events.has_events()
+        self.events.borrow().has_events()
     }
 
     pub fn next_application_event(&self) -> Option<FlowShapingEvent> {
@@ -599,7 +605,7 @@ mod tests {
         let  shaper = create_shaper();
         shaper.on_stream_created(CLIENT_BIDI_STREAM_ID);
         assert_eq!(
-            shaper.events.next_event(),
+            shaper.events.borrow_mut().next_event(),
             Some(FSE::SendMaxStreamData {
                 stream_id: CLIENT_BIDI_STREAM_ID, new_limit: RX_STREAM_DATA_WINDOW
             }));
@@ -613,7 +619,7 @@ mod tests {
 
         shaper.on_stream_created(CLIENT_BIDI_STREAM_ID);
         shaper.on_new_padding_stream(CLIENT_BIDI_STREAM_ID, Url::parse("").expect("foo"));
-        assert_eq!(shaper.events.next_event(), None);
+        assert_eq!(shaper.events.borrow_mut().next_event(), None);
     }
 
     #[test]
@@ -623,7 +629,7 @@ mod tests {
 
         // Incoming Unidirectional streams are not blocked initially, as we do not
         // expect padding resources to arrive on them.
-        assert_eq!(shaper.events.next_event(), None);
+        assert_eq!(shaper.events.borrow_mut().next_event(), None);
     }
 
     #[test]
