@@ -2491,6 +2491,14 @@ impl Connection {
         ))
     }
 
+    pub fn disable_automatic_flowc(&mut self, stream_id: u64) {
+        if let Ok((_, Some(rs))) = self.obtain_stream(StreamId::new(stream_id)) {
+            rs.disable_automatic_flowc();
+        } else {
+            panic!("cannot disable flow control on non-existent stream");
+        }
+    }
+
     /// Create a stream.
     /// Returns new stream id
     /// # Errors
