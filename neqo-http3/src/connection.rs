@@ -17,7 +17,7 @@ use neqo_common::{qdebug, qerror, qinfo, qtrace, qwarn};
 use neqo_qpack::decoder::{QPackDecoder, QPACK_UNI_STREAM_TYPE_DECODER};
 use neqo_qpack::encoder::{QPackEncoder, QPACK_UNI_STREAM_TYPE_ENCODER};
 use neqo_qpack::QpackSettings;
-use neqo_transport::{AppError, CloseError, Connection, State, StreamType};
+use neqo_transport::{AppError, CloseError, Connection, State, StreamType, ConnectionError};
 use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::mem;
@@ -406,6 +406,11 @@ impl Http3Connection {
                 }
             }
             State::Closed(error) => {
+                if matches!(error, ConnectionError::Transport(neqo_transport::Error::IdleTimeout)){
+                    // We don't want this to close gracefully.
+                    // return Err(Error::IdleTimeout);
+                    panic!("Connection timeout");
+                }
                 if matches!(self.state, Http3State::Closed(_)) {
                     Ok(false)
                 } else {

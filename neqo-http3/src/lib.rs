@@ -67,6 +67,7 @@ pub enum Error {
     AlreadyInitialized,
     DecodingFrame,
     HttpGoaway,
+    IdleTimeout, // from connection IdleTimeout
     Internal,
     InvalidResumptionToken,
     InvalidStreamId,
