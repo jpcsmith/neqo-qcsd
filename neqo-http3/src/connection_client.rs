@@ -173,7 +173,7 @@ impl Http3Client {
 
         let shaper = Rc::new(RefCell::new(
                 match neqo_csdef::debug_use_trace_file() {
-                    Some(filename) => { 
+                    Some(filename) => {
                         builder.pad_only_mode(true)
                             .from_csv(&filename)
                             .expect("unable to create shaper from trace file")
@@ -951,34 +951,36 @@ impl EventProvider for Http3Client {
         loop {
             let event = self.events.next_event();
             match event {
-                Some(Http3ClientEvent::HeaderReady{ stream_id, .. })
+                Some(Http3ClientEvent::HeaderReady{ stream_id, .. }) => {
+                    let flow_shaper = self.flow_shaper.as_ref().unwrap().borrow_mut();
+                    if flow_shaper.is_shaping_stream(stream_id) {
+                        qdebug!([self], "Ignoring HeaderReady for chaff stream {}",
+                                stream_id);
+                    }
+                },
+                Some(Http3ClientEvent::DataReadable{ stream_id }) => {
                     if self.flow_shaper.as_ref().unwrap().borrow()
-                        .is_shaping_stream(stream_id) => {
-                            qdebug!([self], "Ignoring HeaderReady for chaff stream {}",
-                                    stream_id);
-                            continue;
-                    },
-                Some(Http3ClientEvent::DataReadable{ stream_id })
-                    if self.flow_shaper.as_ref().unwrap().borrow()
-                        .is_shaping_stream(stream_id) => {
-                            qdebug!([self], "Draining data on chaff stream {}", stream_id);
-                            drain_stream(self, stream_id);
-                            continue;
-                    },
+                            .is_shaping_stream(stream_id)
+                    {
+                        qdebug!([self], "Draining data on chaff stream {}", stream_id);
+                        drain_stream(self, stream_id);
+                    }
+                },
                 other => return other
             };
         }
     }
 }
 
-fn drain_stream(client: &mut Http3Client, stream_id: u64) {
+fn drain_stream(client: &mut Http3Client, stream_id: u64) -> bool {
     let mut data: Vec<u8> = vec![0; 4096];
 
     loop {
         match client.read_response_data(Instant::now(), stream_id, &mut data) {
-            Ok((0, _fin)) => break,
-            Err(Error::InvalidStreamId) => break,
+            Err(Error::InvalidStreamId) => return false,
             Err(error) => panic!(error),
+            Ok((0, fin)) => return fin,
+            Ok((_amount, true)) => return true,
             _ => continue
         };
     }
