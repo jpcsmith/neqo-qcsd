@@ -11,8 +11,11 @@ use neqo_common::{
 };
 use neqo_crypto::random;
 use neqo_transport::Connection;
+use neqo_csdef::flow_shaper::FlowShaper;
 use std::convert::TryFrom;
 use std::mem;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::{Error, Res};
 
@@ -134,6 +137,7 @@ pub(crate) struct HFrameReader {
     hframe_type: u64,
     hframe_len: u64,
     payload: Vec<u8>,
+    flow_shaper: Option<Rc<RefCell<FlowShaper>>>,
 }
 
 impl Default for HFrameReader {
@@ -152,7 +156,18 @@ impl HFrameReader {
             hframe_type: 0,
             hframe_len: 0,
             payload: Vec::new(),
+            flow_shaper: None,
         }
+    }
+
+    pub fn new_with_shaper(flow_shaper: &Option<Rc<RefCell<FlowShaper>>>) -> Self {
+        let mut reader = HFrameReader::new();
+        reader.flow_shaper = flow_shaper.clone();
+        reader
+    }
+
+    pub fn set_flow_shaper(&mut self, flow_shaper: Rc<RefCell<FlowShaper>>) {
+        self.flow_shaper = Some(flow_shaper);
     }
 
     fn reset(&mut self) {
@@ -161,7 +176,7 @@ impl HFrameReader {
         };
     }
 
-    fn min_remaining(&self) -> usize {
+    pub fn min_remaining(&self) -> usize {
         match &self.state {
             HFrameReaderState::GetType { decoder } | HFrameReaderState::GetLength { decoder } => {
                 decoder.min_remaining()
@@ -207,6 +222,12 @@ impl HFrameReader {
                     (self.consume(Decoder::from(&buf[..amount]))?, true, f)
                 }
             };
+
+            if let Some(flow_shaper) = self.flow_shaper.as_ref() {
+                flow_shaper.borrow_mut().awaiting_header_data(
+                    stream_id,
+                    u64::try_from(self.min_remaining()).unwrap());
+            }
 
             if output.is_some() {
                 break Ok((output, fin));

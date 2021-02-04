@@ -14,6 +14,7 @@ use crate::{Error, Header, Res};
 use neqo_common::{qdebug, qinfo, qtrace};
 use neqo_qpack::decoder::QPackDecoder;
 use neqo_transport::{AppError, Connection};
+use neqo_csdef::flow_shaper::FlowShaper;
 use std::cell::RefCell;
 use std::cmp::min;
 use std::collections::VecDeque;
@@ -61,6 +62,7 @@ pub(crate) struct RecvMessage {
     push_handler: Option<Rc<RefCell<PushController>>>,
     stream_id: u64,
     blocked_push_promise: VecDeque<PushInfo>,
+    flow_shaper: Option<Rc<RefCell<FlowShaper>>>,
 }
 
 impl ::std::fmt::Display for RecvMessage {
@@ -83,7 +85,18 @@ impl RecvMessage {
             push_handler,
             stream_id,
             blocked_push_promise: VecDeque::new(),
+            flow_shaper: None,
         }
+    }
+
+    pub fn set_flow_shaper(&mut self, flow_shaper: Rc<RefCell<FlowShaper>>) {
+        self.flow_shaper = Some(flow_shaper.clone());
+        match self.state {
+            RecvMessageState::WaitingForResponseHeaders{ ref mut frame_reader } => {
+                frame_reader.set_flow_shaper(flow_shaper);
+            }, 
+            _ => panic!("FlowShaper being set too late!")
+        };
     }
 
     fn handle_headers_frame(
@@ -125,6 +138,10 @@ impl RecvMessage {
                     self.state = RecvMessageState::ReadingData {
                         remaining_data_len: usize::try_from(len).or(Err(Error::HttpFrame))?,
                     };
+
+                    if let Some(flow_shaper) = self.flow_shaper.as_ref() {
+                        flow_shaper.borrow_mut().on_data_frame(self.stream_id, len);
+                    }
                 }
             }
             _ => unreachable!("This functions is only called in WaitingForResponseHeaders | WaitingForData | WaitingForFinAfterTrailers state.")
@@ -139,23 +156,12 @@ impl RecvMessage {
         } else {
             self.conn_events
                 .header_ready(self.stream_id, headers, false);
-            self.state = RecvMessageState::WaitingForData {
-                frame_reader: HFrameReader::new(),
+
+            self.state = RecvMessageState::WaitingForData { 
+                frame_reader: HFrameReader::new_with_shaper(&self.flow_shaper)
             };
         }
     }
-
-    // slightly different function that avoid sending connection events
-    // for dummy headers
-    // fn add_dummy_headers(&mut self, fin: bool, decoder: &mut QPackDecoder) {
-    //     if fin {
-    //         self.set_closed(decoder);
-    //     } else {
-    //         self.state = RecvMessageState::WaitingForData {
-    //             frame_reader: HFrameReader::new(),
-    //         };
-    //     }
-    // }
 
     fn set_state_to_close_pending(
         &mut self,
@@ -281,11 +287,6 @@ impl RecvMessage {
                     if let Some(headers) =
                         decoder.decode_header_block(header_block, self.stream_id)?
                     {
-                        // if conn.is_being_shaped() &&  conn.is_dummy_stream(self.stream_id){
-                        //     self.add_dummy_headers(done, decoder);
-                        // } else {
-                        //     self.add_headers(Some(headers), done, decoder);
-                        // }
                         self.add_headers(Some(headers), done, decoder);
                         if done {
                             break Ok(());
@@ -296,12 +297,6 @@ impl RecvMessage {
                     }
                 }
                 RecvMessageState::ReadingData { .. } => {
-                    // if conn.is_being_shaped() {
-                    //     if conn.is_dummy_stream(self.stream_id) {
-                    //         qdebug!([self], "ignoring dummy stream data.");
-                    //         break Ok(());
-                    //     }
-                    // }
                     if post_readable_event {
                         self.conn_events.data_readable(self.stream_id);
                     }
@@ -398,8 +393,8 @@ impl RecvStream for RecvMessage {
                         self.set_closed(decoder);
                         break Ok((written, fin));
                     } else if *remaining_data_len == 0 {
-                        self.state = RecvMessageState::WaitingForData {
-                            frame_reader: HFrameReader::new(),
+                        self.state = RecvMessageState::WaitingForData { 
+                            frame_reader: HFrameReader::new_with_shaper(&self.flow_shaper)
                         };
                         self.receive_internal(conn, decoder, false)?;
                     } else {
