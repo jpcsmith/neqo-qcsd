@@ -138,7 +138,7 @@ impl FlowShaperBuilder {
 
 /// Shaper for the connection. Assumes that it operates on the client,
 /// and not the server.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct FlowShaper {
     /// General configuration
     config: Config,
@@ -163,6 +163,13 @@ pub struct FlowShaper {
 impl Display for FlowShaper {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         write!(f, "QCD FlowShaper")
+    }
+}
+
+impl std::fmt::Debug for FlowShaper {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "FlowShaper {{ config: {:?}, pad_only_mode: {:?}, start_time: {:?}, ... }}",
+               self.config, self.pad_only_mode, self.start_time)
     }
 }
 
@@ -214,6 +221,24 @@ FlowShaper{ config,
     pub fn start(&mut self) {
         qtrace!([self], "starting shaping.");
         self.start_time = Some(Instant::now());
+    }
+
+    pub fn awaiting_header_data(&mut self, stream_id: u64, min_remaining: u64) {
+        if let Some(stream) = self.chaff_streams.get_mut(&stream_id) {
+            stream.awaiting_header_data(min_remaining);
+        }
+    }
+
+    pub fn data_consumed(&mut self, stream_id: u64, amount: u64) {
+        if let Some(stream) = self.chaff_streams.get_mut(&stream_id) {
+            stream.data_consumed(amount);
+        }
+    }
+
+    pub fn on_data_frame(&mut self, stream_id: u64, length: u64) {
+        if let Some(stream) = self.chaff_streams.get_mut(&stream_id) {
+            stream.on_data_frame(length);
+        }
     }
 
     /// Report the next instant at which the FlowShaper should be called for

@@ -2685,6 +2685,12 @@ impl Connection {
             .ok_or_else(|| Error::InvalidStreamId)?;
 
         let rb = stream.read(data)?;
+
+        if rb.0 > 0 && self.flow_shaper.is_some() {
+            self.flow_shaper.as_ref().unwrap().borrow_mut()
+                .data_consumed(stream_id, u64::try_from(rb.0).unwrap());
+        }
+
         Ok((rb.0 as usize, rb.1))
     }
 

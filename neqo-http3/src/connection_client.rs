@@ -390,14 +390,19 @@ impl Http3Client {
         final_headers.push((":path".into(), path.to_owned()));
         final_headers.extend_from_slice(headers);
 
+        let mut recv_message = RecvMessage::new(
+            id,
+            Box::new(self.events.clone()),
+            Some(self.push_handler.clone()),
+        );
+        if let Some(flow_shaper) = self.flow_shaper.as_ref() {
+            recv_message.set_flow_shaper(flow_shaper.clone());
+        }
+
         self.base_handler.add_streams(
             id,
             SendMessage::new_with_headers(id, final_headers, Box::new(self.events.clone())),
-            Box::new(RecvMessage::new(
-                id,
-                Box::new(self.events.clone()),
-                Some(self.push_handler.clone()),
-            )),
+            Box::new(recv_message),
         );
 
         // Call immediately send so that at least headers get sent. This will make Firefox faster, since
@@ -468,14 +473,19 @@ impl Http3Client {
         final_headers.push((":path".into(), path.to_owned()));
         final_headers.extend_from_slice(headers);
 
-        self.base_handler.add_streams(
-            id,
-            SendMessage::new_with_headers(id, final_headers, Box::new(self.events.clone())),
-            Box::new(RecvMessage::new(
+        let mut recv_message = RecvMessage::new(
                 id,
                 Box::new(self.events.clone()),
                 Some(self.push_handler.clone()),
-            )),
+            );
+        if let Some(flow_shaper) = self.flow_shaper.as_ref() {
+            recv_message.set_flow_shaper(flow_shaper.clone());
+        }
+
+        self.base_handler.add_streams(
+            id,
+            SendMessage::new_with_headers(id, final_headers, Box::new(self.events.clone())),
+            Box::new(recv_message),
         );
 
         // Send the actual request (headers) immediately
