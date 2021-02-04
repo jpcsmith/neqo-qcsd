@@ -2038,13 +2038,10 @@ impl Connection {
                 ..
             } => {
                 // eliminate immediately the dummy stream
-                if fin
-                    && self.is_being_shaped()
-                    && self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(stream_id.as_u64())
+                if fin && self.is_being_shaped()
                 {
-                    let dummy_url = self.flow_shaper.as_ref().unwrap().borrow_mut().remove_dummy_stream(stream_id.as_u64());
-                    // and immediately reopen
-                    self.flow_shaper.as_ref().unwrap().borrow().reopen_dummy_stream(dummy_url);
+                    self.flow_shaper.as_ref().unwrap().borrow_mut()
+                        .on_stream_closed(stream_id.as_u64());
                 }
                 if let (_, Some(rs)) = self.obtain_stream(stream_id)? {
                     rs.inbound_stream_frame(fin, offset, data)?;

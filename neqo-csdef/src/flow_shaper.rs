@@ -422,6 +422,13 @@ FlowShaper{ config,
         dummy_url
     }
 
+    pub fn on_stream_closed(&mut self, stream_id: u64) {
+        if self.is_shaping_stream(stream_id) {
+            let url = self.remove_dummy_stream(stream_id);
+            self.reopen_dummy_stream(url);
+        }
+    }
+
     pub fn reopen_dummy_stream(&self, dummy_url: Url) {
         qtrace!([self], "reopenning dummy stream for URL {}", dummy_url);
         self.application_events.reopen_stream(dummy_url);

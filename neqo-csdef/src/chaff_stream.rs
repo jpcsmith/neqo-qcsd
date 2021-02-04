@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
 use url::Url;
-use neqo_common::{ qtrace, qwarn };
+use neqo_common::qtrace;
 use crate::stream_id::StreamId;
 use crate::events::FlowShapingEvents;
 
@@ -112,8 +112,8 @@ impl ChaffStream {
                 // TODO: Enable assert once we actually control
                 // assert!(*data_consumed <= max_stream_data_limit);
             },
-            ChaffStreamState::Closed{ .. } => {
-                qwarn!([self], "Data consumed after being closed");
+            ChaffStreamState::Closed{ ref mut data_consumed } => {
+                *data_consumed += amount;
             },
             _ => panic!("Data should not be consumed in the current state.")
         };
@@ -131,9 +131,7 @@ impl ChaffStream {
                     data_consumed + min_remaining + 16,
                     *max_stream_data_limit);
             },
-            ChaffStreamState::Closed{ .. } => {
-                qwarn!([self], "Notified of header data after being closed");
-            },
+            ChaffStreamState::Closed{ .. } => (),
             _ => panic!("Should not receive data frame in other states!")
         }
     }
@@ -151,9 +149,7 @@ impl ChaffStream {
                 assert!(*data_consumed + length >= *max_stream_data_limit);
                 *max_stream_data_limit = *data_consumed + length
             },
-            ChaffStreamState::Closed{ .. } => {
-                qwarn!([self], "Data received after being closed");
-            },
+            ChaffStreamState::Closed{ .. } => { },
             _ => panic!("Should not receive data frame in other states!")
         }
 
