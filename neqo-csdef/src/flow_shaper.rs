@@ -275,10 +275,11 @@ FlowShaper{ config,
             }
 
             // check dequeues empty, if so send connection close event
-            if self.in_target.is_empty() && self.out_target.is_empty() {
-                qtrace!([self], "shaping complete, closing connection");
-                self.application_events.send_connection_close();
-            }
+            // commented for FRONT defence
+            // if self.in_target.is_empty() && self.out_target.is_empty() {
+            //     qtrace!([self], "shaping complete, closing connection");
+            //     self.application_events.send_connection_close();
+            // }
         }
     }
 

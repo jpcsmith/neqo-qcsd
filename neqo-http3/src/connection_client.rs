@@ -766,9 +766,6 @@ impl Http3Client {
         ) {
             qdebug!([self], "check_flow_shaping_events - event {:?}.", e);
             match e {
-                FlowShapingEvent::CloseConnection => {
-                    self.close(Instant::now(), 0, "kthx4shaping!");
-                },
                 FlowShapingEvent::ReopenStream(url) => {
                     let headers: Header = (String::new(),String::new()); // TODO (ldolfi): figure out headers
                     match self.fetch_dummy(
