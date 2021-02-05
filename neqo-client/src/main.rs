@@ -338,6 +338,7 @@ struct Handler<'a> {
     args: &'a Args,
     key_update: KeyUpdateState,
     url_deps: Rc<RefCell<UrlDependencyTracker>>,
+    is_done_shaping: bool,
 }
 
 impl<'a> Handler<'a> {
@@ -454,9 +455,9 @@ impl<'a> Handler<'a> {
 
                 let _ = client.stream_close_send(client_stream_id);
 
-                let out_file = get_output_file(&url, &self.args.output_dir, &mut self.all_paths);
+                // let out_file = get_output_file(&url, &self.args.output_dir, &mut self.all_paths);
 
-                self.streams.insert(client_stream_id, (url, out_file));
+                // self.streams.insert(client_stream_id, (url, out_file));
                 true
             }
             e @ Err(Error::TransportError(TransportError::StreamLimitError))
@@ -480,10 +481,14 @@ impl<'a> Handler<'a> {
     }
 
     fn done(&mut self) -> bool {
-        self.streams.is_empty() && self.url_queue.is_empty()
+        println!("Check stream list: {:?}", self.streams.len());
+        self.streams.is_empty() && self.url_queue.is_empty() && self.is_done_shaping
     }
 
     fn handle(&mut self, client: &mut Http3Client) -> Res<bool> {
+        println!("CAZZO 1");
+        println!("Checking if client is done shaping: {:?}", client.is_done_shaping());
+        self.is_done_shaping = client.is_done_shaping();
         while let Some(event) = client.next_event() {
             match event {
                 Http3ClientEvent::AuthenticationNeeded => {
@@ -505,6 +510,7 @@ impl<'a> Handler<'a> {
                     }
                 },
                 Http3ClientEvent::DataReadable { stream_id } => {
+                    println!("CAZZO 2");
                     let mut stream_done = false;
                     match self.streams.get_mut(&stream_id) {
                         None => {
@@ -566,6 +572,10 @@ impl<'a> Handler<'a> {
                     }
                     self.download_urls(client);
                 }
+                Http3ClientEvent::FlowShapingDone => {
+                    println!("PORCODIO");
+                    self.is_done_shaping = true;
+                }
                 _ => {
                     println!("Unhandled event {:?}", event);
                 }
@@ -607,12 +617,13 @@ fn client(
         "h3-30" => QuicVersion::Draft30,
         _ => QuicVersion::default(),
     };
-
+    let mut shaping = false;
     let mut dummy_urls: VecDeque<Url> = VecDeque::new();
     if !neqo_csdef::debug_disable_shaping() {
         for url in &args.dummy_urls{
             dummy_urls.push_back(url.clone());
         }
+        shaping = true;
     }
 
     let mut transport = Connection::new_client(
@@ -652,6 +663,7 @@ fn client(
         args: &args,
         key_update,
         url_deps,
+        is_done_shaping: !shaping,
     };
 
     process_loop(&local_addr, &remote_addr, &socket, &mut client, &mut h)?;

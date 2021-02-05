@@ -301,11 +301,10 @@ FlowShaper{ config,
             }
 
             // check dequeues empty, if so send connection close event
-            // commented for FRONT defence
-            // if self.in_target.is_empty() && self.out_target.is_empty() {
-            //     qtrace!([self], "shaping complete, closing connection");
-            //     self.application_events.send_connection_close();
-            // }
+            if self.in_target.is_empty() && self.out_target.is_empty() {
+                qdebug!([self], "shaping complete, notify client");
+                self.application_events.is_done_shaping();
+            }
         }
     }
 
