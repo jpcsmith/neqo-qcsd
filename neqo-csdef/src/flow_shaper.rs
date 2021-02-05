@@ -336,12 +336,22 @@ FlowShaper{ config,
 
     /// Queue events related to a new stream being created by this
     /// endpoint.
-    pub fn on_stream_created(&self, stream_id: u64) {
-        let stream_id = StreamId::new(stream_id);
-        assert!(stream_id.is_client_initiated());
+    pub fn on_stream_created(&mut self, stream_id: u64) {
+        assert!(StreamId::new(stream_id).is_client_initiated());
         qtrace!([self], "notified of stream {} being created", stream_id);
 
-        if stream_id.is_bidi() {
+        if self.is_shaping_stream(stream_id) {
+            self.open_for_shaping(stream_id);
+        }
+    }
+
+    pub fn on_http_request_sent(&mut self, stream_id: u64, url: &Url, is_chaff: bool) {
+        let stream_id = StreamId::new(stream_id);
+        qtrace!([self], "notified of request sent on stream {}", stream_id);
+
+        if is_chaff {
+            self.add_padding_stream(stream_id.as_u64(), url.clone());
+        } else {
             self.events.borrow_mut().send_max_stream_data(
                 &stream_id,
                 self.config.rx_stream_data_window,
@@ -351,18 +361,6 @@ FlowShaper{ config,
         }
     }
 
-    /// Records the creation of a stream for padding.
-    ///
-    /// Assumes that no events have been dequeud since the call of the
-    /// associated `on_new_stream` call for the `stream_id`.
-    pub fn on_new_padding_stream(&mut self, stream_id: u64, dummy_url: Url) {
-        assert!(self.events.borrow_mut()
-                .cancel_max_stream_data(StreamId::new(stream_id)));
-        qdebug!([self], "Removed max stream data event from stream {}", stream_id);
-
-        self.add_padding_stream(stream_id, dummy_url);
-    }
-
     fn add_padding_stream(&mut self, stream_id: u64, dummy_url: Url) {
         qtrace!([self], "adding a padding stream for {}: {}", stream_id, dummy_url);
         self.chaff_streams.insert(
@@ -370,7 +368,7 @@ FlowShaper{ config,
     }
 
     // signals that the stream is ready to receive MSD frames
-    pub fn open_for_shaping(&mut self, stream_id: u64) -> bool {
+    fn open_for_shaping(&mut self, stream_id: u64) {
         qdebug!([self], "Opening stream {} for shaping", stream_id);
 
         if debug_enable_save_ids(){
@@ -393,8 +391,6 @@ FlowShaper{ config,
         // this now is a double safety in case there were no open dummy
         // streams when the last one was closed.
         self.maybe_send_queued_msd();
-
-        true
     }
 
     fn maybe_send_queued_msd(&mut self) {
@@ -621,7 +617,7 @@ mod tests {
     #[test]
     fn test_on_stream_created_uni() {
         // It's a unidirectional stream, so we do not queue any events
-        let  shaper = create_shaper();
+        let mut shaper = create_shaper();
         shaper.on_stream_created(CLIENT_UNI_STREAM_ID);
         assert_eq!(shaper.next_event(), None);
     }
@@ -629,7 +625,7 @@ mod tests {
     #[test]
     fn test_on_stream_created_bidi() {
         // It's a unidirectional stream, so we do not queue any events
-        let  shaper = create_shaper();
+        let mut shaper = create_shaper();
         shaper.on_stream_created(CLIENT_BIDI_STREAM_ID);
         assert_eq!(
             shaper.events.borrow_mut().next_event(),
@@ -637,17 +633,6 @@ mod tests {
                 stream_id: CLIENT_BIDI_STREAM_ID, new_limit: RX_STREAM_DATA_WINDOW,
                 increase: RX_STREAM_DATA_WINDOW - BLOCKED_STREAM_LIMIT
             }));
-    }
-
-    #[test]
-    fn test_on_stream_created_bidi_padding() {
-        // If a stream is identified as being for a padding URL, its max data
-        // should not be increased
-        let mut shaper = create_shaper();
-
-        shaper.on_stream_created(CLIENT_BIDI_STREAM_ID);
-        shaper.on_new_padding_stream(CLIENT_BIDI_STREAM_ID, Url::parse("").expect("foo"));
-        assert_eq!(shaper.events.borrow_mut().next_event(), None);
     }
 
     #[test]

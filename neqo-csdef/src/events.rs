@@ -82,25 +82,6 @@ impl FlowShapingEvents {
                                     if stream_id == id));
     }
 
-    /// Pop the first max_stream_data event with the specified stream
-    /// id. Return true iff the event was found and removed.
-    pub fn cancel_max_stream_data(&self, stream_id: StreamId) -> bool {
-        type FSE = FlowShapingEvent;
-
-        let position = self.events.borrow().iter().position(|item| match item {
-            FSE::SendMaxStreamData { stream_id: sid, .. } => *sid == stream_id.as_u64(),
-            _ => false
-        });
-
-        match position {
-            Some(index) => {
-                self.events.borrow_mut().remove(index);
-                true
-            },
-            None => false
-        }
-    }
-
     pub fn get_queued_msd(&self) -> u64 {
         self.queued_msd
     }
@@ -129,6 +110,7 @@ pub(crate) struct FlowShapingApplicationEvents {
 
 impl FlowShapingApplicationEvents {
 
+    #[allow(dead_code)]
     pub fn send_connection_close(&self) {
         self.insert(FlowShapingEvent::CloseConnection)
     }

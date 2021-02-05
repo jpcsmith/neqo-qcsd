@@ -381,6 +381,13 @@ impl Http3Client {
             .stream_create(StreamType::BiDi)
             .map_err(|e| Error::map_stream_create_errors(&e))?;
 
+        if let Some(flow_shaper) = self.flow_shaper.as_ref() {
+            flow_shaper.borrow_mut()
+                .on_http_request_sent(id, &Url::parse(
+                        &format!("{}://{}{}", scheme, host, path)).unwrap(),
+                        false
+                );
+        }
 
         // Transform pseudo-header fields
         let mut final_headers = Vec::new();
@@ -448,17 +455,13 @@ impl Http3Client {
             .map_err(|e| Error::map_stream_create_errors(&e))?;
 
         {
-            let mut shaper = self.flow_shaper
-                .as_ref()
+            self.flow_shaper.as_ref()
                 .expect("cannot add dummy stream without flow shaper")
-                .borrow_mut();
-
-            // notify flow_shaper of the new stream
-            shaper.on_stream_created(id);
-            shaper.on_new_padding_stream(id, Url::parse(
-                        &format!("{}://{}{}", scheme, host, path)
-                    )
-                  .expect("could not parse dummy Url"));
+                .borrow_mut()
+                .on_http_request_sent(
+                    id,
+                    &Url::parse(&format!("{}://{}{}", scheme, host, path)).unwrap(),
+                    true);
             self.conn.disable_automatic_flowc(id);
         }
 
