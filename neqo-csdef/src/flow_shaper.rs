@@ -17,7 +17,10 @@ use crate::{ Result, dummy_schedule_log_file };
 use crate::stream_id::StreamId;
 use crate::defences::Defence;
 use crate::chaff_stream::{ ChaffStream, ChaffStreamMap };
-use crate::events::{ FlowShapingEvents, FlowShapingApplicationEvents };
+use crate::events::{
+    FlowShapingEvents, FlowShapingApplicationEvents, HEventConsumer,
+    StreamEventConsumer
+};
 pub use crate::events::{ FlowShapingEvent };
 
 const BLOCKED_STREAM_LIMIT: u64 = 20;
@@ -158,6 +161,7 @@ pub struct FlowShaper {
 
     /// Streams used for sending chaff traffic
     chaff_streams: ChaffStreamMap,
+    app_streams: ChaffStreamMap,
 }
 
 impl Display for FlowShaper {
@@ -207,7 +211,9 @@ impl FlowShaper {
             .map(|((ts, _), size)| (*ts, u32::try_from(*size).unwrap()))
             .collect();
         out_target.sort();
-FlowShaper{ config,
+
+        FlowShaper{ 
+            config,
             in_target: VecDeque::from(in_target),
             out_target: VecDeque::from(out_target),
             pad_only_mode: pad_only_mode,
@@ -215,30 +221,11 @@ FlowShaper{ config,
         }
     }
 
-
     /// Start shaping the traffic using the current time as the reference
     /// point.
     pub fn start(&mut self) {
         qtrace!([self], "starting shaping.");
         self.start_time = Some(Instant::now());
-    }
-
-    pub fn awaiting_header_data(&mut self, stream_id: u64, min_remaining: u64) {
-        if let Some(stream) = self.chaff_streams.get_mut(&stream_id) {
-            stream.awaiting_header_data(min_remaining);
-        }
-    }
-
-    pub fn data_consumed(&mut self, stream_id: u64, amount: u64) {
-        if let Some(stream) = self.chaff_streams.get_mut(&stream_id) {
-            stream.data_consumed(amount);
-        }
-    }
-
-    pub fn on_data_frame(&mut self, stream_id: u64, length: u64) {
-        if let Some(stream) = self.chaff_streams.get_mut(&stream_id) {
-            stream.on_data_frame(length);
-        }
     }
 
     /// Report the next instant at which the FlowShaper should be called for
@@ -270,34 +257,50 @@ FlowShaper{ config,
             if let Some((ts, _)) = self.out_target.front() {
                 let next = Duration::from_millis(u64::from(*ts));
                 if next < since_start {
-                    let (_, size) = self.out_target.pop_front()
+                    let (_, mut size) = self.out_target.pop_front()
                         .expect("the deque to be non-empty");
+                    // TODO(jsmith): Use Chaff GET requests as padding.
+                    // We should perhaps generally use GET requests for chaff
+                    // traffic as padding instead of having them interleave with
+                    // the data.
+                    if !self.pad_only_mode {
+                        let pushed = self.app_streams.push_data(size as u64);
+                        qtrace!([self], "sent {} application bytes", pushed);
+                        size -= u32::try_from(pushed).unwrap();
+                    }
 
                     qtrace!([self], "sending {} padding bytes", size);
                     self.events.borrow_mut().send_pad_frames(size);
                 }
             }
 
-            // dummy packets in
-            if self.chaff_streams.pull_available() > 0 {
-                if let Some((ts, _)) = self.in_target.front() {
-                    let next = Duration::from_millis(u64::from(*ts));
-                    if next < since_start {
-                        let (ts, size) = self.in_target.pop_front()
-                            .expect("the deque to be non-empty");
-                        qtrace!([self], "pulling {} padding bytes", size);
+            if let Some((ts, _)) = self.in_target.front() {
+                let next = Duration::from_millis(u64::from(*ts));
 
-                        let pulled = self.chaff_streams.pull_data(size as u64);
-                        let remaining = size
-                            .checked_sub(u32::try_from(pulled).unwrap())
-                            .unwrap();
-                        if remaining > 0 {
-                            self.in_target.push_front((ts, remaining));
-                        }
+                if next < since_start 
+                    && (self.chaff_streams.can_pull() 
+                        || (!self.pad_only_mode && self.app_streams.can_pull()))
+                {
+                    let (ts, size) = self.in_target.pop_front()
+                        .expect("the deque to be non-empty");
+                    qtrace!([self], "pulling {} padding bytes", size);
+
+                    let pulled = self.chaff_streams.pull_data(size as u64);
+                    let remaining = size
+                        .checked_sub(u32::try_from(pulled).unwrap())
+                        .unwrap();
+
+                    // TODO(jsmith): Evaluate whether we should discard or requeue. 
+                    // This question also generally applies to data that should be
+                    // transfered before the first chaff streams are available as well
+                    // as the data that wouldve been lost when we remove a dummy stream
+                    // with pending outgoing MSD frames.
+                    if remaining > 0 {
+                        self.in_target.push_front((ts, remaining));
                     }
+                } else if next < since_start {
+                    qwarn!([self], "No streams with available pull data.");
                 }
-            } else {
-                qwarn!([self], "No chaff streams with available pull data.");
             }
 
             // check dequeues empty, if so send connection close event
@@ -324,32 +327,6 @@ FlowShaper{ config,
             // they open (initial_max_stream_data_uni)
             // (0x07, BLOCKED_STREAM_LIMIT),
         ]
-    }
-
-    /// Queue events related to a new stream being created by the peer.
-    pub fn on_stream_incoming(&self, stream_id: u64) {
-        let stream_id = StreamId::new(stream_id);
-        assert!(stream_id.is_server_initiated());
-        assert!(stream_id.is_uni(), "Servers dont initiate BiDi streams in HTTP3");
-
-        // Do nothing, as unidirectional streams were not flow controlled
-    }
-
-    /// Queue events related to a new stream being created by this
-    /// endpoint.
-    pub fn on_stream_created(&self, stream_id: u64) {
-        let stream_id = StreamId::new(stream_id);
-        assert!(stream_id.is_client_initiated());
-        qtrace!([self], "notified of stream {} being created", stream_id);
-
-        if stream_id.is_bidi() {
-            self.events.borrow_mut().send_max_stream_data(
-                &stream_id,
-                self.config.rx_stream_data_window,
-                self.config.rx_stream_data_window - BLOCKED_STREAM_LIMIT);
-            qdebug!([self], "Added send_max_stream_data event to stream {} limit {}",
-                    stream_id, self.config.rx_stream_data_window);
-        }
     }
 
     /// Records the creation of a stream for padding.
@@ -398,6 +375,7 @@ FlowShaper{ config,
         true
     }
 
+    // TODO: Need to adjust below here for data streams ----
     fn maybe_send_queued_msd(&mut self) {
         // FIXME(jsmith): This needs to account for available bytes
         // Better yet, it would better to just push the queued MSD
@@ -458,7 +436,65 @@ FlowShaper{ config,
     pub fn has_application_events(&self) -> bool {
         self.application_events.has_events()
     }
+
+    fn get_stream_mut(&mut self, stream_id: &u64) -> Option<&mut ChaffStream> {
+        match self.chaff_streams.get_mut(stream_id) {
+            Some(stream) => Some(stream),
+            None => self.app_streams.get_mut(stream_id),
+        }
+    }
 }
+
+
+impl HEventConsumer for FlowShaper {
+    fn awaiting_header_data(&mut self, stream_id: u64, min_remaining: u64) {
+        if let Some(stream) = self.get_stream_mut(&stream_id) {
+            stream.awaiting_header_data(min_remaining);
+        }
+    }
+
+    fn on_data_frame(&mut self, stream_id: u64, length: u64) {
+        if let Some(stream) = self.get_stream_mut(&stream_id) {
+            stream.on_data_frame(length);
+        }
+    }
+}
+
+impl StreamEventConsumer for FlowShaper {
+    fn data_consumed(&mut self, stream_id: u64, amount: u64) {
+        if let Some(stream) = self.get_stream_mut(&stream_id) {
+            stream.data_consumed(amount);
+        }
+    }
+
+    fn on_stream_incoming(&self, stream_id: u64) {
+        let stream_id = StreamId::new(stream_id);
+        assert!(stream_id.is_server_initiated());
+        assert!(stream_id.is_uni(), "Servers dont initiate BiDi streams in HTTP3");
+
+        // Do nothing, as unidirectional streams were not flow controlled
+    }
+
+    fn on_stream_created(&self, stream_id: u64) {
+        let stream_id = StreamId::new(stream_id);
+        assert!(stream_id.is_client_initiated());
+        qtrace!([self], "notified of stream {} being created", stream_id);
+
+        // TODO(jsmith): Find a better way to do this.
+        // This currently bypases our tracking since we have to undo it,
+        // TODO(jsmith): Without push_data this blocks app streams in !pad_only_mode
+        if stream_id.is_bidi() && self.pad_only_mode {
+            self.events.borrow_mut().send_max_stream_data(
+                &stream_id,
+                self.config.rx_stream_data_window,
+                self.config.rx_stream_data_window - BLOCKED_STREAM_LIMIT);
+            qdebug!([self], "Added send_max_stream_data event to stream {} limit {}",
+                    stream_id, self.config.rx_stream_data_window);
+        }
+    }
+}
+
+
 
 /// Select count padding URLs from the slice of URLs.
 ///

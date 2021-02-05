@@ -203,23 +203,6 @@ impl ChaffStream {
     }
 }
 
-impl PartialEq for ChaffStream {
-     fn eq(&self, other: &Self) -> bool {
-        self.stream_id == other.stream_id
-    }
-}
-
-
-impl Eq for ChaffStream {}
-
-
-impl std::hash::Hash for ChaffStream {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.stream_id.hash(state);
-    }
-}
-
-
 
 impl ::std::fmt::Display for ChaffStream {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
@@ -254,8 +237,19 @@ impl ChaffStreamMap {
         amount - remaining
     }
 
+    /// Send up to the specified amount of data, return the acutal amount 
+    /// sent.
+    pub fn push_data(&mut self, _amount: u64) -> u64 {
+        // TODO(jsmith): Implement
+        0
+    }
+
     pub fn pull_available(&self) -> u64 {
         self.iter().fold(0, |total, (_, stream)| total + stream.msd_available())
+    }
+
+    pub fn can_pull(&self) -> bool {
+        self.pull_available() > 0
     }
 
     // add a padding stream to the shaping streams

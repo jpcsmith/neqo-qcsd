@@ -13,6 +13,8 @@ pub trait HEventConsumer {
 
 pub trait StreamEventConsumer {
     fn data_consumed(&mut self, stream_id: u64, amount: u64);
+    fn on_stream_incoming(&self, stream_id: u64);
+    fn on_stream_created(&self, stream_id: u64);
 }
 
 
