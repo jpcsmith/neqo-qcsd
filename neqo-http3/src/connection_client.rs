@@ -93,7 +93,8 @@ pub struct Http3Client {
     events: Http3ClientEvents,
     push_handler: Rc<RefCell<PushController>>,
 
-    flow_shaper: Option<Rc<RefCell<FlowShaper>>>
+    flow_shaper: Option<Rc<RefCell<FlowShaper>>>,
+    done_shaping: bool
 }
 
 impl Display for Http3Client {
@@ -142,7 +143,8 @@ impl Http3Client {
                 http3_parameters.max_concurrent_push_streams,
                 events,
             ))),
-            flow_shaper: None
+            flow_shaper: None,
+            done_shaping: true
         };
 
         if !neqo_csdef::debug_disable_shaping() {
@@ -186,6 +188,7 @@ impl Http3Client {
 
         shaper.borrow_mut().start();
         self.flow_shaper = Some(shaper);
+        self.done_shaping = false;
     }
 
     #[must_use]
@@ -196,6 +199,11 @@ impl Http3Client {
     #[must_use]
     pub fn is_being_shaped(&self) -> bool {
         self.flow_shaper.is_some()
+    }
+
+    #[must_use]
+    pub fn is_done_shaping(&self) -> bool {
+        self.done_shaping
     }
 
     #[must_use]
@@ -776,6 +784,11 @@ impl Http3Client {
         ) {
             qdebug!([self], "check_flow_shaping_events - event {:?}.", e);
             match e {
+                FlowShapingEvent::DoneShaping => {
+                    self.done_shaping = true;
+                    self.events.flow_shaping_done();
+                    qdebug!([self], "FlowShaper is done shaping");
+                }
                 FlowShapingEvent::ReopenStream(url) => {
                     let headers: Header = (String::new(),String::new()); // TODO (ldolfi): figure out headers
                     match self.fetch_dummy(
