@@ -9,27 +9,51 @@ use crate::events::FlowShapingEvents;
 
 #[derive(Debug)]
 pub(crate) enum ChaffStreamState {
-    Created,
-    Open {
+    Created{ initial_msd: u64 },
+    ReceivingHeaders {
         max_stream_data: u64,
         max_stream_data_limit: u64,
         data_consumed: u64,
     },
-    Closed { data_consumed: u64 }
+    ReceivingData {
+        max_stream_data: u64,
+        max_stream_data_limit: u64,
+        data_consumed: u64,
+        data_length: u64,
+    },
+    Closed { data_length: u64 }
 }
 
-impl ::std::fmt::Display for ChaffStreamState {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+impl ChaffStreamState {
+    fn new(initial_msd: u64) -> Self {
+        Self::Created { initial_msd }
+    }
+
+    fn name(&self) -> &str {
         match self {
-            ChaffStreamState::Created => write!(f, "Created"),
-            ChaffStreamState::Open {
-                max_stream_data, max_stream_data_limit, data_consumed
-            } => {
-                write!(f, "Open({}/{}/{})", data_consumed, max_stream_data,
-                       max_stream_data_limit)
+            Self::Created { .. } => "Created",
+            Self::ReceivingHeaders { .. } => "ReceivingHeaders",
+            Self::ReceivingData { .. } => "ReceivingData",
+            Self::Closed { .. } => "Closed",
+        }
+    }
+
+    fn data_length(&self) -> Option<u64> {
+        match self {
+            Self::ReceivingData { data_length, .. }
+            | Self::Closed { data_length, .. } => Some(*data_length),
+            Self::Created { .. } | Self::ReceivingHeaders { .. } => None
+        }
+    }
+
+    #[allow(dead_code)]
+    fn msd_available(&self) -> u64 {
+        match self {
+            Self::ReceivingHeaders { max_stream_data, max_stream_data_limit, .. }
+            | Self::ReceivingData { max_stream_data, max_stream_data_limit, .. } => {
+                max_stream_data_limit - max_stream_data
             },
-            ChaffStreamState::Closed { data_consumed }
-                => write!(f, "Closed({})", data_consumed),
+            Self::Created { .. } | Self::Closed { .. } => 0
         }
     }
 }
@@ -41,7 +65,6 @@ pub(crate) struct ChaffStream {
     url: Url,
     state: ChaffStreamState,
     events: Rc<RefCell<FlowShapingEvents>>,
-    initial_msd: u64,
 }
 
 impl ChaffStream {
@@ -54,21 +77,21 @@ impl ChaffStream {
         ChaffStream {
             stream_id: StreamId::new(stream_id),
             url,
-            state: ChaffStreamState::Created,
+            state: ChaffStreamState::new(initial_msd),
             events,
-            initial_msd,
         }
+    }
+
+    pub fn msd_available(&self) -> u64 {
+        self.state.msd_available()
     }
 
     pub fn open(&mut self) {
         match self.state {
-            ChaffStreamState::Created => {
-                // TODO: This should not be zero or hard-coded but instead
-                // w.e. is the size that they actually are openned at according
-                // to the config
-                self.state = ChaffStreamState::Open{
-                    max_stream_data: 20,
-                    max_stream_data_limit: 20,
+            ChaffStreamState::Created { initial_msd } => {
+                self.state = ChaffStreamState::ReceivingHeaders {
+                    max_stream_data: initial_msd,
+                    max_stream_data_limit: initial_msd,
                     data_consumed: 0,
                 };
             },
@@ -77,54 +100,61 @@ impl ChaffStream {
     }
 
     pub fn close(&mut self) {
-        let closed_state = match self.state {
-            ChaffStreamState::Open { data_consumed, .. }
-                => ChaffStreamState::Closed{ data_consumed },
-            _ => ChaffStreamState::Closed{ data_consumed: 0 },
+        let closed_state = ChaffStreamState::Closed {
+            data_length: self.state.data_length().unwrap_or(0)
         };
-
-        qtrace!([self], "state {} -> {}", self.state, closed_state);
+        qtrace!([self], "{} -> {}", self.state.name(), closed_state.name());
         self.state = closed_state;
     }
 
     pub fn is_open(&self) -> bool {
-        matches!(self.state, ChaffStreamState::Open{..})
+        matches!(
+            self.state,
+            ChaffStreamState::ReceivingHeaders{ .. } | ChaffStreamState::ReceivingData { .. }
+        )
     }
 
-    pub fn pull_data(&mut self, size: u64) {
+    /// Pull data on this stream. Return the amount of data pulled.
+    pub fn pull_data(&mut self, amount: u64) -> u64 {
+        let pull_amount = std::cmp::min(amount, self.msd_available());
+
         match self.state {
-            ChaffStreamState::Open{ ref mut max_stream_data, .. } => {
-                *max_stream_data += size;
+            ChaffStreamState::ReceivingHeaders{ ref mut max_stream_data, .. }
+            | ChaffStreamState::ReceivingData{ ref mut max_stream_data, .. } => {
+                *max_stream_data += pull_amount;
                 self.events.borrow_mut()
-                    .send_max_stream_data(&self.stream_id, *max_stream_data, size);
+                    .send_max_stream_data(&self.stream_id, *max_stream_data, pull_amount);
+
+                pull_amount
             },
             _ => panic!("Cannot pull data for stream in current state!")
-        };
+        }
     }
 
     pub fn data_consumed(&mut self, amount: u64) {
-        qtrace!([self], "Recording consumption of {} data in state {}.",
-                amount, self.state);
+        qtrace!([self], "Recording consumption of {} data.", amount);
         match self.state {
-            ChaffStreamState::Open{ ref mut data_consumed, max_stream_data_limit, .. } => {
+            ChaffStreamState::ReceivingHeaders {
+                ref mut data_consumed, max_stream_data_limit, ..  }
+            | ChaffStreamState::ReceivingData {
+                ref mut data_consumed, max_stream_data_limit, ..  } => {
                 *data_consumed += amount;
                 qtrace!("New values: {} <= {}", *data_consumed, max_stream_data_limit);
                 // TODO: Enable assert once we actually control
                 // assert!(*data_consumed <= max_stream_data_limit);
             },
-            ChaffStreamState::Closed{ ref mut data_consumed } => {
-                *data_consumed += amount;
-            },
+            ChaffStreamState::Closed{ .. } => (),
             _ => panic!("Data should not be consumed in the current state.")
         };
 
     }
 
     pub fn awaiting_header_data(&mut self, min_remaining: u64) {
-        qtrace!([self], "Needs {} bytes for header data. State {} ",
-                min_remaining, self.state);
+        qtrace!([self], "Needs {} bytes for header data {:?}.", min_remaining, self.state);
         match self.state {
-            ChaffStreamState::Open{
+            ChaffStreamState::ReceivingHeaders {
+                ref mut max_stream_data_limit, data_consumed, .. }
+            | ChaffStreamState::ReceivingData {
                 ref mut max_stream_data_limit, data_consumed, ..
             } => {
                 *max_stream_data_limit = std::cmp::max(
@@ -143,13 +173,30 @@ impl ChaffStream {
     /// may be different from the amount of data available by up to 14 bytes
     /// per header frame received on the stream.
     pub fn on_data_frame(&mut self, length: u64) {
-        qtrace!([self], "Encountered data frame with length {}", length);
-        match &mut self.state {
-            ChaffStreamState::Open{ max_stream_data_limit, data_consumed, .. } => {
-                assert!(*data_consumed + length >= *max_stream_data_limit);
-                *max_stream_data_limit = *data_consumed + length
+        qtrace!([self], "Encountered data frame with length {}, {:?}", length, self.state);
+        match self.state {
+            ChaffStreamState::ReceivingHeaders{
+                max_stream_data, max_stream_data_limit, data_consumed,
+            } => {
+                assert!(data_consumed + length >= max_stream_data_limit);
+                self.state = ChaffStreamState::ReceivingData {
+                    max_stream_data: max_stream_data,
+                    max_stream_data_limit: data_consumed + length,
+                    data_consumed: data_consumed,
+                    data_length: length,
+                }
             },
-            ChaffStreamState::Closed{ .. } => { },
+            ChaffStreamState::ReceivingData {
+                ref mut max_stream_data_limit, data_consumed, ref mut data_length, ..
+            } => {
+                // It seems to be possible to receive multiple HTTP/3 data
+                // frames in response to a request, we therefore aggregate
+                // their lengths
+                assert!(data_consumed + length >= *max_stream_data_limit);
+                *max_stream_data_limit = data_consumed + length;
+                *data_length += length;
+            }
+            ChaffStreamState::Closed{ .. } => (),
             _ => panic!("Should not receive data frame in other states!")
         }
 
@@ -165,9 +212,34 @@ impl ::std::fmt::Display for ChaffStream {
 
 #[derive(Debug, Default)]
 pub(crate) struct ChaffStreamMap(HashMap<u64, ChaffStream>);
+// TODO: Use a HashSet
 
 
 impl ChaffStreamMap {
+    /// Pull data from various streams amounting to `amount`.
+    /// Return the actual amount pulled.
+    pub fn pull_data(&mut self, amount: u64) -> u64 {
+        let mut remaining = amount;
+
+        for (_, stream) in self.iter_mut()
+            .filter(|(_, stream)| stream.msd_available() > 0)
+        {
+            assert!(stream.msd_available() > 0);
+            let pulled = stream.pull_data(remaining);
+
+            remaining -= pulled;
+            if remaining == 0 {
+                break;
+            }
+        }
+
+        amount - remaining
+    }
+
+    pub fn pull_available(&self) -> u64 {
+        self.iter().fold(0, |total, (_, stream)| total + stream.msd_available())
+    }
+
     // add a padding stream to the shaping streams
     pub fn insert(&mut self, stream: ChaffStream) {
         assert!(self.0.insert(stream.stream_id.as_u64(), stream).is_none())
@@ -197,6 +269,7 @@ impl ChaffStreamMap {
         self.0.contains_key(stream_id)
     }
 
+    #[allow(dead_code)]
     pub fn has_open(&self) -> bool {
         self.0.iter().any(|(_, stream)| stream.is_open())
     }

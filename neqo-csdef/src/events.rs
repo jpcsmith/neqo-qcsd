@@ -6,6 +6,15 @@ use url::Url;
 use neqo_common::qdebug;
 use crate::stream_id::StreamId;
 
+pub trait HEventConsumer {
+    fn awaiting_header_data(&mut self, stream_id: u64, min_remaining: u64);
+    fn on_data_frame(&mut self, stream_id: u64, length: u64);
+}
+
+pub trait StreamEventConsumer {
+    fn data_consumed(&mut self, stream_id: u64, amount: u64);
+}
+
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum FlowShapingEvent {
@@ -92,11 +101,13 @@ impl FlowShapingEvents {
         }
     }
 
-    /// Returns the queued MSD and sets it back to zero
-    pub fn drain_queued_msd(&mut self) -> u64 {
-        let result = self.queued_msd;
-        self.queued_msd = 0;
-        result
+    pub fn get_queued_msd(&self) -> u64 {
+        self.queued_msd
+    }
+
+    pub fn consume_queued_msd(&mut self, amount: u64) {
+        assert!(self.queued_msd >= amount);
+        self.queued_msd -= amount;
     }
 
     #[must_use]

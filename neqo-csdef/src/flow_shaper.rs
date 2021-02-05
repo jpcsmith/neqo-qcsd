@@ -162,7 +162,7 @@ pub struct FlowShaper {
 
 impl Display for FlowShaper {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        write!(f, "QCD FlowShaper")
+        write!(f, "FlowShaper")
     }
 }
 
@@ -279,24 +279,25 @@ FlowShaper{ config,
             }
 
             // dummy packets in
-            if self.chaff_streams.has_open() {
+            if self.chaff_streams.pull_available() > 0 {
                 if let Some((ts, _)) = self.in_target.front() {
                     let next = Duration::from_millis(u64::from(*ts));
                     if next < since_start {
-                        let (_, size) = self.in_target.pop_front()
+                        let (ts, size) = self.in_target.pop_front()
                             .expect("the deque to be non-empty");
                         qtrace!([self], "pulling {} padding bytes", size);
 
-                        // find first available dummy stream to transfer data
-                        let (_, stream) = self.chaff_streams
-                            .iter_mut()
-                            .find(|(_, stream)| stream.is_open())
-                            .expect("chaff_streams has some open stream");
-                        stream.pull_data(size as u64);
+                        let pulled = self.chaff_streams.pull_data(size as u64);
+                        let remaining = size
+                            .checked_sub(u32::try_from(pulled).unwrap())
+                            .unwrap();
+                        if remaining > 0 {
+                            self.in_target.push_front((ts, remaining));
+                        }
                     }
                 }
             } else {
-                qwarn!([self], "No chaff stream open to get data.");
+                qwarn!([self], "No chaff streams with available pull data.");
             }
 
             // check dequeues empty, if so send connection close event
@@ -401,12 +402,12 @@ FlowShaper{ config,
         // FIXME(jsmith): This needs to account for available bytes
         // Better yet, it would better to just push the queued MSD
         // back onto the trace so that it is handled in the main code
-        let queued_msd = self.events.borrow_mut().drain_queued_msd();
-        if  queued_msd > 0 {
-            if let Some((_, stream)) = self.chaff_streams.iter_mut()
-                .filter(|(_, stream)| stream.is_open())
-                .next() {
-                    stream.pull_data(queued_msd);
+        let queued_msd = self.events.borrow().get_queued_msd();
+        if queued_msd > 0 {
+            let pulled = self.chaff_streams.pull_data(queued_msd);
+
+            if pulled > 0 && pulled < queued_msd {
+                self.events.borrow_mut().consume_queued_msd(pulled);
             }
         }
     }
