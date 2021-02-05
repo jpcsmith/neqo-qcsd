@@ -203,6 +203,24 @@ impl ChaffStream {
     }
 }
 
+impl PartialEq for ChaffStream {
+     fn eq(&self, other: &Self) -> bool {
+        self.stream_id == other.stream_id
+    }
+}
+
+
+impl Eq for ChaffStream {}
+
+
+impl std::hash::Hash for ChaffStream {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.stream_id.hash(state);
+    }
+}
+
+
+
 impl ::std::fmt::Display for ChaffStream {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         write!(f, "ChaffStream({})", self.stream_id)
