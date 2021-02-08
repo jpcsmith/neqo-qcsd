@@ -1,7 +1,7 @@
 pub mod flow_shaper;
 pub mod defences;
 pub mod stream_id;
-mod events;
+pub mod events;
 mod error;
 mod chaff_stream;
 

@@ -328,15 +328,6 @@ impl FlowShaper {
         ]
     }
 
-    /// Queue events related to a new stream being created by the peer.
-    pub fn on_stream_incoming(&self, stream_id: u64) {
-        let stream_id = StreamId::new(stream_id);
-        assert!(stream_id.is_server_initiated());
-        assert!(stream_id.is_uni(), "Servers dont initiate BiDi streams in HTTP3");
-
-        // Do nothing, as unidirectional streams were not flow controlled
-    }
-
     /// Queue events related to a new stream being created by this
     /// endpoint.
     pub fn on_stream_created(&mut self, stream_id: u64) {
@@ -345,22 +336,6 @@ impl FlowShaper {
 
         if self.is_shaping_stream(stream_id) {
             self.open_for_shaping(stream_id);
-        }
-    }
-
-    pub fn on_http_request_sent(&mut self, stream_id: u64, url: &Url, is_chaff: bool) {
-        let stream_id = StreamId::new(stream_id);
-        qtrace!([self], "notified of request sent on stream {}", stream_id);
-
-        if is_chaff {
-            self.add_padding_stream(stream_id.as_u64(), url.clone());
-        } else {
-            self.events.borrow_mut().send_max_stream_data(
-                &stream_id,
-                self.config.rx_stream_data_window,
-                self.config.rx_stream_data_window - BLOCKED_STREAM_LIMIT);
-            qdebug!([self], "Added send_max_stream_data event to stream {} limit {}",
-                    stream_id, self.config.rx_stream_data_window);
         }
     }
 
@@ -479,6 +454,23 @@ impl HEventConsumer for FlowShaper {
             stream.on_data_frame(length);
         }
     }
+
+    fn on_http_request_sent(&mut self, stream_id: u64, url: &Url, is_chaff: bool) {
+        let stream_id = StreamId::new(stream_id);
+        qtrace!([self], "notified of request sent on stream {}", stream_id);
+
+        if is_chaff {
+            self.add_padding_stream(stream_id.as_u64(), url.clone());
+        } else {
+            self.events.borrow_mut().send_max_stream_data(
+                &stream_id,
+                self.config.rx_stream_data_window,
+                self.config.rx_stream_data_window - BLOCKED_STREAM_LIMIT);
+            qdebug!([self], "Added send_max_stream_data event to stream {} limit {}",
+                    stream_id, self.config.rx_stream_data_window);
+        }
+    }
+
 }
 
 impl StreamEventConsumer for FlowShaper {
@@ -488,7 +480,7 @@ impl StreamEventConsumer for FlowShaper {
         }
     }
 
-    fn on_stream_incoming(&self, stream_id: u64) {
+    fn on_stream_incoming(&mut self, stream_id: u64) {
         let stream_id = StreamId::new(stream_id);
         assert!(stream_id.is_server_initiated());
         assert!(stream_id.is_uni(), "Servers dont initiate BiDi streams in HTTP3");
@@ -496,7 +488,7 @@ impl StreamEventConsumer for FlowShaper {
         // Do nothing, as unidirectional streams were not flow controlled
     }
 
-    fn on_stream_created(&self, stream_id: u64) {
+    fn on_stream_created(&mut self, stream_id: u64) {
         let stream_id = StreamId::new(stream_id);
         assert!(stream_id.is_client_initiated());
         qtrace!([self], "notified of stream {} being created", stream_id);
@@ -699,7 +691,7 @@ mod tests {
 
     #[test]
     fn test_on_stream_incoming_uni() {
-        let  shaper = create_shaper();
+        let mut shaper = create_shaper();
         shaper.on_stream_incoming(SERVER_UNI_STREAM_ID);
 
         // Incoming Unidirectional streams are not blocked initially, as we do not
@@ -711,7 +703,7 @@ mod tests {
     #[should_panic]
     fn test_on_stream_incoming_bidi() {
         // We assume that the server never opens bidi streams in H3
-        let shaper = create_shaper();
+        let mut shaper = create_shaper();
         shaper.on_stream_incoming(SERVER_BIDI_STREAM_ID);
     }
 
