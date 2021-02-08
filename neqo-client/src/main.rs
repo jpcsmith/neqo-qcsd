@@ -550,11 +550,7 @@ impl<'a> Handler<'a> {
                     if stream_done {
                         self.streams.remove(&stream_id);
                         if self.done() {
-                            if !neqo_csdef::debug_disable_shaping(){
-                                client.close(Instant::now(), 0, "kthx4shaping!");
-                            } else {
-                                client.close(Instant::now(), 0, "kthxbye!");
-                            }
+                            client.close(Instant::now(), 0, "kthxbye!");
                             return Ok(false);
                         }
                     }
