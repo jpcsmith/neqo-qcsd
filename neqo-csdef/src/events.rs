@@ -9,12 +9,13 @@ use crate::stream_id::StreamId;
 pub trait HEventConsumer {
     fn awaiting_header_data(&mut self, stream_id: u64, min_remaining: u64);
     fn on_data_frame(&mut self, stream_id: u64, length: u64);
+    fn on_http_request_sent(&mut self, stream_id: u64, url: &Url, is_chaff: bool);
 }
 
 pub trait StreamEventConsumer {
     fn data_consumed(&mut self, stream_id: u64, amount: u64);
-    fn on_stream_incoming(&self, stream_id: u64);
-    fn on_stream_created(&self, stream_id: u64);
+    fn on_stream_incoming(&mut self, stream_id: u64);
+    fn on_stream_created(&mut self, stream_id: u64);
 }
 
 

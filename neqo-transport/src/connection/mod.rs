@@ -28,6 +28,7 @@ use neqo_crypto::{
     SecretAgentInfo, Server, ZeroRttChecker,
 };
 use neqo_csdef::flow_shaper::{ FlowShaper, FlowShapingEvent };
+use neqo_csdef::events::StreamEventConsumer;
 
 use crate::addr_valid::{AddressValidation, NewTokenState};
 use crate::cc::CongestionControlAlgorithm;
