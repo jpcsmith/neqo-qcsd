@@ -91,42 +91,38 @@ impl PartialEq for Packet {
 
 
 #[derive(Default)]
-pub struct Trace {
-    packets: VecDeque<Packet>,
-    interval: u32,
-}
+pub struct Trace(VecDeque<Packet>);
 
 
 impl Trace {
-    fn new<'a, I, V>(input: I, interval: u32) -> Self
+    pub fn new<'a, I, V>(input: I) -> Self
         where I: IntoIterator<Item=&'a V>,
               V: Into<Packet> + Clone + 'a
     {
-        Trace {
-            packets: input.into_iter().map(|x| x.clone().into()).collect(),
-            interval,
-        }
+        let mut packets: Vec<Packet> = input.into_iter()
+            .map(|x| x.clone().into())
+            .collect();
+        packets.sort();
+
+        Trace(VecDeque::from(packets))
     }
 
-    pub fn front(&self) -> Option<Packet> {
-        if self.interval == 0 {
-            self.packets.front().cloned()
-        } else {
-            let bin = |p: &Packet| p.timestamp() - (p.timestamp() % self.interval);
+    pub fn pop_front(&mut self) -> Option<Packet> {
+        self.0.pop_front()
+    }
 
-            match self.packets.front() {
-                Some(front_pkt) => {
-                    let front_bin = bin(front_pkt);
-                    let front_acc = self.packets.iter()
-                        .filter(|pkt| pkt.is_outgoing() == front_pkt.is_outgoing())
-                        .take_while(|pkt| bin(pkt) == front_bin)
-                        .fold(0, |acc, pkt| acc + pkt.signed_length());
+    pub fn front(&self) -> Option<&Packet> {
+        self.0.front()
+    }
 
-                    Some(Packet::from((front_bin, front_acc)))
-                },
-                None => None,
-            }
-        }
+    pub fn iter(&self) -> std::collections::vec_deque::Iter<Packet> {
+        self.0.iter()
+    }
+
+    pub fn retain<F>(&mut self, f: F)
+        where F: FnMut(&Packet) -> bool 
+    {
+        self.0.retain(f)
     }
 
     pub fn from_file(filename: &str) -> Result<Trace> {
@@ -145,13 +141,13 @@ impl Trace {
 
         packets.sort();
 
-        Ok(Trace::new(&packets, 0))
+        Ok(Trace::new(&packets))
     }
 
     pub fn to_file(&self, csv_path: &str) -> Result<()> {
         let mut wtr = Writer::from_path(csv_path)?;
 
-        for pkt in self.packets.iter() {
+        for pkt in self.iter() {
             wtr.write_record(
                 &[pkt.duration().as_secs_f64().to_string(), pkt.signed_length().to_string()]
             )?;
@@ -159,6 +155,65 @@ impl Trace {
         wtr.flush()?;
 
         Ok(())
+    }
+}
+
+
+pub(crate) struct Resampler {
+    trace: Trace,
+    interval: u32,
+}
+
+
+impl Resampler {
+    pub fn front(&self) -> Option<Packet> {
+        if self.interval == 0 {
+            self.trace.front().cloned()
+        } else {
+            let bin = |p: &Packet| p.timestamp() - (p.timestamp() % self.interval);
+
+            match self.trace.front() {
+                Some(front_pkt) => {
+                    let front_bin = bin(front_pkt);
+                    let front_acc = self.trace.iter()
+                        .filter(|pkt| pkt.is_outgoing() == front_pkt.is_outgoing())
+                        .take_while(|pkt| bin(pkt) == front_bin)
+                        .fold(0, |acc, pkt| acc + pkt.signed_length());
+
+                    Some(Packet::from((front_bin, front_acc)))
+                },
+                None => None,
+            }
+        }
+    }
+
+    pub fn pop_front(&mut self) -> Option<Packet> {
+        if self.interval == 0 {
+            self.trace.pop_front()
+        } else {
+            let interval = self.interval;
+            let bin = |p: &Packet| p.timestamp() - (p.timestamp() % interval);
+            let front_pkt = self.trace.front().cloned();
+
+            match front_pkt {
+                Some(front_pkt) => {
+                    let front_bin = bin(&front_pkt);
+                    let front_acc = self.trace.iter()
+                        .filter(|pkt| pkt.is_outgoing() == front_pkt.is_outgoing())
+                        .take_while(|pkt| bin(pkt) == front_bin)
+                        .fold(0, |acc, pkt| acc + pkt.signed_length());
+
+                    self.trace.retain(|pkt| (
+                            pkt.is_outgoing() != front_pkt.is_outgoing() 
+                            || bin(pkt) != front_bin
+                    ));
+
+                    Some(Packet::from((front_bin, front_acc)))
+                },
+                None => None,
+            }
+        }
+
     }
 }
 
@@ -224,28 +279,61 @@ mod tests {
         }
     }
 
-    mod trace {
+    mod resample {
         use super::*;
 
         #[test]
         fn test_front() {
-            let trace = Trace::new(&[(2, 1350), (16, -4800), (21, 600), (22, -350)], 0);
+            let trace = Resampler {
+                trace: Trace::new(&[(2, 1350), (16, -4800), (21, 600), (22, -350)]),
+                interval: 0,
+            };
             assert_eq!(trace.front(), Some(Packet::Outgoing(2, 1350)));
 
-            let trace = Trace::new(&[(16, -4800), (21, 600), (22, -350)], 0);
+            let trace = Resampler {
+                trace: Trace::new(&[(16, -4800), (21, 600), (22, -350)]), 
+                interval: 0,
+            };
             assert_eq!(trace.front(), Some(Packet::Incoming(16, 4800)));
         }
 
         #[test]
         fn test_front_with_sampling() {
-            let trace = Trace::new(&[(11, 1350), (13, -4800), (16, 600), (22, -350)], 5);
+            let trace = Resampler {
+                trace: Trace::new(&[(11, 1350), (13, -4800), (16, 600), (22, -350)]),
+                interval: 5
+            };
             assert_eq!(trace.front(), Some(Packet::Outgoing(10, 1350)));
 
-            let trace = Trace::new(&[(11, 1350), (13, -4800), (14, 600), (22, -350)], 5);
+            let trace = Resampler {
+                trace: Trace::new(&[(11, 1350), (13, -4800), (14, 600), (22, -350)]),
+                interval: 5,
+            };
             assert_eq!(trace.front(), Some(Packet::Outgoing(10, 1950)));
 
-            let trace = Trace::new(&[(21, -1350), (22, -700), (25, -600), (30, -350)], 10);
+            let trace = Resampler {
+                trace: Trace::new(&[(21, -1350), (22, -700), (25, -600), (30, -350)]),
+                interval: 10,
+            };
             assert_eq!(trace.front(), Some(Packet::Incoming(20, 2650)));
+        }
+
+        #[test]
+        fn test_pop_front() {
+            let mut trace = Resampler {
+                trace: Trace::new(&[(11, 1350), (13, -4800), (14, -600), (22, 350)]),
+                interval: 5
+            };
+            assert_eq!(trace.front(), Some(Packet::Outgoing(10, 1350)));
+            assert_eq!(trace.pop_front(), Some(Packet::Outgoing(10, 1350)));
+
+            assert_eq!(trace.front(), Some(Packet::Incoming(10, 5400)));
+            assert_eq!(trace.pop_front(), Some(Packet::Incoming(10, 5400)));
+
+            assert_eq!(trace.front(), Some(Packet::Outgoing(20, 350)));
+            assert_eq!(trace.pop_front(), Some(Packet::Outgoing(20, 350)));
+
+            assert_eq!(trace.front(), None);
         }
     }
 }
