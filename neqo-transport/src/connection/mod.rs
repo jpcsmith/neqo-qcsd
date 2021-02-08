@@ -1575,13 +1575,8 @@ impl Connection {
             // Consider the stream as created
             if self.is_being_shaped() {
                 if let Some((Frame::Stream { stream_id, offset: 0, ..}, _)) = &frame {
-                    if !self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(StreamId::as_u64(*stream_id)) {
-                        self.flow_shaper.as_ref().unwrap().borrow()
-                            .on_stream_created(stream_id.as_u64());
-                    } else {
-                        assert!(self.flow_shaper.as_ref().unwrap().borrow_mut()
-                            .open_for_shaping(stream_id.as_u64()));
-                    }
+                    self.flow_shaper.as_ref().unwrap().borrow_mut()
+                        .on_stream_created(stream_id.as_u64());
                 }
             }
 
