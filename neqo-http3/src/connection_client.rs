@@ -964,11 +964,13 @@ impl EventProvider for Http3Client {
         loop {
             let event = self.events.next_event();
             match event {
-                Some(Http3ClientEvent::HeaderReady{ stream_id, .. }) => {
+                Some(Http3ClientEvent::HeaderReady{ stream_id, headers, fin }) => {
                     let flow_shaper = self.flow_shaper.as_ref().unwrap().borrow_mut();
                     if flow_shaper.is_shaping_stream(stream_id) {
                         qdebug!([self], "Ignoring HeaderReady for chaff stream {}",
                                 stream_id);
+                    } else {
+                        return Some(Http3ClientEvent::HeaderReady{stream_id, headers, fin});
                     }
                 },
                 Some(Http3ClientEvent::DataReadable{ stream_id }) => {
@@ -977,6 +979,8 @@ impl EventProvider for Http3Client {
                     {
                         qdebug!([self], "Draining data on chaff stream {}", stream_id);
                         drain_stream(self, stream_id);
+                    } else {
+                        return Some(Http3ClientEvent::DataReadable{stream_id})
                     }
                 },
                 other => return other
