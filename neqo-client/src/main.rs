@@ -554,7 +554,9 @@ impl<'a> Handler<'a> {
                     }
 
                     if stream_done {
+                        println!("MADONNA: removing stream done {:?}", stream_id);
                         self.streams.remove(&stream_id);
+                        println!("MADONNA: streams len {:?}", &self.streams.len());
                         if self.done() {
                             if !neqo_csdef::debug_disable_shaping(){
                                 client.close(Instant::now(), 0, "kthx4shaping!");
@@ -575,13 +577,23 @@ impl<'a> Handler<'a> {
                 Http3ClientEvent::FlowShapingDone => {
                     println!("PORCODIO");
                     self.is_done_shaping = true;
+                    for stream in &self.streams {
+                        println!("{:?}", stream);
+                    }
                 }
                 _ => {
                     println!("Unhandled event {:?}", event);
                 }
             }
         }
-
+        if self.done() {
+            if !neqo_csdef::debug_disable_shaping(){
+                client.close(Instant::now(), 0, "kthx4shaping!");
+            } else {
+                client.close(Instant::now(), 0, "kthxbye!");
+            }
+            return Ok(false);
+        }
         Ok(true)
     }
 }
