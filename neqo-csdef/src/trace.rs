@@ -25,8 +25,8 @@ impl Packet {
 
     pub fn signed_length(&self) -> i32 {
         match self { 
-            Self::Outgoing(_, len) => *len as i32,
-            Self::Incoming(_, len) => *len as i32 * -1,
+            Self::Outgoing(_, len) => i32::try_from(*len).unwrap(),
+            Self::Incoming(_, len) => i32::try_from(*len).unwrap() * -1,
         }
     }
 
@@ -37,7 +37,7 @@ impl Packet {
     }
 
     pub fn duration(&self) -> Duration {
-        Duration::from_millis(self.timestamp() as u64)
+        Duration::from_millis(self.timestamp().into())
     }
 
     pub fn as_tuple(&self) -> (u32, i32) {
@@ -88,7 +88,7 @@ impl PartialEq for Packet {
 }
 
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Trace(VecDeque<Packet>);
 
 
@@ -149,6 +149,10 @@ impl Trace {
 
     }
 
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
     pub fn new_sampled<'a, I, V>(input: I, interval_ms: u32) -> Self
         where I: IntoIterator<Item=&'a V>,
               V: Into<Packet> + Clone + 'a
@@ -162,6 +166,10 @@ impl Trace {
 
     pub fn front(&self) -> Option<&Packet> {
         self.0.front()
+    }
+
+    pub fn front_mut(&mut self) -> Option<&mut Packet> {
+        self.0.front_mut()
     }
 
     pub fn iter(&self) -> std::collections::vec_deque::Iter<Packet> {
