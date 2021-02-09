@@ -11,10 +11,7 @@ pub use crate::error::{
 };
 
 use std::{ env, fs, io };
-use std::time::Duration;
 use serde::Deserialize;
-
-pub type Trace = Vec<(Duration, i32)>;
 
 /// Returns true iff the CSDEF_NO_SHAPING environment variable is set to a
 /// non-empty string.
