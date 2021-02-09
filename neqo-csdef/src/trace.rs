@@ -69,11 +69,9 @@ impl std::convert::Into<(u32, i32)> for Packet {
 
 impl Ord for Packet {
     fn cmp(&self, other: &Self) -> Ordering {
-        let order = self.timestamp().cmp(&other.timestamp());
-        match order {
-            Ordering::Equal => self.signed_length().cmp(&other.signed_length()),
-            Ordering::Less | Ordering::Greater => order,
-        }
+        let lhs = (self.timestamp(), self.is_incoming(), self.length());
+        let rhs = (other.timestamp(), other.is_incoming(), other.length());
+        lhs.cmp(&rhs)
     }
 }
 
@@ -90,7 +88,7 @@ impl PartialEq for Packet {
 }
 
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Trace(VecDeque<Packet>);
 
 
@@ -105,6 +103,52 @@ impl Trace {
         packets.sort();
 
         Trace(VecDeque::from(packets))
+    }
+
+    pub fn new_sampled<'a, I, V>(input: I, interval_ms: u32) -> Self
+        where I: IntoIterator<Item=&'a V>,
+              V: Into<Packet> + Clone + 'a
+    {
+        let mut packets: Vec<(u32, i32)> = input.into_iter()
+            .map(|x| x.clone().into().as_tuple())
+            .map(|(time, len)| (time - (time % interval_ms), len))
+            .collect();
+
+        // Sort. All packets will packets with the same bin & direction are
+        // grouped together.
+        packets.sort();
+
+        let mut group = Vec::new();
+        let mut groups = Vec::new();
+        for (bin, len) in packets {
+            println!("{:?} vs ({}, {})", group, bin, len);
+
+            match group.last() {
+                None => group.push((bin, len)),
+                Some((prev_bin, prev_len)) => {
+                    match (*prev_bin == bin, prev_len.signum() == len.signum()) {
+                        (true, true) => {
+                            group.push((bin, len));
+                        },
+                        (false, _) | (_, false) => {
+                            groups.push(group);
+
+                            group = Vec::new();
+                            group.push((bin, len));
+                        }
+                    }
+                }
+            }
+        }
+        groups.push(group);
+
+        let packets: Vec<(u32, i32)> = groups.iter().map(
+            |group| group.iter().fold(
+                (0, 0), |(_, total), (bin, len)| (*bin, total + *len)
+            )
+        ).collect();
+
+        Trace::new(&packets)
     }
 
     pub fn pop_front(&mut self) -> Option<Packet> {
@@ -264,18 +308,28 @@ mod tests {
         #[test]
         fn test_cmp() {
             type Pkt = Packet;
+            let comparisons = [
+                // Packets are compared by times regardless of type
+                (Pkt::Outgoing(13, 1200), Pkt::Outgoing(10, 1800), Ordering::Greater),
+                (Pkt::Incoming(13, 2000), Pkt::Incoming(21, 900), Ordering::Less),
+                (Pkt::Incoming(15, 900), Pkt::Outgoing(83, 100), Ordering::Less),
 
-            assert_eq!(
-                Pkt::Outgoing(13, 1200).cmp(&Pkt::Outgoing(10, 1800)), Ordering::Greater);
-            assert_eq!(Pkt::Incoming(13, 2000).cmp(&Pkt::Incoming(21, 900)), Ordering::Less);
-            assert_eq!(
-                Packet::Outgoing(13, 1200).cmp(&Packet::Outgoing(13, 1200)), Ordering::Equal);
-            assert_eq!(
-                Pkt::Outgoing(13, 700).cmp(&Pkt::Incoming(10, 2000)), Ordering::Greater);
-            assert_eq!(Pkt::Incoming(71, 900).cmp(&Pkt::Outgoing(100, 400)), Ordering::Less);
-            assert_eq!(Pkt::Incoming(10, 1000).cmp(&Pkt::Outgoing(10, 1000)), Ordering::Less);
-            assert_eq!(
-                Pkt::Outgoing(10, 1000).cmp(&Pkt::Incoming(10, 1000)), Ordering::Greater);
+                // Same type and time are compared according to length
+                (Packet::Outgoing(13, 1200), Packet::Outgoing(13, 1200), Ordering::Equal),
+                (Pkt::Incoming(10, 700), Pkt::Incoming(10, 2000), Ordering::Less),
+                (Pkt::Outgoing(30, 2100), Pkt::Outgoing(30, 2000), Ordering::Greater),
+
+                // Same time, but different types are compared according to type
+                // Outgoing is smaller than incoming, since for time 0 we would want 
+                // outgoing packets first
+                (Packet::Outgoing(13, 1200), Packet::Incoming(13, 1200), Ordering::Less),
+                (Pkt::Incoming(10, 700), Pkt::Outgoing(10, 2000), Ordering::Greater),
+                (Pkt::Outgoing(30, 2100), Pkt::Incoming(30, 2000), Ordering::Less),
+            ];
+
+            for case in &comparisons {
+                assert_eq!(case.0.cmp(&case.1), case.2, "{:?}", case);
+            }
         }
     }
 
@@ -334,6 +388,29 @@ mod tests {
             assert_eq!(trace.pop_front(), Some(Packet::Outgoing(20, 350)));
 
             assert_eq!(trace.front(), None);
+        }
+
+        #[test]
+        fn test_new_sampled() {
+            let mut trace = Trace::new_sampled(
+                &[(2, 1350), (3, -4800), (4, -600), (6, 350), (8, 200), (11, -100)], 5);
+            println!("{:?}", trace);
+
+            assert_eq!(trace.pop_front(), Some(Packet::Outgoing(0, 1350)));
+            assert_eq!(trace.pop_front(), Some(Packet::Incoming(0, 5400)));
+            assert_eq!(trace.pop_front(), Some(Packet::Outgoing(5, 550)));
+            assert_eq!(trace.pop_front(), Some(Packet::Incoming(10, 100)));
+        }
+
+        #[test]
+        fn test_new_sampled2() {
+            let mut trace = Trace::new_sampled(
+                &[(11, 1350), (13, -4800), (16, 600), (22, -350)], 10
+            );
+
+            assert_eq!(trace.pop_front(), Some(Packet::Outgoing(10, 1950)));
+            assert_eq!(trace.pop_front(), Some(Packet::Incoming(10, 4800)));
+            assert_eq!(trace.pop_front(), Some(Packet::Incoming(20, 350)));
         }
     }
 }
