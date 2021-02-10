@@ -302,8 +302,8 @@ FlowShaper{ config,
 
             // check dequeues empty, if so send connection close event
             if self.in_target.is_empty() && self.out_target.is_empty() {
-                qtrace!([self], "shaping complete, closing connection");
-                self.application_events.send_connection_close();
+                qdebug!([self], "shaping complete, notify client");
+                self.application_events.is_done_shaping();
             }
         }
     }
@@ -425,6 +425,8 @@ FlowShaper{ config,
     pub fn on_stream_closed(&mut self, stream_id: u64) {
         if self.is_shaping_stream(stream_id) {
             let url = self.remove_dummy_stream(stream_id);
+            // TODO (ldolfi) maybe check there is actually
+            // more dummy schedule to consume before opening new stream
             self.reopen_dummy_stream(url);
         }
     }

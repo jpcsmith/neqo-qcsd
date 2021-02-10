@@ -1557,6 +1557,8 @@ impl Connection {
                     }
                     self.shaper_padding -= padd_size;
                     remaining = limit - builder.len();
+                    // this bypasses the timeout, making the client think to wait for an ACK
+                    ack_eliciting = true;
                 }
                 if frame.is_none() {
                     frame = self.crypto.streams.get_frame(space, remaining)
