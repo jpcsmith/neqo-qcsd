@@ -465,7 +465,7 @@ impl<'a> Handler<'a> {
     }
 
     fn done(&mut self) -> bool {
-        println!("Check stream list: {:?}", self.streams.len());
+        println!("Checking if done.");
         println!("Streams is empty: {:?} | url_queue is empty: {:?} | is done shaping: {:?}",
                     self.streams.is_empty(), self.url_queue.is_empty(), self.is_done_shaping);
         self.streams.is_empty() && self.url_queue.is_empty() && self.is_done_shaping
@@ -558,9 +558,6 @@ impl<'a> Handler<'a> {
                 }
                 Http3ClientEvent::FlowShapingDone => {
                     self.is_done_shaping = true;
-                    for stream in &self.streams {
-                        println!("{:?}", stream);
-                    }
                 }
                 _ => {
                     println!("Unhandled event {:?}", event);
