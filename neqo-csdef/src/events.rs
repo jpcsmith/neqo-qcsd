@@ -134,10 +134,6 @@ impl FlowShapingApplicationEvents {
         self.insert(FlowShapingEvent::DoneShaping)
     }
 
-    pub fn send_connection_close(&self) {
-        self.insert(FlowShapingEvent::CloseConnection)
-    }
-
     pub fn reopen_stream(&self, url: Url) {
         self.insert(FlowShapingEvent::ReopenStream(url))
     }
