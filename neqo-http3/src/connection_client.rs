@@ -39,15 +39,6 @@ use url::Url; // for parsing dummy url
 use crate::{Error, Res};
 
 
-// const DEBUG_SAMPLE_TRACE: &str = "../data/pad-trace-n2202-w1.csv";
-// const DEBUG_DUMMY_PATH: &str = "https://host.docker.internal:7443/img/2nd-big-item.jpg";
-// const DEBUG_DUMMY_URLS: [&str; 5] = ["https://vanilla.neqo-test.com:7443/img/2nd-big-item.jpg",
-//                                     "https://vanilla.neqo-test.com:7443/css/bootstrap.min.css",
-//                                     "https://vanilla.neqo-test.com:7443/img/3rd-item.jpg",
-//                                     "https://vanilla.neqo-test.com:7443/img/4th-item.jpg",
-//                                     "https://vanilla.neqo-test.com:7443/img/5th-item.jpg"];
-
-
 // This is used for filtering send_streams and recv_Streams with a stream_ids greater than or equal a given id.
 // Only the same type (bidirectional or unidirectionsl) streams are filtered.
 fn id_gte<U>(base: StreamId) -> impl FnMut((&u64, &U)) -> Option<u64> + 'static
@@ -347,42 +338,6 @@ impl Http3Client {
             Http3State::Initializing => return Err(Error::Unavailable),
             _ => {}
         }
-
-        // (ldolfi) Before creating a new stream, check wether this is the first fetch
-        // (i.e. there is no data to send) and create a padding stream to pair with that
-        // if self.is_being_shaped() {
-        //     if !self.base_handler.has_data_to_send() {
-        //         // open dummy stream
-        //         for pad_url in DEBUG_DUMMY_URLS.iter() {
-        //             let pad_url = Url::parse(pad_url).expect("Failed to parse dummy path");
-        //             match self.fetch_dummy(
-        //                     Instant::now(),
-        //                     "GET",
-        //                     &pad_url.scheme(),
-        //                     &pad_url.host_str().unwrap(),
-        //                     &pad_url.path(),
-        //                     headers // TODO (ldolfi): eventually disable compression
-        //                 ) {
-        //                     // TODO move this inside of fetch dummy
-        //                     Ok(pad_id) => {
-        //                         println!(
-        //                             "Successfully created shaping stream id {} for resource {}",
-        //                             pad_id, pad_url
-        //                         );
-        //                         // save id and url
-        //                         self.flow_shaper
-        //                             .as_ref()
-        //                             .unwrap()
-        //                             .borrow()
-        //                             .on_new_padding_stream(pad_id, pad_url);
-        //                     },
-        //                     Err(e) => {
-        //                         panic!("Can't open dummy stream {}", e);
-        //                     }
-        //                 }
-        //         }
-        //     }
-        // }
 
         let id = self
             .conn
@@ -804,12 +759,6 @@ impl Http3Client {
                                 "Successfully created new dummy stream id {} for resource {}",
                                 stream_id, url
                             );
-                            // // save id and url
-                            // self.flow_shaper
-                            //     .as_ref()
-                            //     .unwrap()
-                            //     .borrow()
-                            //     .on_new_padding_stream(stream_id, url);
                         },
                         Err(e) => {
                             panic!("Can't open dummy stream {}", e);
@@ -819,10 +768,6 @@ impl Http3Client {
                 _ => {}
             };
         };
-
-        // } else {
-        //     qwarn!([self], "checking Flowshaping events without a flowshaper!");
-        // }
     }
 
     fn handle_stream_readable(&mut self, stream_id: u64) -> Res<()> {

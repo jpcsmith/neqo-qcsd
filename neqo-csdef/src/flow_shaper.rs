@@ -425,6 +425,8 @@ FlowShaper{ config,
     pub fn on_stream_closed(&mut self, stream_id: u64) {
         if self.is_shaping_stream(stream_id) {
             let url = self.remove_dummy_stream(stream_id);
+            // TODO (ldolfi) maybe check there is actually
+            // more dummy schedule to consume before opening new stream
             self.reopen_dummy_stream(url);
         }
     }

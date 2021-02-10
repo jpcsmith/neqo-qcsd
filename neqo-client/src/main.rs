@@ -345,19 +345,6 @@ impl<'a> Handler<'a> {
     fn download_urls(&mut self, client: &mut Http3Client) {
         loop {
             if self.url_queue.is_empty() {
-                // The dummy streams
-                // self.streams.insert(0, None);
-                // self.streams.insert(4, None);
-                // self.streams.insert(8, None);
-                // self.streams.insert(12, None);
-                // self.streams.insert(16, None);
-                // self.streams.insert(140, None);
-                // self.streams.insert(144, None);
-                // self.streams.insert(148, None);
-                // self.streams.insert(152, None);
-                // self.streams.insert(156, None);
-                // self.streams.insert(160, None);
-                // self.streams.insert(164, None);
                 break;
             }
             if !self.download_next(client) {
@@ -455,9 +442,6 @@ impl<'a> Handler<'a> {
 
                 let _ = client.stream_close_send(client_stream_id);
 
-                // let out_file = get_output_file(&url, &self.args.output_dir, &mut self.all_paths);
-
-                // self.streams.insert(client_stream_id, (url, out_file));
                 true
             }
             e @ Err(Error::TransportError(TransportError::StreamLimitError))
@@ -482,13 +466,14 @@ impl<'a> Handler<'a> {
 
     fn done(&mut self) -> bool {
         println!("Check stream list: {:?}", self.streams.len());
+        println!("Streams is empty: {:?} | url_queue is empty: {:?} | is done shaping: {:?}",
+                    self.streams.is_empty(), self.url_queue.is_empty(), self.is_done_shaping);
         self.streams.is_empty() && self.url_queue.is_empty() && self.is_done_shaping
     }
 
     fn handle(&mut self, client: &mut Http3Client) -> Res<bool> {
-        println!("CAZZO 1");
-        println!("Checking if client is done shaping: {:?}", client.is_done_shaping());
-        self.is_done_shaping = client.is_done_shaping();
+        // println!("Checking if client is done shaping: {:?}", client.is_done_shaping());
+        // self.is_done_shaping = client.is_done_shaping();
         while let Some(event) = client.next_event() {
             match event {
                 Http3ClientEvent::AuthenticationNeeded => {
@@ -510,7 +495,6 @@ impl<'a> Handler<'a> {
                     }
                 },
                 Http3ClientEvent::DataReadable { stream_id } => {
-                    println!("CAZZO 2");
                     let mut stream_done = false;
                     match self.streams.get_mut(&stream_id) {
                         None => {
@@ -554,9 +538,7 @@ impl<'a> Handler<'a> {
                     }
 
                     if stream_done {
-                        println!("MADONNA: removing stream done {:?}", stream_id);
                         self.streams.remove(&stream_id);
-                        println!("MADONNA: streams len {:?}", &self.streams.len());
                         if self.done() {
                             if !neqo_csdef::debug_disable_shaping(){
                                 client.close(Instant::now(), 0, "kthx4shaping!");
@@ -575,7 +557,6 @@ impl<'a> Handler<'a> {
                     self.download_urls(client);
                 }
                 Http3ClientEvent::FlowShapingDone => {
-                    println!("PORCODIO");
                     self.is_done_shaping = true;
                     for stream in &self.streams {
                         println!("{:?}", stream);
@@ -586,6 +567,8 @@ impl<'a> Handler<'a> {
                 }
             }
         }
+        // check for connection done outside loop because dummy events are not
+        // notified to main.rs
         if self.done() {
             if !neqo_csdef::debug_disable_shaping(){
                 client.close(Instant::now(), 0, "kthx4shaping!");
