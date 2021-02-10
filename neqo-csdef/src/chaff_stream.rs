@@ -95,7 +95,7 @@ impl ChaffStream {
                     data_consumed: 0,
                 };
             },
-            _ => panic!("Cannot open stream from current state!")
+            _ => panic!("Cannot open stream from current state! state - {:?}", self.state)
         };
     }
 
