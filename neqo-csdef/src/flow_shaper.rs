@@ -64,36 +64,6 @@ impl Default for Config {
     }
 }
 
-// type Trace = Vec<(Duration, i32)>;
-// 
-// pub fn load_trace(filename: &str) -> Result<Trace> {
-//     let mut packets: Trace = Vec::new();
-// 
-//     let mut reader = csv::ReaderBuilder::new()
-//         .has_headers(false)
-//         .from_path(filename)?;
-// 
-//     for result in reader.deserialize() {
-//         let record: (f64, i32) = result?;
-//         packets.push((Duration::from_secs_f64(record.0), record.1));
-//     }
-// 
-//     Ok(packets)
-// }
-// 
-// fn log_trace(trace: &Trace) -> Result<()> {
-//     if let Some(csv_path) = dummy_schedule_log_file() {
-//         let mut wtr = Writer::from_path(csv_path)?;
-// 
-//         for (d, s) in trace.iter() {
-//             wtr.write_record(&[d.as_secs_f64().to_string(), s.to_string()])?;
-//         }
-//         wtr.flush()?;
-//     }
-// 
-//     Ok(())
-// }
-
 
 #[derive(Debug, Default)]
 pub struct FlowShaperBuilder {
@@ -307,16 +277,6 @@ impl FlowShaper {
         ]
     }
 
-    /// Queue events related to a new stream being created by this
-    /// endpoint.
-    pub fn on_stream_created(&mut self, stream_id: u64) {
-        assert!(StreamId::new(stream_id).is_client_initiated());
-        qtrace!([self], "notified of stream {} being created", stream_id);
-
-        if self.is_shaping_stream(stream_id) {
-            self.open_for_shaping(stream_id);
-        }
-    }
 
     fn add_padding_stream(&mut self, stream_id: u64, dummy_url: Url) {
         qtrace!([self], "adding a padding stream for {}: {}", stream_id, dummy_url);
@@ -468,20 +428,11 @@ impl StreamEventConsumer for FlowShaper {
     }
 
     fn on_stream_created(&mut self, stream_id: u64) {
-        let stream_id = StreamId::new(stream_id);
-        assert!(stream_id.is_client_initiated());
+        assert!(StreamId::new(stream_id).is_client_initiated());
         qtrace!([self], "notified of stream {} being created", stream_id);
 
-        // TODO(jsmith): Find a better way to do this.
-        // This currently bypases our tracking since we have to undo it,
-        // TODO(jsmith): Without push_data this blocks app streams in !pad_only_mode
-        if stream_id.is_bidi() && self.pad_only_mode {
-            self.events.borrow_mut().send_max_stream_data(
-                &stream_id,
-                self.config.rx_stream_data_window,
-                self.config.rx_stream_data_window - BLOCKED_STREAM_LIMIT);
-            qdebug!([self], "Added send_max_stream_data event to stream {} limit {}",
-                    stream_id, self.config.rx_stream_data_window);
+        if self.is_shaping_stream(stream_id) {
+            self.open_for_shaping(stream_id);
         }
     }
 }
