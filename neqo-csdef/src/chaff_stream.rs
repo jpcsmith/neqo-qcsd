@@ -74,11 +74,34 @@ impl ChaffStreamState {
 }
 
 
+#[derive(Debug, PartialEq, Eq)]
+enum SendState {
+    Throttled { pending: u64, allowed: u64, },
+    Unthrottled,
+    Closed,
+}
+
+impl SendState {
+    pub fn throttled() -> Self {
+        Self::Throttled { pending: 0, allowed: 0 }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Throttled { .. } => "Throttled [Send]",
+            Self::Unthrottled => "Unthrottled [Send]",
+            Self::Closed => "Closed [Send]"
+        }
+    }
+}
+
+
 #[derive(Debug)]
 pub(crate) struct ChaffStream {
     stream_id: StreamId,
     url: Url,
     state: ChaffStreamState,
+    send_state: SendState,
     events: Rc<RefCell<FlowShapingEvents>>,
 }
 
@@ -93,6 +116,7 @@ impl ChaffStream {
             stream_id: StreamId::new(stream_id),
             url,
             state: ChaffStreamState::new(initial_msd, false),
+            send_state: SendState::Unthrottled,
             events,
         }
     }
@@ -108,6 +132,8 @@ impl ChaffStream {
             stream_id: StreamId::new(stream_id),
             url,
             state: ChaffStreamState::new(initial_msd, throttled),
+            send_state: if throttled { SendState::throttled() } 
+                        else { SendState::Unthrottled },
             events,
         }
     }
@@ -146,6 +172,15 @@ impl ChaffStream {
         };
         qtrace!([self], "{} -> {}", self.state.name(), closed_state.name());
         self.state = closed_state;
+    }
+
+    pub fn close_sending(&mut self) {
+        qtrace!([self], "{} -> {}", self.send_state.name(), SendState::Closed.name());
+        self.send_state = SendState::Closed;
+    }
+
+    pub fn close_receiving(&mut self) {
+        self.close()
     }
 
     pub fn is_open(&self) -> bool {
@@ -226,9 +261,9 @@ impl ChaffStream {
             } => {
                 assert!(data_consumed + length >= max_stream_data_limit);
                 self.state = ChaffStreamState::ReceivingData {
-                    max_stream_data: max_stream_data,
+                    max_stream_data,
                     max_stream_data_limit: data_consumed + length,
-                    data_consumed: data_consumed,
+                    data_consumed,
                     data_length: length,
                 }
             },
@@ -251,7 +286,46 @@ impl ChaffStream {
             ChaffStreamState::Closed{ .. } => (),
             _ => panic!("Should not receive data frame in other states!")
         }
+    }
 
+    /// Called to indicate the new or retransmitted data is awaiting 
+    /// being sent on this stream.
+    pub fn data_queued(&mut self, amount: u64) {
+        match &mut self.send_state {
+            SendState::Throttled { pending, .. } => *pending += amount,
+            SendState::Unthrottled => (),
+            SendState::Closed => panic!("Data queued while the stream is closed."),
+        }
+    }
+
+    /// Called to indicate that data was sent on the stream.
+    pub fn data_sent(&mut self, amount: u64) {
+        match &mut self.send_state {
+            SendState::Throttled { pending, allowed } => {
+                assert!(amount <= *pending, "More data sent than was known pending.");
+                assert!(amount <= *allowed, "More data sent than was allowed.");
+
+                *pending -= amount;
+                *allowed -= amount;
+            },
+            SendState::Unthrottled => (),
+            SendState::Closed => panic!("Data sent while the stream is closed."),
+        }
+    }
+
+    pub fn push_data(&mut self, amount: u64) -> u64 {
+        match &mut self.send_state {
+            SendState::Throttled { pending, allowed } => {
+                assert!(*allowed <= *pending);
+                let pushed = std::cmp::min(*pending - *allowed, amount);
+                *allowed += pushed;
+
+                pushed
+            },
+            SendState::Unthrottled | SendState::Closed => {
+                panic!("Cannot push data in this state.");
+            }
+        }
     }
 }
 
@@ -352,16 +426,17 @@ impl ChaffStreamMap {
 mod tests {
     use super::*;
 
+    fn create_stream(throttled: bool) -> ChaffStream {
+        ChaffStream::new_t(0, Url::parse("https://a.com").unwrap(), 
+                           Rc::new(RefCell::new(FlowShapingEvents::default())),
+                           20, throttled)
+    }
+
     mod recv_state {
         use super::*;
         use crate::events::FlowShapingEvent;
         use super::ChaffStreamState as State;
 
-        fn create_stream(throttled: bool) -> ChaffStream {
-            ChaffStream::new_t(0, Url::parse("https://a.com").unwrap(), 
-                               Rc::new(RefCell::new(FlowShapingEvents::default())),
-                               20, throttled)
-        }
 
         #[test]
         fn test_creation() {
@@ -542,6 +617,108 @@ mod tests {
                     FlowShapingEvent::SendMaxStreamData {
                         stream_id: 0, new_limit: 2020, increase: 2000
                     }));
+        }
+
+        #[test]
+        fn test_data_queued() {
+            let mut stream = create_stream(true);
+
+            assert_eq!(stream.send_state, SendState::Throttled { pending: 0, allowed: 0, });
+            stream.data_queued(1000);
+            assert_eq!(stream.send_state, SendState::Throttled { pending: 1000, allowed: 0, });
+            stream.data_queued(1500);
+            assert_eq!(stream.send_state, SendState::Throttled { pending: 2500, allowed: 0, });
+        }
+
+        #[test]
+        #[should_panic(expected = "More data sent than was allowed.")]
+        fn test_data_sent_no_budget() {
+            let mut stream = create_stream(true);
+            stream.send_state = SendState::Throttled { pending: 500, allowed: 100, };
+            stream.data_sent(500);
+        }
+
+        #[test]
+        #[should_panic(expected = "More data sent than was known pending.")]
+        fn test_data_sent_desync() {
+            let mut stream = create_stream(true);
+            stream.send_state = SendState::Throttled { pending: 100, allowed: 500, };
+            stream.data_sent(500);
+        }
+
+        #[test]
+        fn test_data_sent() {
+            let mut stream = create_stream(true);
+            stream.send_state = SendState::Throttled { pending: 900, allowed: 500, };
+
+            stream.data_sent(300);
+            assert_eq!(stream.send_state, SendState::Throttled { pending: 600, allowed: 200 });
+        }
+
+        #[test]
+        fn test_push_data() {
+            let mut stream = create_stream(true);
+
+            let pushed = stream.push_data(500);
+            assert_eq!(pushed, 0);
+            assert_eq!(stream.send_state, SendState::Throttled { pending: 0, allowed: 0 });
+
+            stream.data_queued(300);
+            let pushed = stream.push_data(400);
+            assert_eq!(pushed, 300);
+            assert_eq!(stream.send_state, SendState::Throttled { pending: 300, allowed: 300 });
+
+            stream.data_queued(200);
+            let pushed = stream.push_data(500);
+            assert_eq!(pushed, 200);
+            assert_eq!(stream.send_state, SendState::Throttled { pending: 500, allowed: 500 });
+        }
+
+        #[test]
+        fn test_close_receiving() {
+            let mut stream = create_stream(true);
+
+            stream.close_receiving();
+            assert_eq!(stream.state, ChaffStreamState::Closed { data_length: 0 });
+        }
+
+        #[test]
+        fn test_close_sending() {
+            let mut stream = create_stream(true);
+
+            stream.close_sending();
+            assert_eq!(stream.send_state, SendState::Closed);
+        }
+    }
+
+    mod unthrottled {
+        use super::*;
+
+        #[test]
+        fn test_data_sent() {
+            let mut stream = create_stream(false);
+
+            assert_eq!(stream.send_state, SendState::Unthrottled);
+            stream.data_sent(500);
+            assert_eq!(stream.send_state, SendState::Unthrottled);
+        }
+
+        #[test]
+        fn test_data_queued() {
+            let mut stream = create_stream(false);
+
+            assert_eq!(stream.send_state, SendState::Unthrottled);
+            stream.data_queued(1000);
+            assert_eq!(stream.send_state, SendState::Unthrottled);
+        }
+
+        #[test]
+        #[should_panic(expected = "Cannot push data in this state.")]
+        fn test_push_data() {
+            let mut stream = create_stream(false);
+
+            assert_eq!(stream.send_state, SendState::Unthrottled);
+            stream.push_data(3000);
         }
     }
 }
