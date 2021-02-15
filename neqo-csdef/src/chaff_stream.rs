@@ -6,10 +6,13 @@ use neqo_common::qtrace;
 use crate::stream_id::StreamId;
 use crate::events::FlowShapingEvents;
 
+const DEFAULT_RX_DATA_WINDOW: u64 = 1048576;
+const MAX_FRAME_OVERHEAD: u64 = 16;
 
-#[derive(Debug)]
+
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ChaffStreamState {
-    Created{ initial_msd: u64 },
+    Created{ initial_msd: u64, throttled: bool },
     ReceivingHeaders {
         max_stream_data: u64,
         max_stream_data_limit: u64,
@@ -21,12 +24,13 @@ pub(crate) enum ChaffStreamState {
         data_consumed: u64,
         data_length: u64,
     },
-    Closed { data_length: u64 }
+    Unthrottled { data_length: u64 },
+    Closed { data_length: u64 },
 }
 
 impl ChaffStreamState {
-    fn new(initial_msd: u64) -> Self {
-        Self::Created { initial_msd }
+    fn new(initial_msd: u64, throttled: bool) -> Self {
+        Self::Created { initial_msd, throttled }
     }
 
     fn name(&self) -> &str {
@@ -35,14 +39,24 @@ impl ChaffStreamState {
             Self::ReceivingHeaders { .. } => "ReceivingHeaders",
             Self::ReceivingData { .. } => "ReceivingData",
             Self::Closed { .. } => "Closed",
+            Self::Unthrottled { .. } => "Unthrottled",
         }
     }
 
     fn data_length(&self) -> Option<u64> {
         match self {
-            Self::ReceivingData { data_length, .. }
+            Self::ReceivingData { data_length, .. } | Self::Unthrottled { data_length, .. }
             | Self::Closed { data_length, .. } => Some(*data_length),
             Self::Created { .. } | Self::ReceivingHeaders { .. } => None
+        }
+    }
+
+    fn is_throttled(&self) -> bool {
+        match self {
+            Self::Created { throttled, .. } => *throttled,
+            Self::ReceivingHeaders { .. } | Self::ReceivingData { .. } 
+            | Self::Closed { .. } => true,
+            Self::Unthrottled { .. } => false
         }
     }
 
@@ -53,7 +67,8 @@ impl ChaffStreamState {
             | Self::ReceivingData { max_stream_data, max_stream_data_limit, .. } => {
                 max_stream_data_limit - max_stream_data
             },
-            Self::Created { .. } | Self::Closed { .. } => 0
+            Self::Created { .. } | Self::Closed { .. } => 0,
+            Self::Unthrottled { .. } => std::u64::MAX,
         }
     }
 }
@@ -77,9 +92,28 @@ impl ChaffStream {
         ChaffStream {
             stream_id: StreamId::new(stream_id),
             url,
-            state: ChaffStreamState::new(initial_msd),
+            state: ChaffStreamState::new(initial_msd, false),
             events,
         }
+    }
+
+    pub fn new_t(
+        stream_id: u64,
+        url: Url,
+        events: Rc<RefCell<FlowShapingEvents>>,
+        initial_msd: u64,
+        throttled: bool,
+    ) -> Self {
+        ChaffStream {
+            stream_id: StreamId::new(stream_id),
+            url,
+            state: ChaffStreamState::new(initial_msd, throttled),
+            events,
+        }
+    }
+
+    pub fn is_throttled(&self) -> bool {
+        self.state.is_throttled()
     }
 
     pub fn msd_available(&self) -> u64 {
@@ -87,13 +121,20 @@ impl ChaffStream {
     }
 
     pub fn open(&mut self) {
-        match self.state {
-            ChaffStreamState::Created { initial_msd } => {
-                self.state = ChaffStreamState::ReceivingHeaders {
+        self.state = match self.state {
+            ChaffStreamState::Created { initial_msd, throttled: true } => {
+                ChaffStreamState::ReceivingHeaders {
                     max_stream_data: initial_msd,
                     max_stream_data_limit: initial_msd,
                     data_consumed: 0,
-                };
+                }
+            },
+            ChaffStreamState::Created { initial_msd, throttled: false, .. } => {
+                self.events.borrow_mut()
+                    .send_max_stream_data(&self.stream_id, DEFAULT_RX_DATA_WINDOW, 
+                                          DEFAULT_RX_DATA_WINDOW - initial_msd);
+
+                ChaffStreamState::Unthrottled{ data_length: 0 }
             },
             _ => panic!("Cannot open stream from current state!")
         };
@@ -116,16 +157,21 @@ impl ChaffStream {
 
     /// Pull data on this stream. Return the amount of data pulled.
     pub fn pull_data(&mut self, amount: u64) -> u64 {
-        let pull_amount = std::cmp::min(amount, self.msd_available());
+        let msd_available = self.msd_available();
 
         match self.state {
             ChaffStreamState::ReceivingHeaders{ ref mut max_stream_data, .. }
             | ChaffStreamState::ReceivingData{ ref mut max_stream_data, .. } => {
-                *max_stream_data += pull_amount;
-                self.events.borrow_mut()
-                    .send_max_stream_data(&self.stream_id, *max_stream_data, pull_amount);
-
-                pull_amount
+                match std::cmp::min(amount, msd_available) {
+                    0 => 0,
+                    pull_amount => {
+                        *max_stream_data += pull_amount;
+                        self.events.borrow_mut()
+                            .send_max_stream_data(
+                                &self.stream_id, *max_stream_data, pull_amount);
+                        pull_amount
+                    }
+                }
             },
             _ => panic!("Cannot pull data for stream in current state!")
         }
@@ -143,7 +189,7 @@ impl ChaffStream {
                 // TODO: Enable assert once we actually control
                 // assert!(*data_consumed <= max_stream_data_limit);
             },
-            ChaffStreamState::Closed{ .. } => (),
+            ChaffStreamState::Closed{ .. } | ChaffStreamState::Unthrottled { .. } => (),
             _ => panic!("Data should not be consumed in the current state.")
         };
 
@@ -158,10 +204,10 @@ impl ChaffStream {
                 ref mut max_stream_data_limit, data_consumed, ..
             } => {
                 *max_stream_data_limit = std::cmp::max(
-                    data_consumed + min_remaining + 16,
+                    data_consumed + min_remaining + MAX_FRAME_OVERHEAD,
                     *max_stream_data_limit);
             },
-            ChaffStreamState::Closed{ .. } => (),
+            ChaffStreamState::Closed { .. } | ChaffStreamState::Unthrottled { .. } => (),
             _ => panic!("Should not receive data frame in other states!")
         }
     }
@@ -193,9 +239,15 @@ impl ChaffStream {
                 // frames in response to a request, we therefore aggregate
                 // their lengths
                 assert!(data_consumed + length >= *max_stream_data_limit);
+                // It's not possible to encounter another dataframe without having parsed
+                // the previous, so we only consider bytes consumed in determining the new 
+                // limit.
                 *max_stream_data_limit = data_consumed + length;
                 *data_length += length;
-            }
+            },
+            ChaffStreamState::Unthrottled { ref mut data_length } => {
+                *data_length += length;
+            },
             ChaffStreamState::Closed{ .. } => (),
             _ => panic!("Should not receive data frame in other states!")
         }
@@ -213,7 +265,6 @@ impl ::std::fmt::Display for ChaffStream {
 
 #[derive(Debug, Default)]
 pub(crate) struct ChaffStreamMap(HashMap<u64, ChaffStream>);
-// TODO: Use a HashSet
 
 
 impl ChaffStreamMap {
@@ -297,3 +348,200 @@ impl ChaffStreamMap {
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod recv_state {
+        use super::*;
+        use crate::events::FlowShapingEvent;
+        use super::ChaffStreamState as State;
+
+        fn create_stream(throttled: bool) -> ChaffStream {
+            ChaffStream::new_t(0, Url::parse("https://a.com").unwrap(), 
+                               Rc::new(RefCell::new(FlowShapingEvents::default())),
+                               20, throttled)
+        }
+
+        #[test]
+        fn test_creation() {
+            let stream = create_stream(true);
+
+            assert!(matches!(stream.state, State::Created { .. }));
+            assert_eq!(stream.is_throttled(), true);
+
+            let stream = ChaffStream::new_t(
+                0, Url::parse("https://a.com").unwrap(), 
+                Rc::new(RefCell::new(FlowShapingEvents::default())),
+                20, false);
+            assert!(matches!(stream.state, State::Created { .. }));
+            assert_eq!(stream.is_throttled(), false);
+        }
+
+        #[test]
+        fn test_open_throttled() {
+            let events = Rc::new(RefCell::new(FlowShapingEvents::default()));
+            let mut stream = ChaffStream::new_t(
+                0, Url::parse("https://a.com").unwrap(), events.clone(), 20, true);
+            stream.open();
+
+            assert!(matches!(stream.state, State::ReceivingHeaders { .. }));
+            assert_eq!(events.borrow().has_events(), false);
+        }
+
+        #[test]
+        fn test_open_unthrottled() {
+            let events = Rc::new(RefCell::new(FlowShapingEvents::default()));
+            let mut stream = ChaffStream::new_t(
+                0, Url::parse("https://a.com").unwrap(), events.clone(), 20, false);
+            stream.open();
+
+            assert!(matches!(stream.state, State::Unthrottled { data_length: 0 }));
+            assert_eq!(events.borrow().has_events(), true);
+            assert_eq!(events.borrow_mut().next_event(), Some(
+                    FlowShapingEvent::SendMaxStreamData {
+                        stream_id: 0,
+                        new_limit: DEFAULT_RX_DATA_WINDOW,
+                        increase: DEFAULT_RX_DATA_WINDOW - 20
+                    }));
+        }
+
+        #[test]
+        fn test_on_data_frame_throttled() {
+            let mut stream = ChaffStream::new_t(
+                0, Url::parse("https://a.com").unwrap(), 
+                Rc::new(RefCell::new(FlowShapingEvents::default())),
+                100, true);
+            stream.open();
+
+            assert!(matches!(stream.state, State::ReceivingHeaders { 
+                max_stream_data_limit: 100, .. }));
+            // We consume 80 bytes and encounter the first data frame
+            stream.data_consumed(80);
+            stream.on_data_frame(2100);
+            assert!(matches!(stream.state, State::ReceivingData { 
+                max_stream_data_limit: 2180, .. }));
+
+            // We consume the previous frame and encounter the second data frame
+            stream.data_consumed(2100);
+            stream.on_data_frame(3200);
+            assert!(matches!(stream.state, State::ReceivingData { 
+                max_stream_data_limit: 5380, .. }));
+        }
+
+        #[test]
+        fn test_on_data_frame_unthrottled() {
+            let mut stream = ChaffStream::new_t(
+                0, Url::parse("https://a.com").unwrap(), 
+                Rc::new(RefCell::new(FlowShapingEvents::default())), 100, false);
+            stream.open();
+
+            assert!(matches!(stream.state, State::Unthrottled { data_length: 0 }));
+            stream.on_data_frame(2100);
+            assert!(matches!(stream.state, State::Unthrottled { data_length: 2100 }));
+            stream.on_data_frame(3200);
+            assert!(matches!(stream.state, State::Unthrottled { data_length: 5300 }));
+        }
+
+        #[test]
+        fn test_data_consumed_throttled() {
+            let mut stream = create_stream(true);
+            stream.open();
+
+            assert!(matches!(
+                    stream.state, State::ReceivingHeaders { data_consumed: 0, .. }));
+            stream.data_consumed(3000);
+            assert!(matches!(
+                    stream.state, State::ReceivingHeaders { data_consumed: 3000, .. }));
+
+            stream.data_consumed(1000);
+            assert!(matches!(
+                    stream.state, State::ReceivingHeaders { data_consumed: 4000, .. }));
+        }
+
+        #[test]
+        fn test_data_consumed_unthrottled() {
+            let mut stream = create_stream(false);
+            stream.open();
+
+            assert!(matches!(stream.state, State::Unthrottled { .. }));
+            stream.data_consumed(3000);
+            assert!(matches!(stream.state, State::Unthrottled { .. }));
+            stream.data_consumed(1000);
+            assert!(matches!(stream.state, State::Unthrottled { .. }));
+        }
+
+        #[test]
+        fn test_awaiting_header_data_unthrottled() {
+            let mut stream = create_stream(false);
+            stream.open();
+
+            assert!(matches!(stream.state, State::Unthrottled { .. }));
+            stream.awaiting_header_data(45);
+            assert!(matches!(stream.state, State::Unthrottled { .. }));
+            stream.awaiting_header_data(99);
+            assert!(matches!(stream.state, State::Unthrottled { .. }));
+        }
+
+        #[test]
+        fn test_awaiting_header_data_throttled() {
+            let mut stream = create_stream(true);
+
+            stream.open();
+            assert_eq!(stream.state, State::ReceivingHeaders { 
+                max_stream_data_limit: 20, max_stream_data: 20, data_consumed: 0
+            });
+            stream.awaiting_header_data(45);
+            assert_eq!(stream.state, State::ReceivingHeaders { 
+                max_stream_data_limit: 45 + MAX_FRAME_OVERHEAD, 
+                max_stream_data: 20, data_consumed: 0
+            });
+
+            stream.awaiting_header_data(90);
+            assert_eq!(stream.state, State::ReceivingHeaders { 
+                max_stream_data_limit: 90 + MAX_FRAME_OVERHEAD, 
+                max_stream_data: 20, data_consumed: 0
+            });
+
+            stream.data_consumed(70);
+            stream.awaiting_header_data(100);
+            assert_eq!(stream.state, State::ReceivingHeaders { 
+                max_stream_data_limit: 170 + MAX_FRAME_OVERHEAD, 
+                max_stream_data: 20, data_consumed: 70
+            });
+        }
+
+        #[test]
+        #[should_panic]
+        fn test_pull_data_non_open() {
+            let mut stream = create_stream(true);
+            stream.pull_data(1000);
+        }
+
+        #[test]
+        fn test_pull_data() {
+            let mut stream = create_stream(true);
+            let events = stream.events.clone();
+
+            stream.open();
+            let pulled = stream.pull_data(1000);
+            assert_eq!(pulled, 0);
+            assert_eq!(stream.state, State::ReceivingHeaders {
+                max_stream_data_limit: 20, max_stream_data: 20, data_consumed: 0,
+            });
+            assert_eq!(events.borrow().has_events(), false);
+
+            stream.on_data_frame(5000);
+            let pulled = stream.pull_data(2000);
+            assert_eq!(pulled, 2000);
+            assert_eq!(stream.state, State::ReceivingData {
+                max_stream_data_limit: 5000, max_stream_data: 2020, data_consumed: 0,
+                data_length: 5000,
+            });
+            assert_eq!(events.borrow_mut().next_event(), Some(
+                    FlowShapingEvent::SendMaxStreamData {
+                        stream_id: 0, new_limit: 2020, increase: 2000
+                    }));
+        }
+    }
+}
