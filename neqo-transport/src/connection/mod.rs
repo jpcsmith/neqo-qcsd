@@ -1573,14 +1573,12 @@ impl Connection {
                 }
             }
 
-            // Consider the stream as created
             if self.is_being_shaped() {
                 if let Some((Frame::Stream { stream_id, offset: 0, ..}, _)) = &frame {
                     self.flow_shaper.as_ref().unwrap().borrow_mut()
-                        .on_stream_created(stream_id.as_u64());
+                        .on_first_byte_sent(stream_id.as_u64());
                 }
             }
-
 
             if let Some((frame, token)) = frame {
                 ack_eliciting |= frame.ack_eliciting();
@@ -2037,7 +2035,7 @@ impl Connection {
                 if fin && self.is_being_shaped()
                 {
                     self.flow_shaper.as_ref().unwrap().borrow_mut()
-                        .on_stream_closed(stream_id.as_u64());
+                        .on_fin_received(stream_id.as_u64());
                 }
                 if let (_, Some(rs)) = self.obtain_stream(stream_id)? {
                     rs.inbound_stream_frame(fin, offset, data)?;
