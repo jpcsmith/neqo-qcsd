@@ -30,6 +30,7 @@ pub enum FlowShapingEvent {
     SendPaddingFrames(u32),
     CloseConnection,
     ReopenStream(Url),
+    DoneShaping
 }
 
 #[derive(Debug, Default)]
@@ -112,10 +113,8 @@ pub(crate) struct FlowShapingApplicationEvents {
 }
 
 impl FlowShapingApplicationEvents {
-
-    #[allow(dead_code)]
-    pub fn send_connection_close(&self) {
-        self.insert(FlowShapingEvent::CloseConnection)
+    pub fn is_done_shaping(&self) {
+        self.insert(FlowShapingEvent::DoneShaping)
     }
 
     pub fn reopen_stream(&self, url: Url) {

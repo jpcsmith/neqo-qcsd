@@ -153,6 +153,10 @@ impl Trace {
         self.0.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub fn new_sampled<'a, I, V>(input: I, interval_ms: u32) -> Self
         where I: IntoIterator<Item=&'a V>,
               V: Into<Packet> + Clone + 'a

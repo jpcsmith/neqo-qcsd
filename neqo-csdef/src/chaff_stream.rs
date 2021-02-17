@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::{ RefCell, Cell };
 use url::Url;
-use neqo_common::qtrace;
+use neqo_common::{qtrace, qwarn};
 use crate::stream_id::StreamId;
 use crate::events::FlowShapingEvents;
 
@@ -177,7 +177,10 @@ impl ChaffStream {
 
                 RecvState::Unthrottled{ data_length: 0 }
             },
-            _ => panic!("Cannot open stream from current recv_state!")
+            _ => {
+                qwarn!([self], "Trying to open stream in state {:?}", self.recv_state);
+                return;
+            }
         };
 
         qtrace!([self], "open: {:?} -> {:?}", self.recv_state, next_state);
