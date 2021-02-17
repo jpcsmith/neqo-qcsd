@@ -63,6 +63,8 @@ pub enum Http3ClientEvent {
     GoawayReceived,
     /// Connection state change.
     StateChange(Http3State),
+    // Flow shaper is done shaping
+    FlowShapingDone,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -160,6 +162,10 @@ impl Http3ClientEvents {
     pub(crate) fn goaway_received(&self) {
         self.remove(|evt| matches!(evt, Http3ClientEvent::RequestsCreatable));
         self.insert(Http3ClientEvent::GoawayReceived);
+    }
+
+    pub(crate) fn flow_shaping_done(&self) {
+        self.insert(Http3ClientEvent::FlowShapingDone);
     }
 
     pub fn insert(&self, event: Http3ClientEvent) {

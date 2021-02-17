@@ -211,6 +211,12 @@ impl FlowShaper {
         if pop_front {
             self.target.pop_front();
         }
+
+        // check dequeues empty, if so send connection close event
+        if self.target.is_empty() {
+            qdebug!([self], "shaping complete, notify client");
+            self.application_events.is_done_shaping();
+        }
     }
 
     /// Push amount bytes to the server and return the amount of data
