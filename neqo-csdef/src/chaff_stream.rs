@@ -54,7 +54,7 @@ impl RecvState {
     fn is_throttled(&self) -> bool {
         match self {
             Self::Created { throttled, .. } => *throttled,
-            Self::ReceivingHeaders { .. } | Self::ReceivingData { .. } 
+            Self::ReceivingHeaders { .. } | Self::ReceivingData { .. }
             | Self::Closed { .. } => true,
             Self::Unthrottled { .. } => false
         }
@@ -101,14 +101,14 @@ impl SendState {
     pub fn pending_bytes(&self) -> u64 {
         match self {
             Self::Throttled { pending, .. } => *pending,
-            Self::Unthrottled | Self::Closed => 0, 
+            Self::Unthrottled | Self::Closed => 0,
         }
     }
 
     pub fn allowed_to_send(&self) -> u64 {
         match self {
             Self::Throttled { allowed, .. } => *allowed,
-            Self::Unthrottled | Self::Closed => 0, 
+            Self::Unthrottled | Self::Closed => 0,
         }
     }
 
@@ -143,7 +143,7 @@ impl ChaffStream {
             stream_id: StreamId::new(stream_id),
             url,
             recv_state: RecvState::new(initial_msd, throttled),
-            send_state: if throttled { SendState::throttled() } 
+            send_state: if throttled { SendState::throttled() }
                         else { SendState::Unthrottled },
             events,
         }
@@ -162,7 +162,7 @@ impl ChaffStream {
     }
 
     pub fn open(&mut self) {
-        self.recv_state = match self.recv_state {
+        let next_state = match self.recv_state {
             RecvState::Created { initial_msd, throttled: true } => {
                 RecvState::ReceivingHeaders {
                     max_stream_data: initial_msd,
@@ -172,13 +172,16 @@ impl ChaffStream {
             },
             RecvState::Created { initial_msd, throttled: false, .. } => {
                 self.events.borrow_mut()
-                    .send_max_stream_data(&self.stream_id, DEFAULT_RX_DATA_WINDOW, 
+                    .send_max_stream_data(&self.stream_id, DEFAULT_RX_DATA_WINDOW,
                                           DEFAULT_RX_DATA_WINDOW - initial_msd);
 
                 RecvState::Unthrottled{ data_length: 0 }
             },
             _ => panic!("Cannot open stream from current recv_state!")
         };
+
+        qtrace!([self], "open: {:?} -> {:?}", self.recv_state, next_state);
+        self.recv_state = next_state;
     }
 
     pub fn close(&mut self) {
@@ -271,28 +274,30 @@ impl ChaffStream {
     pub fn on_data_frame(&mut self, length: u64) {
         qtrace!([self], "Encountered data frame with length {}, {:?}", length, self.recv_state);
         match self.recv_state {
-            RecvState::ReceivingHeaders{
-                max_stream_data, max_stream_data_limit, data_consumed,
-            } => {
-                assert!(data_consumed + length >= max_stream_data_limit);
+            RecvState::ReceivingHeaders{ max_stream_data, data_consumed, .. } => {
+                let max_stream_data_limit = std::cmp::max(
+                    data_consumed + length, max_stream_data
+                );
                 self.recv_state = RecvState::ReceivingData {
                     max_stream_data,
-                    max_stream_data_limit: data_consumed + length,
+                    max_stream_data_limit,
                     data_consumed,
                     data_length: length,
                 }
             },
             RecvState::ReceivingData {
-                ref mut max_stream_data_limit, data_consumed, ref mut data_length, ..
+                ref mut max_stream_data_limit, data_consumed, ref mut data_length,
+                max_stream_data
             } => {
                 // It seems to be possible to receive multiple HTTP/3 data
                 // frames in response to a request, we therefore aggregate
                 // their lengths
-                assert!(data_consumed + length >= *max_stream_data_limit);
                 // It's not possible to encounter another dataframe without having parsed
-                // the previous, so we only consider bytes consumed in determining the new 
+                // the previous, so we only consider bytes consumed in determining the new
                 // limit.
-                *max_stream_data_limit = data_consumed + length;
+                *max_stream_data_limit = std::cmp::max(
+                    data_consumed + length, max_stream_data
+                );
                 *data_length += length;
             },
             RecvState::Unthrottled { ref mut data_length } => {
@@ -303,7 +308,7 @@ impl ChaffStream {
         }
     }
 
-    /// Called to indicate the new or retransmitted data is awaiting 
+    /// Called to indicate the new or retransmitted data is awaiting
     /// being sent on this stream.
     pub fn data_queued(&mut self, amount: u64) {
         match &mut self.send_state {
@@ -381,7 +386,7 @@ impl ChaffStreamMap {
         amount - remaining
     }
 
-    /// Push up to the specified amount of data, return the acutal amount 
+    /// Push up to the specified amount of data, return the acutal amount
     /// pushed. Streams are selected in arbitrary order.
     pub fn push_data(&mut self, amount: u64) -> u64 {
         let remaining = Cell::new(amount);
@@ -408,6 +413,10 @@ impl ChaffStreamMap {
     // add a padding stream to the shaping streams
     pub fn insert(&mut self, stream: ChaffStream) {
         assert!(self.0.insert(stream.stream_id.as_u64(), stream).is_none())
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
     }
 
     #[allow(dead_code)]
@@ -448,7 +457,7 @@ mod tests {
 
     impl StreamBuilder {
         fn new(stream_id: u64) -> StreamBuilder {
-            StreamBuilder { 
+            StreamBuilder {
                 stream_id: stream_id,
                 throttled: false,
                 initial_msd: 0,
@@ -503,7 +512,7 @@ mod tests {
         #[test]
         fn test_creation() {
             let stream = ChaffStream::new(
-                0, Url::parse("https://a.com").unwrap(), 
+                0, Url::parse("https://a.com").unwrap(),
                 Rc::new(RefCell::new(FlowShapingEvents::default())),
                 20, true);
 
@@ -511,7 +520,7 @@ mod tests {
             assert_eq!(stream.is_throttled(), true);
 
             let stream = ChaffStream::new(
-                0, Url::parse("https://a.com").unwrap(), 
+                0, Url::parse("https://a.com").unwrap(),
                 Rc::new(RefCell::new(FlowShapingEvents::default())),
                 20, false);
             assert!(matches!(stream.recv_state, RecvState::Created { .. }));
@@ -534,18 +543,18 @@ mod tests {
                 .with_initial_msd(100)
                 .opened();
 
-            assert!(matches!(stream.recv_state, RecvState::ReceivingHeaders { 
+            assert!(matches!(stream.recv_state, RecvState::ReceivingHeaders {
                 max_stream_data_limit: 100, .. }));
             // We consume 80 bytes and encounter the first data frame
             stream.data_consumed(80);
             stream.on_data_frame(2100);
-            assert!(matches!(stream.recv_state, RecvState::ReceivingData { 
+            assert!(matches!(stream.recv_state, RecvState::ReceivingData {
                 max_stream_data_limit: 2180, .. }));
 
             // We consume the previous frame and encounter the second data frame
             stream.data_consumed(2100);
             stream.on_data_frame(3200);
-            assert!(matches!(stream.recv_state, RecvState::ReceivingData { 
+            assert!(matches!(stream.recv_state, RecvState::ReceivingData {
                 max_stream_data_limit: 5380, .. }));
         }
 
@@ -554,16 +563,16 @@ mod tests {
             let mut stream = throttled_stream().opened();
 
             assert!(matches!(
-                    stream.recv_state, 
+                    stream.recv_state,
                     RecvState::ReceivingHeaders { data_consumed: 0, .. }));
             stream.data_consumed(3000);
             assert!(matches!(
-                    stream.recv_state, 
+                    stream.recv_state,
                     RecvState::ReceivingHeaders { data_consumed: 3000, .. }));
 
             stream.data_consumed(1000);
             assert!(matches!(
-                    stream.recv_state, 
+                    stream.recv_state,
                     RecvState::ReceivingHeaders { data_consumed: 4000, .. }));
         }
 
@@ -571,25 +580,25 @@ mod tests {
         fn test_awaiting_header_data() {
             let mut stream = throttled_stream().opened();
 
-            assert_eq!(stream.recv_state, RecvState::ReceivingHeaders { 
+            assert_eq!(stream.recv_state, RecvState::ReceivingHeaders {
                 max_stream_data_limit: 20, max_stream_data: 20, data_consumed: 0
             });
             stream.awaiting_header_data(45);
-            assert_eq!(stream.recv_state, RecvState::ReceivingHeaders { 
-                max_stream_data_limit: 45 + MAX_FRAME_OVERHEAD, 
+            assert_eq!(stream.recv_state, RecvState::ReceivingHeaders {
+                max_stream_data_limit: 45 + MAX_FRAME_OVERHEAD,
                 max_stream_data: 20, data_consumed: 0
             });
 
             stream.awaiting_header_data(90);
-            assert_eq!(stream.recv_state, RecvState::ReceivingHeaders { 
-                max_stream_data_limit: 90 + MAX_FRAME_OVERHEAD, 
+            assert_eq!(stream.recv_state, RecvState::ReceivingHeaders {
+                max_stream_data_limit: 90 + MAX_FRAME_OVERHEAD,
                 max_stream_data: 20, data_consumed: 0
             });
 
             stream.data_consumed(70);
             stream.awaiting_header_data(100);
-            assert_eq!(stream.recv_state, RecvState::ReceivingHeaders { 
-                max_stream_data_limit: 170 + MAX_FRAME_OVERHEAD, 
+            assert_eq!(stream.recv_state, RecvState::ReceivingHeaders {
+                max_stream_data_limit: 170 + MAX_FRAME_OVERHEAD,
                 max_stream_data: 20, data_consumed: 70
             });
         }
@@ -810,7 +819,7 @@ mod tests {
             let mut map = ChaffStreamMap::default();
             let events: Rc<RefCell<FlowShapingEvents>> = Default::default();
             let initial_state = [(0, 100, 100), (4, 500, 300), (8, 600, 100)];
-            // We make this sum to the exact amount that is pushed because 
+            // We make this sum to the exact amount that is pushed because
             // hashset iteration order is non-deterministic and we may end up with
             // multiple different but valid solutions.
             let expected_state = [(0, 100, 100), (4, 500, 500), (8, 600, 600)];
@@ -826,7 +835,7 @@ mod tests {
 
             for (stream_id, pending, allowed) in &expected_state {
                 let stream = map.get_mut(stream_id).unwrap();
-                assert_eq!(stream.send_state.allowed_to_send(), *allowed, 
+                assert_eq!(stream.send_state.allowed_to_send(), *allowed,
                            "stream: {:?}", stream_id);
                 assert_eq!(stream.send_state.pending_bytes(), *pending);
             }

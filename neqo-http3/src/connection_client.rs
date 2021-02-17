@@ -963,6 +963,8 @@ impl EventProvider for Http3Client {
                     if flow_shaper.is_shaping_stream(stream_id) {
                         qdebug!([self], "Ignoring HeaderReady for chaff stream {}",
                                 stream_id);
+                    } else {
+                        return event;
                     }
                 },
                 Some(Http3ClientEvent::DataReadable{ stream_id }) => {
@@ -971,6 +973,8 @@ impl EventProvider for Http3Client {
                     {
                         qdebug!([self], "Draining data on chaff stream {}", stream_id);
                         drain_stream(self, stream_id);
+                    } else {
+                        return event;
                     }
                 },
                 other => return other
