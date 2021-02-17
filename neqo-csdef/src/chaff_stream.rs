@@ -184,7 +184,7 @@ impl ChaffStream {
         self.recv_state = next_state;
     }
 
-    pub fn close(&mut self) {
+    pub fn close_receiving(&mut self) {
         let closed_state = RecvState::Closed {
             data_length: self.recv_state.data_length().unwrap_or(0)
         };
@@ -195,10 +195,6 @@ impl ChaffStream {
     pub fn close_sending(&mut self) {
         qtrace!([self], "{} -> {}", self.send_state.name(), SendState::Closed.name());
         self.send_state = SendState::Closed;
-    }
-
-    pub fn close_receiving(&mut self) {
-        self.close()
     }
 
     pub fn is_open(&self) -> bool {
