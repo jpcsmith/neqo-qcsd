@@ -10,7 +10,7 @@ use std::time::{ Duration, Instant };
 use serde::Deserialize;
 use url::Url;
 
-use neqo_common::{ qwarn, qtrace };
+use neqo_common::{ qwarn, qdebug, qtrace };
 
 use crate::{ Result, dummy_schedule_log_file };
 use crate::trace::{ Trace, Packet };
@@ -23,7 +23,7 @@ use crate::events::{
 };
 pub use crate::events::{ FlowShapingEvent };
 
-const BLOCKED_STREAM_LIMIT: u64 = 20;
+const BLOCKED_STREAM_LIMIT: u64 = 1500;
 
 
 fn debug_save_ids_path() -> Option<String> {
@@ -148,7 +148,7 @@ impl FlowShaper {
                 csv::Writer::from_writer(writer)
             });
 
-        FlowShaper{ 
+        FlowShaper{
             config,
             target,
             dummy_id_file,
@@ -160,7 +160,7 @@ impl FlowShaper {
     /// Start shaping the traffic using the current time as the reference
     /// point.
     pub fn start(&mut self) {
-        qtrace!([self], "starting shaping.");
+        qdebug!([self], "starting shaping.");
         self.start_time = Some(Instant::now());
     }
 
@@ -192,7 +192,7 @@ impl FlowShaper {
                         let pulled = self.pull_traffic(length);
                         length -= pulled;
                         length == 0
-                    }, 
+                    },
                     Packet::Outgoing(_, mut length) => {
                         let pushed = self.push_traffic(length);
                         length -= pushed;
@@ -203,7 +203,7 @@ impl FlowShaper {
             Some(_) | None => false,
         };
 
-        // TODO(jsmith): Evaluate whether we should discard or requeue. 
+        // TODO(jsmith): Evaluate whether we should discard or requeue.
         // This question also generally applies to data that should be
         // transfered before the first chaff streams are available as well
         // as the data that wouldve been lost when we remove a dummy stream
@@ -213,7 +213,7 @@ impl FlowShaper {
         }
     }
 
-    /// Push amount bytes to the server and return the amount of data 
+    /// Push amount bytes to the server and return the amount of data
     /// pushed.
     ///
     /// Data is pushed first from application streams if they're being
@@ -225,7 +225,7 @@ impl FlowShaper {
 
         if !self.pad_only_mode && remaining > 0 {
             let pushed = self.app_streams.push_data(remaining);
-            qtrace!([self], "sent {} application bytes", pushed);
+            qdebug!([self], "sent {} application bytes", pushed);
             remaining -= pushed;
         }
 
@@ -235,12 +235,12 @@ impl FlowShaper {
             // traffic as padding instead of having them interleave with
             // the data.
             let pushed = self.chaff_streams.push_data(remaining);
-            qtrace!([self], "sent {} chaff-stream bytes", pushed);
+            qdebug!([self], "sent {} chaff-stream bytes", pushed);
             remaining -= pushed;
         }
 
         if remaining > 0 {
-            qtrace!([self], "sending {} padding bytes", remaining);
+            qdebug!([self], "sending {} padding bytes", remaining);
             self.events.borrow_mut().send_pad_frames(u32::try_from(remaining).unwrap());
         }
 
@@ -249,17 +249,18 @@ impl FlowShaper {
     }
 
     fn pull_traffic(&mut self, amount: u32) -> u32 {
+        qtrace!([self], "attempting to pull {} bytes of data.", amount);
         let mut remaining: u64 = amount.into();
 
         if !self.pad_only_mode && self.app_streams.can_pull() {
             let pulled = self.app_streams.pull_data(remaining);
-            qtrace!([self], "pulled {} application data", pulled);
+            qdebug!([self], "pulled {} application data", pulled);
             remaining -= pulled;
         }
 
         if remaining > 0 && self.chaff_streams.can_pull() {
             let pulled = self.chaff_streams.pull_data(remaining);
-            qtrace!([self], "pulled {} chaff data", pulled);
+            qdebug!([self], "pulled {} chaff data", pulled);
             remaining -= pulled;
         } else if remaining > 0 && !self.chaff_streams.can_pull() {
             qwarn!([self], "No chaff streams with available pull capacity.");
@@ -333,7 +334,7 @@ impl FlowShaper {
 
     fn maybe_fetch_chaff(&mut self, url: &Url) {
         // TODO: Ensure sufficient chaff data available
-        qtrace!([self], "reopenning dummy stream for URL {}", url);
+        qdebug!([self], "reopenning dummy stream for URL {}", url);
         self.application_events.reopen_stream(url.clone());
     }
 }
@@ -366,27 +367,39 @@ impl HEventConsumer for FlowShaper {
     }
 
     fn on_http_request_sent(&mut self, stream_id: u64, url: &Url, is_chaff: bool) {
-        qtrace!([self], "notified of request sent on stream {}", stream_id);
-        if is_chaff {
+        let streams = if is_chaff {
+            qdebug!([self], "notified of chaff request sent on stream {}", stream_id);
+
             if let Some(writer) = self.dummy_id_file.as_mut() {
                 writer.write_record(&[stream_id.to_string()])
                     .expect("Failed writing dummy stream id");
                 writer.flush().expect("Failed saving dummy stream id");
             }
-        }
 
-        let streams = if is_chaff { &mut self.chaff_streams } else { &mut self.app_streams };
+            &mut self.chaff_streams
+        } else {
+            qdebug!([self], "notified of request sent on stream {}", stream_id);
+
+            &mut self.app_streams
+        };
 
         streams.insert(ChaffStream::new(
-                stream_id, url.clone(), self.events.clone(), BLOCKED_STREAM_LIMIT, 
+                stream_id, url.clone(), self.events.clone(), BLOCKED_STREAM_LIMIT,
                 is_chaff || !self.pad_only_mode));
+
+        qtrace!([self], "chaff-streams: {}, app-streams: {}", self.chaff_streams.len(),
+                self.app_streams.len());
     }
 }
 
 impl StreamEventConsumer for FlowShaper {
     fn on_first_byte_sent(&mut self, stream_id: u64) {
+        if StreamId::new(stream_id).is_uni() {
+            return;
+        }
+
         assert!(StreamId::new(stream_id).is_client_initiated());
-        qtrace!([self], "first byte sent on {}", stream_id);
+        qdebug!([self], "first byte sent on {}", stream_id);
 
         self.get_stream_mut(&stream_id)
             .expect("Stream should already be tracked.")
@@ -399,7 +412,11 @@ impl StreamEventConsumer for FlowShaper {
     }
 
     fn data_consumed(&mut self, stream_id: u64, amount: u64) {
-        self.get_stream_mut(&stream_id) 
+        if StreamId::new(stream_id).is_uni() {
+            return;
+        }
+
+        self.get_stream_mut(&stream_id)
             .expect("Stream to be tracked.")
             .data_consumed(amount);
     }
