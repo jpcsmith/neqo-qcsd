@@ -185,22 +185,14 @@ impl FlowShaper {
     }
 
     fn process_timer_(&mut self, since_start: u128) {
-        let pop_front: bool = match self.target.front().cloned() {
+        let consumed = match self.target.front().cloned() {
             Some(pkt) if (pkt.timestamp() as u128) < since_start =>  {
-                match self.target.front_mut().unwrap() {
-                    Packet::Incoming(_, mut length) => {
-                        let pulled = self.pull_traffic(length);
-                        length -= pulled;
-                        length == 0
-                    },
-                    Packet::Outgoing(_, mut length) => {
-                        let pushed = self.push_traffic(length);
-                        length -= pushed;
-                        length == 0
-                    }
+                match self.target.front().cloned().unwrap() {
+                    Packet::Incoming(_, length) => self.pull_traffic(length),
+                    Packet::Outgoing(_, length) => self.push_traffic(length),
                 }
             },
-            Some(_) | None => false,
+            Some(_) | None => 0,
         };
 
         // TODO(jsmith): Evaluate whether we should discard or requeue.
@@ -208,8 +200,21 @@ impl FlowShaper {
         // transfered before the first chaff streams are available as well
         // as the data that wouldve been lost when we remove a dummy stream
         // with pending outgoing MSD frames.
-        if pop_front {
-            self.target.pop_front();
+        if consumed > 0 {
+            let pop = match self.target.front_mut().unwrap() {
+                Packet::Incoming(_, ref mut length)
+                | Packet::Outgoing(_, ref mut length) => {
+                    *length -= consumed;
+                    *length == 0
+                }
+            };
+
+            if pop {
+                qtrace!("Popping packet from trace. {} remaining", self.target.len());
+                self.target.pop_front();
+            } else {
+                qtrace!("Not popping packet from trace. {} remaining", self.target.len());
+            }
         }
 
         // check dequeues empty, if so send connection close event
