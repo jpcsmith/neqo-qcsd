@@ -15,18 +15,22 @@ impl StreamId {
         self.0
     }
 
+    #[allow(dead_code)]
     pub fn is_bidi(self) -> bool {
         self.as_u64() & 0x02 == 0
     }
 
+    #[allow(dead_code)]
     pub fn is_uni(self) -> bool {
         !self.is_bidi()
     }
 
+    #[allow(dead_code)]
     pub fn is_client_initiated(self) -> bool {
         self.as_u64() & 0x01 == 0
     }
 
+    #[allow(dead_code)]
     pub fn is_server_initiated(self) -> bool {
         !self.is_client_initiated()
     }

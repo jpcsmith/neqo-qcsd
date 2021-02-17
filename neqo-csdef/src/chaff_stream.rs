@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::cell::RefCell;
+use std::cell::{ RefCell, Cell };
 use url::Url;
 use neqo_common::qtrace;
 use crate::stream_id::StreamId;
@@ -83,7 +83,19 @@ enum SendState {
 
 impl SendState {
     pub fn throttled() -> Self {
-        Self::Throttled { pending: 0, allowed: 0 }
+        SendState::with_limits(0, 0)
+    }
+
+    pub fn with_limits(pending: u64, allowed: u64) -> Self {
+        assert!(allowed <= pending, "Throttled cannot have more allowed than pending.");
+        SendState::Throttled { pending, allowed }
+    }
+
+    pub fn is_throttled(&self) -> bool {
+        match self {
+            Self::Throttled { .. } | Self::Closed => true,
+            Self::Unthrottled => false
+        }
     }
 
     pub fn pending_bytes(&self) -> u64 {
@@ -125,21 +137,6 @@ impl ChaffStream {
         url: Url,
         events: Rc<RefCell<FlowShapingEvents>>,
         initial_msd: u64,
-    ) -> Self {
-        ChaffStream {
-            stream_id: StreamId::new(stream_id),
-            url,
-            recv_state: RecvState::new(initial_msd, false),
-            send_state: SendState::Unthrottled,
-            events,
-        }
-    }
-
-    pub fn new_t(
-        stream_id: u64,
-        url: Url,
-        events: Rc<RefCell<FlowShapingEvents>>,
-        initial_msd: u64,
         throttled: bool,
     ) -> Self {
         ChaffStream {
@@ -152,8 +149,12 @@ impl ChaffStream {
         }
     }
 
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
     pub fn is_throttled(&self) -> bool {
-        self.recv_state.is_throttled()
+        self.recv_state.is_throttled() || self.send_state.is_throttled()
     }
 
     pub fn msd_available(&self) -> u64 {
@@ -327,6 +328,10 @@ impl ChaffStream {
         }
     }
 
+    pub fn blocked_pending_bytes(&self) -> u64 {
+        self.send_state.pending_bytes() - self.send_state.allowed_to_send()
+    }
+
     pub fn push_data(&mut self, amount: u64) -> u64 {
         match &mut self.send_state {
             SendState::Throttled { pending, allowed } => {
@@ -376,11 +381,20 @@ impl ChaffStreamMap {
         amount - remaining
     }
 
-    /// Send up to the specified amount of data, return the acutal amount 
-    /// sent.
-    pub fn push_data(&mut self, _amount: u64) -> u64 {
-        // TODO(jsmith): Implement
-        0
+    /// Push up to the specified amount of data, return the acutal amount 
+    /// pushed. Streams are selected in arbitrary order.
+    pub fn push_data(&mut self, amount: u64) -> u64 {
+        let remaining = Cell::new(amount);
+
+        self.0.values_mut()
+            .filter(|stream| stream.blocked_pending_bytes() > 0)
+            .take_while(|_| remaining.get() > 0)
+            .for_each(|stream| {
+                let pushed = stream.push_data(remaining.get());
+                remaining.set(remaining.get() - pushed);
+            });
+
+        amount - remaining.take()
     }
 
     pub fn pull_available(&self) -> u64 {
@@ -399,21 +413,6 @@ impl ChaffStreamMap {
     #[allow(dead_code)]
     pub fn get_mut(&mut self, stream_id: &u64) -> Option<&mut ChaffStream> {
         self.0.get_mut(stream_id)
-    }
-
-    pub fn open_stream(&mut self, stream_id: &u64) {
-        self.0.get_mut(stream_id)
-            .expect("chaff stream should already have been created")
-            .open();
-    }
-
-    pub fn remove_dummy_stream(&mut self, stream_id: &u64) -> Url {
-        if let Some(stream) = self.0.get_mut(stream_id) {
-            stream.close();
-            return stream.url.clone();
-        } else {
-            panic!("chaff stream should already have been created");
-        }
     }
 
     pub fn contains(&self, stream_id: &u64) -> bool {
@@ -441,13 +440,34 @@ mod tests {
     use super::*;
 
     struct StreamBuilder {
+        stream_id: u64,
         throttled: bool,
         initial_msd: u64,
+        events: Rc<RefCell<FlowShapingEvents>>,
     }
 
     impl StreamBuilder {
+        fn new(stream_id: u64) -> StreamBuilder {
+            StreamBuilder { 
+                stream_id: stream_id,
+                throttled: false,
+                initial_msd: 0,
+                events: Default::default()
+            }
+        }
+
+        fn throttled(&mut self, state: bool) -> &mut Self {
+            self.throttled = state;
+            self
+        }
+
         fn with_initial_msd(&mut self, initial_msd: u64) -> &mut Self {
             self.initial_msd = initial_msd;
+            self
+        }
+
+        fn with_events(&mut self, events: &Rc<RefCell<FlowShapingEvents>>) -> &mut Self {
+            self.events = events.clone();
             self
         }
 
@@ -464,8 +484,8 @@ mod tests {
         }
 
         fn build(&mut self) -> ChaffStream {
-            ChaffStream::new_t(
-                0, Url::parse("https://www.example.com").unwrap(),
+            ChaffStream::new(
+                self.stream_id, Url::parse("https://www.example.com").unwrap(),
                 Default::default(), self.initial_msd, self.throttled)
         }
     }
@@ -475,17 +495,22 @@ mod tests {
         use crate::events::FlowShapingEvent;
 
         fn throttled_stream() -> StreamBuilder {
-            StreamBuilder { initial_msd: 20, throttled: true }
+            let mut bldr = StreamBuilder::new(0);
+            bldr.with_initial_msd(20).throttled(true);
+            bldr
         }
 
         #[test]
         fn test_creation() {
-            let stream = throttled_stream().build();
+            let stream = ChaffStream::new(
+                0, Url::parse("https://a.com").unwrap(), 
+                Rc::new(RefCell::new(FlowShapingEvents::default())),
+                20, true);
 
             assert!(matches!(stream.recv_state, RecvState::Created { .. }));
             assert_eq!(stream.is_throttled(), true);
 
-            let stream = ChaffStream::new_t(
+            let stream = ChaffStream::new(
                 0, Url::parse("https://a.com").unwrap(), 
                 Rc::new(RefCell::new(FlowShapingEvents::default())),
                 20, false);
@@ -688,7 +713,9 @@ mod tests {
         use crate::events::FlowShapingEvent;
 
         fn unthrottled_stream() -> StreamBuilder {
-            StreamBuilder { initial_msd: 20, throttled: false }
+            let mut builder = StreamBuilder::new(0);
+            builder.with_initial_msd(20).throttled(false);
+            builder
         }
 
         #[test]
@@ -766,6 +793,66 @@ mod tests {
 
             assert_eq!(stream.send_state, SendState::Unthrottled);
             stream.push_data(3000);
+        }
+    }
+
+    mod chaff_map {
+        use super::*;
+
+        fn throttled_stream(stream_id: u64) -> StreamBuilder {
+            let mut builder = StreamBuilder::new(stream_id);
+            builder.with_initial_msd(20).throttled(true);
+            builder
+        }
+
+        #[test]
+        fn test_push_data() {
+            let mut map = ChaffStreamMap::default();
+            let events: Rc<RefCell<FlowShapingEvents>> = Default::default();
+            let initial_state = [(0, 100, 100), (4, 500, 300), (8, 600, 100)];
+            // We make this sum to the exact amount that is pushed because 
+            // hashset iteration order is non-deterministic and we may end up with
+            // multiple different but valid solutions.
+            let expected_state = [(0, 100, 100), (4, 500, 500), (8, 600, 600)];
+
+            for (stream_id, pending, allowed) in &initial_state {
+                map.insert(throttled_stream(*stream_id)
+                           .with_events(&events)
+                           .with_send_state(SendState::with_limits(*pending, *allowed)));
+            }
+
+            let pushed = map.push_data(700);
+            assert_eq!(pushed, 700);
+
+            for (stream_id, pending, allowed) in &expected_state {
+                let stream = map.get_mut(stream_id).unwrap();
+                assert_eq!(stream.send_state.allowed_to_send(), *allowed, 
+                           "stream: {:?}", stream_id);
+                assert_eq!(stream.send_state.pending_bytes(), *pending);
+            }
+        }
+
+        #[test]
+        fn test_push_data_partial() {
+            let mut map = ChaffStreamMap::default();
+            let events: Rc<RefCell<FlowShapingEvents>> = Default::default();
+            let initial_state = [(0, 300, 100), (4, 200, 200), (8, 600, 000)];
+            let expected_state = [(0, 300, 300), (4, 200, 200), (8, 600, 600)];
+
+            for (stream_id, pending, allowed) in &initial_state {
+                map.insert(throttled_stream(*stream_id)
+                           .with_events(&events)
+                           .with_send_state(SendState::with_limits(*pending, *allowed)));
+            }
+
+            let pushed = map.push_data(1000);
+            assert_eq!(pushed, 800);
+
+            for (stream_id, pending, allowed) in &expected_state {
+                let stream = map.get_mut(stream_id).unwrap();
+                assert_eq!(stream.send_state.allowed_to_send(), *allowed);
+                assert_eq!(stream.send_state.pending_bytes(), *pending);
+            }
         }
     }
 }
