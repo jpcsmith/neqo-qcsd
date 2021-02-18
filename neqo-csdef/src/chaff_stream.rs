@@ -7,7 +7,7 @@ use crate::stream_id::StreamId;
 use crate::events::FlowShapingEvents;
 
 const DEFAULT_RX_DATA_WINDOW: u64 = 1048576;
-const MAX_FRAME_OVERHEAD: u64 = 16;
+const MAX_FRAME_OVERHEAD: u64 = 1500;
 
 
 #[derive(Debug, PartialEq, Eq)]
@@ -93,8 +93,8 @@ impl SendState {
 
     pub fn is_throttled(&self) -> bool {
         match self {
-            Self::Throttled { .. } | Self::Closed => true,
-            Self::Unthrottled => false
+            Self::Throttled { .. } => true,
+            Self::Unthrottled | Self::Closed => false
         }
     }
 
@@ -108,7 +108,7 @@ impl SendState {
     pub fn allowed_to_send(&self) -> u64 {
         match self {
             Self::Throttled { allowed, .. } => *allowed,
-            Self::Unthrottled | Self::Closed => 0,
+            Self::Unthrottled | Self::Closed => std::u64::MAX,
         }
     }
 
@@ -155,6 +155,10 @@ impl ChaffStream {
 
     pub fn is_throttled(&self) -> bool {
         self.recv_state.is_throttled() || self.send_state.is_throttled()
+    }
+
+    pub fn is_send_throttled(&self) -> bool {
+        self.send_state.is_throttled()
     }
 
     pub fn msd_available(&self) -> u64 {
@@ -336,6 +340,10 @@ impl ChaffStream {
         self.send_state.pending_bytes() - self.send_state.allowed_to_send()
     }
 
+    pub fn send_budget_available(&self) -> u64 {
+        self.send_state.allowed_to_send()
+    }
+
     pub fn push_data(&mut self, amount: u64) -> u64 {
         match &mut self.send_state {
             SendState::Throttled { pending, allowed } => {
@@ -418,9 +426,12 @@ impl ChaffStreamMap {
         self.0.len()
     }
 
-    #[allow(dead_code)]
     pub fn get_mut(&mut self, stream_id: &u64) -> Option<&mut ChaffStream> {
         self.0.get_mut(stream_id)
+    }
+
+    pub fn get(&self, stream_id: &u64) -> Option<&ChaffStream> {
+        self.0.get(stream_id)
     }
 
     pub fn contains(&self, stream_id: &u64) -> bool {

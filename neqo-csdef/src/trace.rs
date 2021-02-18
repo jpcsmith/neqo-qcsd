@@ -18,21 +18,21 @@ impl Packet {
     pub fn is_incoming(&self) -> bool { !self.is_outgoing() }
 
     pub fn length(&self) -> u32 {
-        match self { 
-            Self::Incoming(_, len) | Self::Outgoing(_, len) => *len 
+        match self {
+            Self::Incoming(_, len) | Self::Outgoing(_, len) => *len
         }
     }
 
     pub fn signed_length(&self) -> i32 {
-        match self { 
+        match self {
             Self::Outgoing(_, len) => i32::try_from(*len).unwrap(),
             Self::Incoming(_, len) => i32::try_from(*len).unwrap() * -1,
         }
     }
 
     pub fn timestamp(&self) -> u32 {
-        match self { 
-            Self::Incoming(time, _) | Self::Outgoing(time, _) => *time 
+        match self {
+            Self::Incoming(time, _) | Self::Outgoing(time, _) => *time
         }
     }
 
@@ -88,7 +88,7 @@ impl PartialEq for Packet {
 }
 
 
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct Trace(VecDeque<Packet>);
 
 
@@ -153,6 +153,10 @@ impl Trace {
         self.0.len()
     }
 
+    pub fn remove(&mut self, index: usize) -> Option<Packet> {
+        self.0.remove(index)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -176,12 +180,24 @@ impl Trace {
         self.0.front_mut()
     }
 
+    pub fn next_incoming(&self) -> Option<(usize, &Packet)> {
+        self.iter().enumerate().find(|(_, pkt)| pkt.is_incoming())
+    }
+
+    pub fn next_incoming_mut(&mut self) -> Option<(usize, &mut Packet)> {
+        self.0.iter_mut().enumerate().find(|(_, pkt)| pkt.is_incoming())
+    }
+
+    pub fn next_outgoing(&self) -> Option<(usize, &Packet)> {
+        self.iter().enumerate().find(|(_, pkt)| pkt.is_outgoing())
+    }
+
     pub fn iter(&self) -> std::collections::vec_deque::Iter<Packet> {
         self.0.iter()
     }
 
     pub fn retain<F>(&mut self, f: F)
-        where F: FnMut(&Packet) -> bool 
+        where F: FnMut(&Packet) -> bool
     {
         self.0.retain(f)
     }
@@ -216,6 +232,21 @@ impl Trace {
         wtr.flush()?;
 
         Ok(())
+    }
+}
+
+impl std::fmt::Display for Trace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n_incoming = self.iter()
+            .filter(|pkt| pkt.is_incoming())
+            .count();
+        let n_outgoing = self.len() - n_incoming;
+
+        match self.front() {
+            None => write!(f, "Trace(next: None)"),
+            Some(pkt) => write!(f, "Trace(next: {:?}, in: {}, out: {})",
+                                pkt, n_incoming, n_outgoing)
+        }
     }
 }
 
@@ -278,7 +309,7 @@ mod tests {
                 (Pkt::Outgoing(30, 2100), Pkt::Outgoing(30, 2000), Ordering::Greater),
 
                 // Same time, but different types are compared according to type
-                // Outgoing is smaller than incoming, since for time 0 we would want 
+                // Outgoing is smaller than incoming, since for time 0 we would want
                 // outgoing packets first
                 (Packet::Outgoing(13, 1200), Packet::Incoming(13, 1200), Ordering::Less),
                 (Pkt::Incoming(10, 700), Pkt::Outgoing(10, 2000), Ordering::Greater),

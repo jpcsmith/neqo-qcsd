@@ -17,6 +17,8 @@ use indexmap::IndexMap;
 use smallvec::SmallVec;
 
 use neqo_common::{qdebug, qerror, qinfo, qtrace};
+use neqo_csdef::flow_shaper::FlowShaper;
+use neqo_csdef::events::StreamEventConsumer;
 
 use crate::events::ConnectionEvents;
 use crate::flow_mgr::FlowMgr;
@@ -461,6 +463,7 @@ pub struct SendStream {
     state: SendStreamState,
     flow_mgr: Rc<RefCell<FlowMgr>>,
     conn_events: ConnectionEvents,
+    flow_shaper: Option<Rc<RefCell<FlowShaper>>>,
 }
 
 impl SendStream {
@@ -476,6 +479,7 @@ impl SendStream {
             state: SendStreamState::Ready,
             flow_mgr,
             conn_events,
+            flow_shaper: None,
         };
         if ss.avail() > 0 {
             ss.conn_events.send_stream_writable(stream_id);
@@ -483,10 +487,15 @@ impl SendStream {
         ss
     }
 
+    pub fn with_flow_shaper(mut self, flow_shaper: Option<Rc<RefCell<FlowShaper>>>) -> Self {
+        self.flow_shaper = flow_shaper;
+        self
+    }
+
     /// Return the next range to be sent, if any.
     pub fn next_bytes(&mut self) -> Option<(u64, &[u8])> {
         match self.state {
-            SendStreamState::Send { ref send_buf } => send_buf.next_bytes(),
+            SendStreamState::Send { ref send_buf } => self.maybe_throttle(send_buf.next_bytes()),
             SendStreamState::DataSent {
                 ref send_buf,
                 fin_sent,
@@ -494,10 +503,16 @@ impl SendStream {
                 ..
             } => {
                 let bytes = send_buf.next_bytes();
-                if bytes.is_some() {
+                let throttled_bytes = self.maybe_throttle(bytes);
+
+                if throttled_bytes.is_some() {
                     // Must be a resend
                     bytes
+                } else if throttled_bytes.is_none() && bytes.is_some() {
+                    // We were throttled down to zero, just return None
+                    None
                 } else if fin_sent {
+                    // No bytes to send, throttled or otherwise
                     None
                 } else {
                     // Send empty stream frame with fin set
@@ -511,9 +526,43 @@ impl SendStream {
         }
     }
 
+    fn maybe_throttle<'a>(&self, bytes: Option<(u64, &'a [u8])>) -> Option<(u64, &'a [u8])> {
+        let stream_id = self.stream_id.as_u64();
+        let is_throttled = self.flow_shaper.as_ref()
+            .map_or(false, |fs| fs.borrow().is_send_throttled(stream_id));
+
+        match bytes {
+            Some((offset, data)) if is_throttled => {
+                let send_budget = self.flow_shaper.as_ref().unwrap().borrow()
+                    .send_budget_available(stream_id);
+                let send_budget = usize::try_from(send_budget).unwrap();
+
+                let throttled_data = if send_budget < data.len() {
+                    &data[..send_budget]
+                } else {
+                    data
+                };
+
+                if throttled_data.len() > 0 {
+                    Some((offset, throttled_data))
+                } else {
+                    None
+                }
+            },
+            Some(_) | None => bytes,
+        }
+    }
+
+
     pub fn mark_as_sent(&mut self, offset: u64, len: usize, fin: bool) {
         if let Some(buf) = self.state.tx_buf_mut() {
             buf.mark_as_sent(offset, len);
+
+            if let Some(flow_shaper) = self.flow_shaper.as_ref() {
+                flow_shaper.borrow_mut()
+                    .data_sent(self.stream_id.as_u64(), u64::try_from(len).unwrap());
+            }
+
             self.send_blocked_if_space_needed(0);
         };
 
@@ -555,6 +604,11 @@ impl SendStream {
     pub fn mark_as_lost(&mut self, offset: u64, len: usize, fin: bool) {
         if let Some(buf) = self.state.tx_buf_mut() {
             buf.mark_as_lost(offset, len);
+
+            if let Some(flow_shaper) = self.flow_shaper.as_ref() {
+                flow_shaper.borrow_mut()
+                    .data_queued(self.stream_id.as_u64(), u64::try_from(len).unwrap());
+            }
         }
 
         if fin {
@@ -682,6 +736,11 @@ impl SendStream {
         self.flow_mgr
             .borrow_mut()
             .conn_increase_credit_used(sent as u64);
+
+        if let Some(flow_shaper) = self.flow_shaper.as_ref() {
+            flow_shaper.borrow_mut()
+                .data_queued(self.stream_id.as_u64(), u64::try_from(sent).unwrap());
+        }
 
         Ok(sent)
     }
