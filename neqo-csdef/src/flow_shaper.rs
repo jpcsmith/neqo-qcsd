@@ -185,35 +185,62 @@ impl FlowShaper {
     }
 
     fn process_timer_(&mut self, since_start: u128) {
-        let consumed = match self.target.front().cloned() {
-            Some(pkt) if (pkt.timestamp() as u128) < since_start =>  {
-                match self.target.front().cloned().unwrap() {
-                    Packet::Incoming(_, length) => self.pull_traffic(length),
-                    Packet::Outgoing(_, length) => self.push_traffic(length),
-                }
-            },
-            Some(_) | None => 0,
-        };
+        qtrace!([self], "now: {}, target: {}", since_start, self.target);
 
-        // TODO(jsmith): Evaluate whether we should discard or requeue.
-        // This question also generally applies to data that should be
-        // transfered before the first chaff streams are available as well
-        // as the data that wouldve been lost when we remove a dummy stream
-        // with pending outgoing MSD frames.
-        if consumed > 0 {
-            let pop = match self.target.front_mut().unwrap() {
-                Packet::Incoming(_, ref mut length)
-                | Packet::Outgoing(_, ref mut length) => {
-                    *length -= consumed;
-                    *length == 0
-                }
+        loop {
+            let to_remove = match self.target.next_outgoing() {
+                Some((index, pkt)) if u128::from(pkt.timestamp()) <= since_start => {
+                    assert!(pkt.is_outgoing());
+                    let length = pkt.length();
+                    let pushed = self.push_traffic(length);
+                    assert_eq!(pushed, length, "Pushes are always fully completed.");
+
+                    Some(index)
+                },
+                Some(_) | None => None,
             };
 
-            if pop {
+            if let Some(index) = to_remove {
                 qtrace!("Popping packet from trace. {} remaining", self.target.len());
-                self.target.pop_front();
+                self.target.remove(index);
             } else {
-                qtrace!("Not popping packet from trace. {} remaining", self.target.len());
+                break;
+            }
+        }
+
+        loop {
+            let pulled = match self.target.next_incoming() {
+                Some((_, pkt)) if u128::from(pkt.timestamp()) <= since_start => {
+                    assert!(pkt.is_incoming());
+                    let length = pkt.length();
+                    self.pull_traffic(length)
+                },
+                Some(_) | None => 0,
+            };
+
+            if pulled > 0 {
+                // TODO(jsmith): Evaluate whether we should discard or requeue.
+                // This question also generally applies to data that should be
+                // transfered before the first chaff streams are available as well
+                // as the data that wouldve been lost when we remove a dummy stream
+                // with pending outgoing MSD frames.
+                let to_remove = if let Some((index, Packet::Incoming(_, ref mut length)))
+                        = self.target.next_incoming_mut()
+                {
+                    *length -= pulled;
+                    if *length == 0 { Some(index) } else { None }
+                } else {
+                    None
+                };
+
+                if let Some(index) = to_remove {
+                    qtrace!("Popping packet from trace. {} remaining", self.target.len());
+                    self.target.remove(index);
+                } else {
+                    break;
+                }
+            } else {
+                break;
             }
         }
 
@@ -233,26 +260,23 @@ impl FlowShaper {
         assert!(amount > 0);
         let amount = u64::from(amount);
         let mut remaining = amount;
+        qtrace!([self], "attempting to push {} bytes of data.", amount);
 
         if !self.pad_only_mode && remaining > 0 {
             let pushed = self.app_streams.push_data(remaining);
-            qdebug!([self], "sent {} application bytes", pushed);
+            qdebug!([self], "pushed {} application bytes", pushed);
             remaining -= pushed;
         }
 
         if remaining > 0 {
-            // TODO(jsmith): Use Chaff GET requests as padding.
-            // We should perhaps generally use GET requests for chaff
-            // traffic as padding instead of having them interleave with
-            // the data.
             let pushed = self.chaff_streams.push_data(remaining);
-            qdebug!([self], "sent {} chaff-stream bytes", pushed);
+            qdebug!([self], "pushed {} chaff-stream bytes", pushed);
             remaining -= pushed;
         }
 
         if remaining > 0 {
-            qdebug!([self], "sending {} padding bytes", remaining);
             self.events.borrow_mut().send_pad_frames(u32::try_from(remaining).unwrap());
+            qdebug!([self], "pushed {} padding bytes", remaining);
         }
 
         // Since we can send padding bytes, we always push the full amount
@@ -343,10 +367,33 @@ impl FlowShaper {
         }
     }
 
+    fn get_stream(&self, stream_id: &u64) -> Option<&ChaffStream> {
+        match self.chaff_streams.get(stream_id) {
+            Some(stream) => Some(stream),
+            None => self.app_streams.get(stream_id),
+        }
+    }
+
     fn maybe_fetch_chaff(&mut self, url: &Url) {
         // TODO: Ensure sufficient chaff data available
         qdebug!([self], "reopenning dummy stream for URL {}", url);
         self.application_events.reopen_stream(url.clone());
+    }
+
+    pub fn send_budget_available(&self, stream_id: u64) -> u64 {
+        self.get_stream(&stream_id)
+            .expect("Stream to already be tracked.")
+            .send_budget_available()
+    }
+
+    pub fn is_send_throttled(&self, stream_id: u64) -> bool {
+        if StreamId::is_bidi(stream_id.into()) {
+            self.get_stream(&stream_id)
+                .expect("Stream to already be tracked.")
+                .is_send_throttled()
+        } else {
+            false
+        }
     }
 }
 
@@ -420,6 +467,26 @@ impl StreamEventConsumer for FlowShaper {
         // this now is a double safety in case there were no open dummy
         // streams when the last one was closed.
         self.maybe_send_queued_msd();
+    }
+
+    fn data_sent(&mut self, stream_id: u64, amount: u64) {
+        if StreamId::new(stream_id).is_uni() {
+            return;
+        }
+
+        self.get_stream_mut(&stream_id)
+            .expect("Stream should already be tracked.")
+            .data_sent(amount)
+    }
+
+    fn data_queued(&mut self, stream_id: u64, amount: u64) {
+        if StreamId::new(stream_id).is_uni() {
+            return;
+        }
+
+        self.get_stream_mut(&stream_id)
+            .expect("Stream should already be tracked.")
+            .data_queued(amount)
     }
 
     fn data_consumed(&mut self, stream_id: u64, amount: u64) {
@@ -567,5 +634,57 @@ mod tests {
         // next_signal_time() also will take the greater of the time and now
         assert!(shaper.next_signal_time()
                 > Some(shaper.start_time.unwrap() + Duration::from_millis(0)))
+    }
+
+    #[test]
+    fn process_timer_should_not_block() {
+        let mut shaper = create_shaper_with_trace(
+            vec![(1, -1500), (3, 1350), (10, -700), (18, 500)], 1);
+        shaper.process_timer_(10);
+
+        let events = shaper.events.borrow_mut();
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(1350)));
+        assert_eq!(shaper.target, Trace::new(&[(1, -1500), (10, -700), (18, 500)]));
+    }
+
+    #[test]
+    fn process_timer_pulls_traffic() {
+        let mut shaper = create_shaper_with_trace(
+            vec![(3, -1500), (9, 1350), (17, -700), (18, 500)], 1);
+        shaper.on_http_request_sent(4, &Url::parse("https://a.com").unwrap(), true);
+        shaper.on_first_byte_sent(4);
+        shaper.data_consumed(4, BLOCKED_STREAM_LIMIT);
+        shaper.on_data_frame(4, 6000);
+
+        shaper.process_timer_(5);
+
+        let events = shaper.events.borrow_mut();
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
+            stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 1500, increase: 1500
+        }));
+        assert_eq!(shaper.target, Trace::new(&[(9, 1350), (17, -700), (18, 500)]));
+    }
+
+    #[test]
+    fn process_timer_pulls_and_pushes_multiple() {
+        let mut shaper = create_shaper_with_trace(
+            vec![(1, -1200), (3, 1350), (10, -700), (12, 600), (15, 800)], 1);
+        shaper.on_http_request_sent(4, &Url::parse("https://a.com").unwrap(), true);
+        shaper.on_first_byte_sent(4);
+        shaper.data_consumed(4, BLOCKED_STREAM_LIMIT);
+        shaper.on_data_frame(4, 6000);
+
+        shaper.process_timer_(14);
+
+        let events = shaper.events.borrow_mut();
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(1350)));
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(600)));
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
+            stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 1200, increase: 1200
+        }));
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
+            stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 1200 + 700, increase: 700
+        }));
+        assert_eq!(shaper.target, Trace::new(&[(15, 800)]));
     }
 }

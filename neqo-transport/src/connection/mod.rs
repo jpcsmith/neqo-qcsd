@@ -2468,7 +2468,7 @@ impl Connection {
                                 send_initial_max_stream_data,
                                 self.flow_mgr.clone(),
                                 self.events.clone(),
-                            ),
+                            ).with_flow_shaper(self.flow_shaper.clone()),
                         );
                     }
 
@@ -2546,7 +2546,7 @@ impl Connection {
                         initial_max_stream_data,
                         self.flow_mgr.clone(),
                         self.events.clone(),
-                    ),
+                    ).with_flow_shaper(self.flow_shaper.clone()),
                 );
 
                 new_id.as_u64()
@@ -2586,7 +2586,7 @@ impl Connection {
                         send_initial_max_stream_data,
                         self.flow_mgr.clone(),
                         self.events.clone(),
-                    ),
+                    ).with_flow_shaper(self.flow_shaper.clone()),
                 );
                 // From the local perspective, this is a local- originated BiDi stream. From the
                 // remote perspective, this is a remote-originated BiDi stream. Therefore, look at
