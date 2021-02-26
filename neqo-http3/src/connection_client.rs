@@ -168,7 +168,7 @@ impl Http3Client {
         let shaper = Rc::new(RefCell::new(
                 match neqo_csdef::debug_use_trace_file() {
                     Some(filename) => {
-                        builder.pad_only_mode(true)
+                        builder.pad_only_mode(false)
                             .from_csv(&filename)
                             .expect("unable to create shaper from trace file")
                     },
@@ -426,7 +426,6 @@ impl Http3Client {
                     id,
                     &Url::parse(&format!("{}://{}{}", scheme, host, path)).unwrap(),
                     true);
-            self.conn.disable_automatic_flowc(id);
         }
 
 
@@ -747,7 +746,10 @@ impl Http3Client {
                     self.done_shaping = true;
                     self.events.flow_shaping_done();
                     qdebug!([self], "FlowShaper is done shaping");
-                }
+                },
+                FlowShapingEvent::CloseConnection => {
+                    self.close(Instant::now(), 0, "kthx4shaping!");
+                },
                 FlowShapingEvent::ReopenStream(url) => {
                     let headers: Header = (String::new(),String::new()); // TODO (ldolfi): figure out headers
                     match self.fetch_dummy(
