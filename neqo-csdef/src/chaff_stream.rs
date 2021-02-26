@@ -54,9 +54,8 @@ impl RecvState {
     fn is_throttled(&self) -> bool {
         match self {
             Self::Created { throttled, .. } => *throttled,
-            Self::ReceivingHeaders { .. } | Self::ReceivingData { .. }
-            | Self::Closed { .. } => true,
-            Self::Unthrottled { .. } => false
+            Self::ReceivingHeaders { .. } | Self::ReceivingData { .. } => true,
+            Self::Unthrottled { .. } | Self::Closed { .. } => false
         }
     }
 
@@ -139,22 +138,28 @@ impl ChaffStream {
         initial_msd: u64,
         throttled: bool,
     ) -> Self {
-        ChaffStream {
+        let stream = ChaffStream {
             stream_id: StreamId::new(stream_id),
             url,
             recv_state: RecvState::new(initial_msd, throttled),
             send_state: if throttled { SendState::throttled() }
                         else { SendState::Unthrottled },
             events,
-        }
+        };
+        qtrace!([stream], "stream created {:?}", stream);
+        stream
     }
 
     pub fn url(&self) -> &Url {
         &self.url
     }
 
-    pub fn is_throttled(&self) -> bool {
-        self.recv_state.is_throttled() || self.send_state.is_throttled()
+    fn is_throttled(&self) -> bool {
+        self.is_recv_throttled() || self.is_send_throttled()
+    }
+
+    pub fn is_recv_throttled(&self) -> bool {
+        self.recv_state.is_throttled()
     }
 
     pub fn is_send_throttled(&self) -> bool {
@@ -376,6 +381,8 @@ impl ChaffStreamMap {
     /// Pull data from various streams amounting to `amount`.
     /// Return the actual amount pulled.
     pub fn pull_data(&mut self, amount: u64) -> u64 {
+        // TODO(jsmith): We ought to pull data from streams that are in the
+        // receiving header phase first, so that they open up.
         let mut remaining = amount;
 
         for (_, stream) in self.iter_mut()

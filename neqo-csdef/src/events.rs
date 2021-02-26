@@ -115,8 +115,12 @@ pub(crate) struct FlowShapingApplicationEvents {
 }
 
 impl FlowShapingApplicationEvents {
-    pub fn is_done_shaping(&self) {
+    pub fn done_shaping(&self) {
         self.insert(FlowShapingEvent::DoneShaping)
+    }
+
+    pub fn close_connection(&self) {
+        self.insert(FlowShapingEvent::CloseConnection)
     }
 
     pub fn reopen_stream(&self, url: Url) {
