@@ -167,8 +167,8 @@ impl Http3Client {
 
         let shaper = Rc::new(RefCell::new(
                 match neqo_csdef::debug_use_trace_file() {
-                    Some(filename) => {
-                        builder.pad_only_mode(false)
+                    Some((filename, is_pad_only)) => {
+                        builder.pad_only_mode(is_pad_only)
                             .from_csv(&filename)
                             .expect("unable to create shaper from trace file")
                     },

@@ -148,13 +148,15 @@ impl FlowShaper {
                 csv::Writer::from_writer(writer)
             });
 
-        FlowShaper{
+        let result = FlowShaper{
             config,
             target,
             dummy_id_file,
             pad_only_mode: pad_only_mode,
             ..FlowShaper::default()
-        }
+        };
+        qtrace!("New flow shaper created {:?}", result);
+        result
     }
 
     /// Start shaping the traffic using the current time as the reference
