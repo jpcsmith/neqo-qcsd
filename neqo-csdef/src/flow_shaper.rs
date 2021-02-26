@@ -201,7 +201,7 @@ impl FlowShaper {
             };
 
             if let Some(index) = to_remove {
-                qtrace!("Popping packet from trace. {} remaining", self.target.len());
+                qtrace!("Popping packet from trace, remaining: {}", (self.target.len() - 1));
                 self.target.remove(index);
             } else {
                 break;
@@ -246,8 +246,13 @@ impl FlowShaper {
 
         // check dequeues empty, if so send connection close event
         if self.target.is_empty() {
-            qdebug!([self], "shaping complete, notify client");
-            self.application_events.is_done_shaping();
+            if self.pad_only_mode {
+                qdebug!([self], "padding complete, notifying client");
+                self.application_events.done_shaping();
+            } else {
+                qdebug!([self], "shaping complete, closing connection");
+                self.application_events.close_connection();
+            }
         }
     }
 
@@ -260,23 +265,23 @@ impl FlowShaper {
         assert!(amount > 0);
         let amount = u64::from(amount);
         let mut remaining = amount;
-        qtrace!([self], "attempting to push {} bytes of data.", amount);
+        qtrace!([self], "attempting to push data: {}", amount);
 
         if !self.pad_only_mode && remaining > 0 {
             let pushed = self.app_streams.push_data(remaining);
-            qdebug!([self], "pushed {} application bytes", pushed);
+            qdebug!([self], "pushed bytes: {{ source: \"app-stream\", bytes: {} }}", pushed);
             remaining -= pushed;
         }
 
         if remaining > 0 {
             let pushed = self.chaff_streams.push_data(remaining);
-            qdebug!([self], "pushed {} chaff-stream bytes", pushed);
+            qdebug!([self], "pushed bytes: {{ source: \"chaff-stream\", bytes: {} }}", pushed);
             remaining -= pushed;
         }
 
         if remaining > 0 {
             self.events.borrow_mut().send_pad_frames(u32::try_from(remaining).unwrap());
-            qdebug!([self], "pushed {} padding bytes", remaining);
+            qdebug!([self], "pushed bytes: {{ source: \"padding\", bytes: {} }}", remaining);
         }
 
         // Since we can send padding bytes, we always push the full amount
@@ -289,13 +294,13 @@ impl FlowShaper {
 
         if !self.pad_only_mode && self.app_streams.can_pull() {
             let pulled = self.app_streams.pull_data(remaining);
-            qdebug!([self], "pulled {} application data", pulled);
+            qdebug!([self], "pulled bytes: {{ source: \"app-stream\", bytes: {} }}", pulled);
             remaining -= pulled;
         }
 
         if remaining > 0 && self.chaff_streams.can_pull() {
             let pulled = self.chaff_streams.pull_data(remaining);
-            qdebug!([self], "pulled {} chaff data", pulled);
+            qdebug!([self], "pulled bytes: {{ source: \"chaff-stream\", bytes: {} }}", pulled);
             remaining -= pulled;
         } else if remaining > 0 && !self.chaff_streams.can_pull() {
             qwarn!([self], "No chaff streams with available pull capacity.");
@@ -395,6 +400,16 @@ impl FlowShaper {
             false
         }
     }
+
+    pub fn is_recv_throttled(&self, stream_id: u64) -> bool {
+        if StreamId::is_bidi(stream_id.into()) {
+            self.get_stream(&stream_id)
+                .expect("Stream to already be tracked.")
+                .is_recv_throttled()
+        } else {
+            false
+        }
+    }
 }
 
 impl Display for FlowShaper {
@@ -425,9 +440,10 @@ impl HEventConsumer for FlowShaper {
     }
 
     fn on_http_request_sent(&mut self, stream_id: u64, url: &Url, is_chaff: bool) {
-        let streams = if is_chaff {
-            qdebug!([self], "notified of chaff request sent on stream {}", stream_id);
+        qdebug!([self], "notified of http reqeuest sent \
+                {{ stream_id: {}, url: {}, is_chaff: {} }}", stream_id, url, is_chaff);
 
+        let streams = if is_chaff {
             if let Some(writer) = self.dummy_id_file.as_mut() {
                 writer.write_record(&[stream_id.to_string()])
                     .expect("Failed writing dummy stream id");
@@ -436,8 +452,6 @@ impl HEventConsumer for FlowShaper {
 
             &mut self.chaff_streams
         } else {
-            qdebug!([self], "notified of request sent on stream {}", stream_id);
-
             &mut self.app_streams
         };
 
