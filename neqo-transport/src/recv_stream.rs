@@ -22,6 +22,7 @@ use crate::flow_mgr::FlowMgr;
 use crate::stream_id::StreamId;
 use crate::{AppError, Error, Res};
 use neqo_common::qtrace;
+use neqo_csdef::flow_shaper::FlowShaper;
 
 const RX_STREAM_DATA_WINDOW: u64 = 0x10_0000; // 1MiB
 
@@ -357,7 +358,7 @@ pub struct RecvStream {
     state: RecvStreamState,
     flow_mgr: Rc<RefCell<FlowMgr>>,
     conn_events: ConnectionEvents,
-    automatic_flowc_updates: bool,
+    flow_shaper: Option<Rc<RefCell<FlowShaper>>>,
 }
 
 impl RecvStream {
@@ -372,8 +373,13 @@ impl RecvStream {
             state: RecvStreamState::new(max_stream_data),
             flow_mgr,
             conn_events,
-            automatic_flowc_updates: true,
+            flow_shaper: None,
         }
+    }
+
+    pub fn with_flow_shaper(mut self, flow_shaper: Option<Rc<RefCell<FlowShaper>>>) -> Self {
+        self.flow_shaper = flow_shaper;
+        self
     }
 
     fn set_state(&mut self, new_state: RecvStreamState) {
@@ -481,8 +487,10 @@ impl RecvStream {
 
     /// If we should tell the sender they have more credit, return an offset
     pub fn maybe_send_flowc_update(&mut self) {
-        if !self.automatic_flowc_updates {
-            return;
+        if let Some(fs) = self.flow_shaper.as_ref() {
+            if fs.borrow_mut().is_recv_throttled(self.stream_id.as_u64()) {
+                return;
+            }
         }
 
         // Only ever needed if actively receiving and not in SizeKnown state
@@ -526,10 +534,6 @@ impl RecvStream {
                 .borrow_mut()
                 .max_stream_data(self.stream_id, new_max);
         }
-    }
-
-    pub fn disable_automatic_flowc(&mut self) {
-        self.automatic_flowc_updates = false;
     }
 
     pub fn max_stream_data(&self) -> Option<u64> {

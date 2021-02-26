@@ -2447,7 +2447,7 @@ impl Connection {
                             recv_initial_max_stream_data,
                             self.flow_mgr.clone(),
                             self.events.clone(),
-                        ),
+                        ).with_flow_shaper(self.flow_shaper.clone()),
                     );
 
                     if next_stream_id.is_bidi() {
@@ -2484,14 +2484,6 @@ impl Connection {
             self.send_streams.get_mut(stream_id).ok(),
             self.recv_streams.get_mut(&stream_id),
         ))
-    }
-
-    pub fn disable_automatic_flowc(&mut self, stream_id: u64) {
-        if let Ok((_, Some(rs))) = self.obtain_stream(StreamId::new(stream_id)) {
-            rs.disable_automatic_flowc();
-        } else {
-            panic!("cannot disable flow control on non-existent stream");
-        }
     }
 
     /// Create a stream.
@@ -2605,7 +2597,7 @@ impl Connection {
                         recv_initial_max_stream_data,
                         self.flow_mgr.clone(),
                         self.events.clone(),
-                    ),
+                    ).with_flow_shaper(self.flow_shaper.clone()),
                 );
 
                 new_id.as_u64()
