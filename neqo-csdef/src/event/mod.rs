@@ -101,17 +101,21 @@ impl FlowShapingEvents {
         assert!(self.queued_msd >= amount);
         self.queued_msd -= amount;
     }
+}
 
-    #[must_use]
-    pub fn next_event(&self) -> Option<FlowShapingEvent> {
+
+impl Provider for FlowShapingEvents {
+    type Event = FlowShapingEvent;
+
+    fn next_event(&mut self) -> Option<Self::Event> {
         self.events.borrow_mut().pop_front()
     }
 
-    #[must_use]
-    pub fn has_events(&self) -> bool {
+    fn has_events(&self) -> bool {
         !self.events.borrow().is_empty()
     }
 }
+
 
 #[derive(Debug, Default)]
 pub(crate) struct FlowShapingApplicationEvents {

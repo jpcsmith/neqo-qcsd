@@ -518,7 +518,7 @@ mod tests {
 
     mod throttled {
         use super::*;
-        use crate::event::FlowShapingEvent;
+        use crate::event::{ FlowShapingEvent, Provider };
 
         fn throttled_stream() -> StreamBuilder {
             let mut bldr = StreamBuilder::new(0);
@@ -736,7 +736,7 @@ mod tests {
 
     mod unthrottled {
         use super::*;
-        use crate::event::FlowShapingEvent;
+        use crate::event::{ FlowShapingEvent, Provider };
 
         fn unthrottled_stream() -> StreamBuilder {
             let mut builder = StreamBuilder::new(0);
