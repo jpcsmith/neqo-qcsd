@@ -4,7 +4,7 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 //
-// Taken from the neqo source code.
+// Copied from the neqo-common package.
 
 use std::iter::Iterator;
 use std::marker::PhantomData;
