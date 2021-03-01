@@ -1,3 +1,5 @@
+mod provider;
+
 use std::collections::VecDeque;
 use std::cell::RefCell;
 use std::fmt::Display;
@@ -5,6 +7,9 @@ use url::Url;
 
 use neqo_common::qdebug;
 use crate::stream_id::StreamId;
+
+pub use self::provider::Provider;
+
 
 pub trait HEventConsumer {
     fn awaiting_header_data(&mut self, stream_id: u64, min_remaining: u64);
@@ -130,14 +135,16 @@ impl FlowShapingApplicationEvents {
     fn insert(&self, event: FlowShapingEvent) {
         self.events.borrow_mut().push_back(event);
     }
+}
 
-    #[must_use]
-    pub fn next_event(&self) -> Option<FlowShapingEvent> {
+impl Provider for FlowShapingApplicationEvents {
+    type Event = FlowShapingEvent;
+
+    fn next_event(&mut self) -> Option<Self::Event> {
         self.events.borrow_mut().pop_front()
     }
 
-    #[must_use]
-    pub fn has_events(&self) -> bool {
+    fn has_events(&self) -> bool {
         !self.events.borrow().is_empty()
     }
 }

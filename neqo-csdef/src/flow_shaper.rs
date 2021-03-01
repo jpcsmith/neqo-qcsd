@@ -17,11 +17,11 @@ use crate::trace::{ Trace, Packet };
 use crate::stream_id::StreamId;
 use crate::defences::Defence;
 use crate::chaff_stream::{ ChaffStream, ChaffStreamMap };
-use crate::events::{
+use crate::event::{
     FlowShapingEvents, FlowShapingApplicationEvents, HEventConsumer,
-    StreamEventConsumer
+    StreamEventConsumer, Provider
 };
-pub use crate::events::{ FlowShapingEvent };
+pub use crate::event::{ FlowShapingEvent };
 
 const BLOCKED_STREAM_LIMIT: u64 = 1500;
 
@@ -358,7 +358,7 @@ impl FlowShaper {
         self.events.borrow().has_events()
     }
 
-    pub fn next_application_event(&self) -> Option<FlowShapingEvent> {
+    pub fn next_application_event(&mut self) -> Option<FlowShapingEvent> {
         self.application_events.next_event()
     }
 
