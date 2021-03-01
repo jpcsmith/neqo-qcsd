@@ -4,7 +4,7 @@ use std::cell::{ RefCell, Cell };
 use url::Url;
 use neqo_common::{qtrace, qwarn};
 use crate::stream_id::StreamId;
-use crate::events::FlowShapingEvents;
+use crate::event::FlowShapingEvents;
 
 const DEFAULT_RX_DATA_WINDOW: u64 = 1048576;
 const MAX_FRAME_OVERHEAD: u64 = 1500;
@@ -518,7 +518,7 @@ mod tests {
 
     mod throttled {
         use super::*;
-        use crate::events::FlowShapingEvent;
+        use crate::event::FlowShapingEvent;
 
         fn throttled_stream() -> StreamBuilder {
             let mut bldr = StreamBuilder::new(0);
@@ -736,7 +736,7 @@ mod tests {
 
     mod unthrottled {
         use super::*;
-        use crate::events::FlowShapingEvent;
+        use crate::event::FlowShapingEvent;
 
         fn unthrottled_stream() -> StreamBuilder {
             let mut builder = StreamBuilder::new(0);

@@ -15,7 +15,7 @@ use neqo_common::{qdebug, qinfo, qtrace};
 use neqo_qpack::decoder::QPackDecoder;
 use neqo_transport::{AppError, Connection};
 use neqo_csdef::flow_shaper::FlowShaper;
-use neqo_csdef::events::HEventConsumer;
+use neqo_csdef::event::HEventConsumer;
 use std::cell::RefCell;
 use std::cmp::min;
 use std::collections::VecDeque;
