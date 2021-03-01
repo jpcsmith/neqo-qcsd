@@ -17,11 +17,11 @@ use crate::trace::{ Trace, Packet };
 use crate::stream_id::StreamId;
 use crate::defences::Defence;
 use crate::chaff_stream::{ ChaffStream, ChaffStreamMap };
-use crate::events::{
+use crate::event::{
     FlowShapingEvents, FlowShapingApplicationEvents, HEventConsumer,
-    StreamEventConsumer
+    StreamEventConsumer, Provider
 };
-pub use crate::events::{ FlowShapingEvent };
+pub use crate::event::{ FlowShapingEvent };
 
 const BLOCKED_STREAM_LIMIT: u64 = 1500;
 
@@ -358,7 +358,7 @@ impl FlowShaper {
         self.events.borrow().has_events()
     }
 
-    pub fn next_application_event(&self) -> Option<FlowShapingEvent> {
+    pub fn next_application_event(&mut self) -> Option<FlowShapingEvent> {
         self.application_events.next_event()
     }
 
@@ -658,7 +658,7 @@ mod tests {
             vec![(1, -1500), (3, 1350), (10, -700), (18, 500)], 1);
         shaper.process_timer_(10);
 
-        let events = shaper.events.borrow_mut();
+        let mut events = shaper.events.borrow_mut();
         assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(1350)));
         assert_eq!(shaper.target, Trace::new(&[(1, -1500), (10, -700), (18, 500)]));
     }
@@ -674,7 +674,7 @@ mod tests {
 
         shaper.process_timer_(5);
 
-        let events = shaper.events.borrow_mut();
+        let mut events = shaper.events.borrow_mut();
         assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
             stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 1500, increase: 1500
         }));
@@ -692,7 +692,7 @@ mod tests {
 
         shaper.process_timer_(14);
 
-        let events = shaper.events.borrow_mut();
+        let mut events = shaper.events.borrow_mut();
         assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(1350)));
         assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(600)));
         assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {

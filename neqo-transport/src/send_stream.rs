@@ -18,7 +18,7 @@ use smallvec::SmallVec;
 
 use neqo_common::{qdebug, qerror, qinfo, qtrace};
 use neqo_csdef::flow_shaper::FlowShaper;
-use neqo_csdef::events::StreamEventConsumer;
+use neqo_csdef::event::StreamEventConsumer;
 
 use crate::events::ConnectionEvents;
 use crate::flow_mgr::FlowMgr;

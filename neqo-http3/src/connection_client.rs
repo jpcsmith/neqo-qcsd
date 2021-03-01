@@ -26,7 +26,7 @@ use neqo_transport::{
 };
 use neqo_csdef::ConfigFile;
 use neqo_csdef::flow_shaper::{ FlowShaper, FlowShaperBuilder, FlowShapingEvent };
-use neqo_csdef::events::HEventConsumer;
+use neqo_csdef::event::HEventConsumer;
 use neqo_csdef::defences::{ FrontDefence, FrontConfig };
 use std::cell::RefCell;
 use std::fmt::Display;
@@ -738,7 +738,7 @@ impl Http3Client {
         qtrace!([self], "Check FlowShaping events");
 
         while let Some(e) = self.flow_shaper.as_ref().and_then(
-            |fs| fs.borrow().next_application_event()
+            |fs| fs.borrow_mut().next_application_event()
         ) {
             qdebug!([self], "check_flow_shaping_events - event {:?}.", e);
             match e {
