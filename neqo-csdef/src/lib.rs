@@ -5,6 +5,7 @@ pub mod event;
 pub mod trace;
 mod error;
 mod chaff_stream;
+mod chaff_manager;
 
 pub use crate::error::{
     Error, ErrorKind, Result

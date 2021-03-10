@@ -59,7 +59,6 @@ impl RecvState {
         }
     }
 
-    #[allow(dead_code)]
     fn msd_available(&self) -> u64 {
         match self {
             Self::ReceivingHeaders { max_stream_data, max_stream_data_limit, .. }
@@ -214,6 +213,13 @@ impl ChaffStream {
             self.recv_state,
             RecvState::ReceivingHeaders{ .. } | RecvState::ReceivingData { .. }
         )
+    }
+
+    /// Note that this is not the opposite of is_open()
+    pub fn is_recv_closed(&self) -> bool {
+        // We consider a stream to be closed once the receive side is closed,
+        // as an HTTP request must precede the response.
+        matches!(self.recv_state, RecvState::Closed { .. })
     }
 
     /// Pull data on this stream. Return the amount of data pulled.
@@ -450,7 +456,6 @@ impl ChaffStreamMap {
         self.0.iter().any(|(_, stream)| stream.is_open())
     }
 
-    #[allow(dead_code)]
     pub fn iter(&self) -> std::collections::hash_map::Iter<u64, ChaffStream> {
         self.0.iter()
     }
