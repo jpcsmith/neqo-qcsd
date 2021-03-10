@@ -26,7 +26,7 @@ pub trait StreamEventConsumer {
 }
 
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
 pub enum FlowShapingEvent {
     SendMaxData(u64),
     SendMaxStreamData {
@@ -37,7 +37,8 @@ pub enum FlowShapingEvent {
     SendPaddingFrames(u32),
     CloseConnection,
     ReopenStream(Url),
-    DoneShaping
+    DoneShaping,
+    RequestResource { url: Url, headers: Vec<(String, String)> },
 }
 
 #[derive(Debug, Default)]
@@ -124,6 +125,13 @@ pub(crate) struct FlowShapingApplicationEvents {
 }
 
 impl FlowShapingApplicationEvents {
+    pub fn request_chaff_resource(&self, url: &Url, headers: &Vec<(String, String)>) {
+        self.insert(FlowShapingEvent::RequestResource { 
+            url: url.clone(),
+            headers: headers.clone(),
+        });
+    }
+
     pub fn done_shaping(&self) {
         self.insert(FlowShapingEvent::DoneShaping)
     }
