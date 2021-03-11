@@ -124,6 +124,7 @@ impl SendState {
 pub(crate) struct ChaffStream {
     stream_id: StreamId,
     url: Url,
+    initial_msd_limit: Option<u64>,
     recv_state: RecvState,
     send_state: SendState,
     events: Rc<RefCell<FlowShapingEvents>>,
@@ -144,9 +145,17 @@ impl ChaffStream {
             send_state: if throttled { SendState::throttled() }
                         else { SendState::Unthrottled },
             events,
+            initial_msd_limit: None,
         };
         qtrace!([stream], "stream created {:?}", stream);
         stream
+    }
+
+    pub fn with_msd_limit(mut self, msd_limit: u64) -> Self {
+        assert!(matches!(self.recv_state, RecvState::Created { .. }));
+        assert!(msd_limit > 0, "cannot create with a zero msd limit");
+        self.initial_msd_limit = Some(msd_limit);
+        self
     }
 
     pub fn url(&self) -> &Url {
@@ -174,7 +183,10 @@ impl ChaffStream {
             RecvState::Created { initial_msd, throttled: true } => {
                 RecvState::ReceivingHeaders {
                     max_stream_data: initial_msd,
-                    max_stream_data_limit: initial_msd,
+                    max_stream_data_limit: match self.initial_msd_limit {
+                        Some(limit) => limit,
+                        None => initial_msd,
+                    },
                     data_consumed: 0,
                 }
             },

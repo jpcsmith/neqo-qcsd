@@ -468,6 +468,9 @@ impl HEventConsumer for FlowShaper {
         qdebug!([self], "notified of http reqeuest sent \
                 {{ stream_id: {}, url: {}, is_chaff: {} }}", stream_id, url, is_chaff);
 
+        let stream = ChaffStream::new(
+            stream_id, url.clone(), self.events.clone(), BLOCKED_STREAM_LIMIT,
+            is_chaff || !self.pad_only_mode);
         let streams = if is_chaff {
             if let Some(writer) = self.dummy_id_file.as_mut() {
                 writer.write_record(&[stream_id.to_string()])
@@ -480,9 +483,7 @@ impl HEventConsumer for FlowShaper {
             &mut self.app_streams
         };
 
-        streams.insert(ChaffStream::new(
-                stream_id, url.clone(), self.events.clone(), BLOCKED_STREAM_LIMIT,
-                is_chaff || !self.pad_only_mode));
+        streams.insert(stream);
 
         qtrace!([self], "chaff-streams: {}, app-streams: {}", self.chaff_streams.len(),
                 self.app_streams.len());
