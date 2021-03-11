@@ -15,6 +15,7 @@ pub trait HEventConsumer {
     fn awaiting_header_data(&mut self, stream_id: u64, min_remaining: u64);
     fn on_data_frame(&mut self, stream_id: u64, length: u64);
     fn on_http_request_sent(&mut self, stream_id: u64, url: &Url, is_chaff: bool);
+    fn on_http_ready(&mut self);
 }
 
 pub trait StreamEventConsumer {
@@ -36,7 +37,6 @@ pub enum FlowShapingEvent {
     },
     SendPaddingFrames(u32),
     CloseConnection,
-    ReopenStream(Url),
     DoneShaping,
     RequestResource { url: Url, headers: Vec<(String, String)> },
 }
@@ -138,10 +138,6 @@ impl FlowShapingApplicationEvents {
 
     pub fn close_connection(&self) {
         self.insert(FlowShapingEvent::CloseConnection)
-    }
-
-    pub fn reopen_stream(&self, url: Url) {
-        self.insert(FlowShapingEvent::ReopenStream(url))
     }
 
     fn insert(&self, event: FlowShapingEvent) {

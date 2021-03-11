@@ -750,26 +750,14 @@ impl Http3Client {
                 FlowShapingEvent::CloseConnection => {
                     self.close(Instant::now(), 0, "kthx4shaping!");
                 },
-                FlowShapingEvent::ReopenStream(url) => {
-                    let headers: Header = (String::new(),String::new()); // TODO (ldolfi): figure out headers
-                    match self.fetch_dummy(
-                        Instant::now(),
-                        "GET",
-                        &url.scheme(),
-                        &url.host_str().unwrap(),
-                        &url.path(),
-                        &[headers]
-                    ) {
-                        Ok(stream_id) => {
-                            println!(
-                                "Successfully created new dummy stream id {} for resource {}",
-                                stream_id, url
-                            );
-                        },
-                        Err(e) => {
-                            panic!("Can't open dummy stream {}", e);
-                        }
-                    }
+                FlowShapingEvent::RequestResource { url, headers} => {
+                    let stream_id = self.fetch_dummy(
+                            Instant::now(), "GET", &url.scheme(), &url.host_str().unwrap(),
+                            &url.path(), &headers)
+                        .expect("cannot open dummpy stream");
+
+                    println!("Successfully created new dummy stream id {} for resource {}",
+                             stream_id, url);
                 },
                 _ => {}
             };

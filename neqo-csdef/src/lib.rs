@@ -13,6 +13,7 @@ pub use crate::error::{
 
 use std::{ env, fs, io };
 use serde::Deserialize;
+use url::Url;
 
 
 trait Env {
@@ -90,6 +91,27 @@ impl ConfigFile {
             .or(Err(Error::from(io::Error::new(io::ErrorKind::Other, "Invalid TOML file."))))
     }
 }
+
+
+#[derive(Debug, Eq, PartialEq, Hash, Clone)]
+pub struct Resource {
+    url: Url,
+    headers: Vec<(String, String)>,
+    length: u64,
+}
+
+impl Resource {
+    fn new(url: Url, headers: Vec<(String, String)>, length: u64) -> Self {
+        Resource { url, headers, length }
+    }
+}
+
+impl From<Url> for Resource {
+    fn from(url: Url) -> Self {
+        Resource::new(url, Vec::new(), 0)
+    }
+}
+
 
 
 #[cfg(test)]

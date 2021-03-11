@@ -21,6 +21,8 @@ use crate::event::{
     FlowShapingEvents, FlowShapingApplicationEvents, HEventConsumer,
     StreamEventConsumer, Provider
 };
+use crate::chaff_manager::ChaffManager;
+use crate::Resource;
 pub use crate::event::{ FlowShapingEvent };
 
 const BLOCKED_STREAM_LIMIT: u64 = 1500;
@@ -100,7 +102,6 @@ impl FlowShaperBuilder {
 
 /// Shaper for the connection. Assumes that it operates on the client,
 /// and not the server.
-#[derive(Default)]
 pub struct FlowShaper {
     /// General configuration
     config: Config,
@@ -115,7 +116,8 @@ pub struct FlowShaper {
 
     /// Event Queues
     events: Rc<RefCell<FlowShapingEvents>>,
-    application_events: FlowShapingApplicationEvents,
+    application_events: Rc<RefCell<FlowShapingApplicationEvents>>,
+    chaff_manager: ChaffManager,
 
     /// Streams used for sending chaff traffic
     chaff_streams: ChaffStreamMap,
@@ -124,6 +126,23 @@ pub struct FlowShaper {
     /// CSV Writer for debug logging of dummy ids
     dummy_id_file: Option<csv::Writer<std::fs::File>>,
 }
+
+impl Default for FlowShaper {
+    fn default() -> Self {
+        let application_events = Rc::new(RefCell::new(
+                FlowShapingApplicationEvents::default()
+        ));
+        qtrace!("New flow shaper created");
+        let result = FlowShaper {
+            chaff_manager: ChaffManager::new(5, 1000000, application_events.clone()),
+            application_events,
+            .. Default::default()
+        };
+        qtrace!("New flow shaper created");
+        result
+    }
+}
+
 
 
 impl FlowShaper {
@@ -148,12 +167,18 @@ impl FlowShaper {
                 csv::Writer::from_writer(writer)
             });
 
+        let application_events = Rc::new(RefCell::new(FlowShapingApplicationEvents::default()));
         let result = FlowShaper{
             config,
             target,
             dummy_id_file,
             pad_only_mode: pad_only_mode,
-            ..FlowShaper::default()
+            app_streams: Default::default(),
+            chaff_manager: ChaffManager::new(5, 1000000, application_events.clone()),
+            application_events: application_events,
+            chaff_streams: Default::default(),
+            start_time: None,
+            events: Default::default(),
         };
         qtrace!("New flow shaper created {:?}", result);
         result
@@ -250,10 +275,10 @@ impl FlowShaper {
         if self.target.is_empty() {
             if self.pad_only_mode {
                 qdebug!([self], "padding complete, notifying client");
-                self.application_events.done_shaping();
+                self.application_events.borrow_mut().done_shaping();
             } else {
                 qdebug!([self], "shaping complete, closing connection");
-                self.application_events.close_connection();
+                self.application_events.borrow_mut().close_connection();
             }
         }
     }
@@ -359,12 +384,12 @@ impl FlowShaper {
     }
 
     pub fn next_application_event(&mut self) -> Option<FlowShapingEvent> {
-        self.application_events.next_event()
+        self.application_events.borrow_mut().next_event()
     }
 
     #[must_use]
     pub fn has_application_events(&self) -> bool {
-        self.application_events.has_events()
+        self.application_events.borrow_mut().has_events()
     }
 
     fn get_stream_mut(&mut self, stream_id: &u64) -> Option<&mut ChaffStream> {
@@ -379,12 +404,6 @@ impl FlowShaper {
             Some(stream) => Some(stream),
             None => self.app_streams.get(stream_id),
         }
-    }
-
-    fn maybe_fetch_chaff(&mut self, url: &Url) {
-        // TODO: Ensure sufficient chaff data available
-        qdebug!([self], "reopenning dummy stream for URL {}", url);
-        self.application_events.reopen_stream(url.clone());
     }
 
     pub fn send_budget_available(&self, stream_id: u64) -> u64 {
@@ -439,6 +458,10 @@ impl HEventConsumer for FlowShaper {
         self.get_stream_mut(&stream_id)
             .expect("Stream to already be tracked.")
             .on_data_frame(length);
+    }
+
+    fn on_http_ready(&mut self) {
+        self.chaff_manager.start();
     }
 
     fn on_http_request_sent(&mut self, stream_id: u64, url: &Url, is_chaff: bool) {
@@ -521,10 +544,12 @@ impl StreamEventConsumer for FlowShaper {
         let stream = self.get_stream_mut(&stream_id)
             .expect("Stream should be tracked.");
         stream.close_receiving();
-        let url = stream.url().clone();
+
+        let resource = Resource::new(stream.url().clone(), vec![], stream.data_length());
+        self.chaff_manager.add_resource(resource);
 
         if self.chaff_streams.contains(&stream_id) {
-            self.maybe_fetch_chaff(&url);
+            self.chaff_manager.request_chaff_streams(&self.chaff_streams);
         }
     }
 }

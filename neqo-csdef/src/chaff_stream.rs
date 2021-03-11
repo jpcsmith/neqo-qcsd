@@ -195,6 +195,10 @@ impl ChaffStream {
         self.recv_state = next_state;
     }
 
+    pub fn data_length(&self) -> u64 {
+        self.recv_state.data_length().unwrap_or(0)
+    }
+
     pub fn close_receiving(&mut self) {
         let closed_state = RecvState::Closed {
             data_length: self.recv_state.data_length().unwrap_or(0)
