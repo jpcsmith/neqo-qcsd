@@ -3,33 +3,10 @@ use std::cell::RefCell;
 use std::convert::TryInto;
 use std::collections::HashMap;
 use url::Url;
+use neqo_common::qtrace;
 use crate::event::FlowShapingApplicationEvents;
 use crate::chaff_stream::ChaffStreamMap;
-
-
-#[derive(Debug, Eq, PartialEq, Hash, Clone)]
-pub(crate) struct Resource {
-    url: Url,
-    headers: Vec<(String, String)>,
-    length: u64,
-}
-
-impl Resource {
-    fn new(url: Url, headers: Vec<(String, String)>, length: u64) -> Self {
-        Resource { url, headers, length }
-    }
-
-    fn with_length(mut self, length: u64) -> Self {
-        self.length = length;
-        self
-    }
-}
-
-impl From<Url> for Resource {
-    fn from(url: Url) -> Self {
-        Resource::new(url, Vec::new(), 0)
-    }
-}
+use crate::Resource;
 
 
 macro_rules! http_hdr {
@@ -52,7 +29,7 @@ pub(crate) struct ChaffManager {
 }
 
 impl ChaffManager {
-    fn new(
+    pub fn new(
         max_streams: u32, 
         low_watermark: u64,
         events: Rc<RefCell<FlowShapingApplicationEvents>>
@@ -69,7 +46,10 @@ impl ChaffManager {
     /// Add a resource to be tracked by the chaff manager, replacing any existing
     /// resource entries with the same URL.
     pub fn add_resource(&mut self, resource: Resource) {
-        self.resources.insert(resource.url.clone(), resource);
+        qtrace!("[ChaffManager] Adding resource {:?}", resource);
+        if let Some(old) = self.resources.insert(resource.url.clone(), resource) {
+            qtrace!("[ChaffManager] Replacd resource {:?}", old);
+        }
     }
 
     /// Called when the HTTP stack is ready and able to send requests.
@@ -207,7 +187,7 @@ mod tests {
         manager.start();
 
         let url = url!("https://z.com");
-        manager.add_resource(Resource::from(url.clone()).with_length(25000));
+        manager.add_resource(Resource::new(url.clone(), vec![], 25000));
 
         assert_eq!(manager.resources.get(&url), Some(
                 &Resource { url: url.clone(), headers: vec![], length: 25000 }));
@@ -219,10 +199,10 @@ mod tests {
         let mut manager = chaff_manager();
         manager.start();
 
-        manager.add_resource(Resource::from(url.clone()).with_length(15000));
+        manager.add_resource(Resource::new(url.clone(), vec![], 15000));
         assert_eq!(manager.resources.get(&url),
                    Some(&Resource { url: url.clone(), headers: vec![], length: 15000 }));
-        manager.add_resource(Resource::from(url.clone()).with_length(4000));
+        manager.add_resource(Resource::new(url.clone(), vec![], 4000));
         assert_eq!(manager.resources.get(&url),
                    Some(&Resource { url: url.clone(), headers: vec![], length: 4000 }));
     }
@@ -318,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn chaff_resource_replaces_identity_encoding() {
+    fn modify_headers_replaces_identity_encoding() {
         let modified = ChaffManager::modify_headers(&vec![
             http_hdr!("Accept-Encoding", "gzip"),
             http_hdr!("ACCEPT-ENCODING", "zip")
@@ -328,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn chaff_resource_removes_conditional_headers() {
+    fn modify_headers_removes_conditional_headers() {
         let modified = ChaffManager::modify_headers(&vec![
             http_hdr!("Accept", "text/html"),
             http_hdr!("If-Modified-Since", "Mon, 18 Jul 2016 02:36:04 GMT"),
