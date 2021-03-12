@@ -15,7 +15,8 @@ fn rayleigh_cdf_inv(u: f64, sigma: f64) -> f64{
 }
 
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(default)]
 pub struct FrontConfig {
     /// The number of dummy bursts sent by the client
     pub n_client_packets: u32,

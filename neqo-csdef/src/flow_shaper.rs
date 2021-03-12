@@ -35,13 +35,20 @@ fn debug_save_ids_path() -> Option<String> {
     }
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Eq, PartialEq)]
+#[serde(default)]
 pub struct Config {
     /// The control interval in milliseconds
-    control_interval: u64,
-    initial_md: u64,
-    rx_stream_data_window: u64,
-    local_md: u64,
+    pub control_interval: u64,
+    pub initial_md: u64,
+    pub rx_stream_data_window: u64,
+    pub local_md: u64,
+
+    /// The maximum number of chaff streams to open
+    pub max_chaff_streams: u32,
+    /// The amount of chaff data to retain available 
+    pub low_watermark: u64,
+
 }
 
 impl Default for Config {
@@ -51,6 +58,8 @@ impl Default for Config {
             initial_md: 3000,
             rx_stream_data_window: 1048576,
             local_md: 4611686018427387903,
+            max_chaff_streams: 5,
+            low_watermark: 1_000_000,
         }
     }
 }
@@ -146,25 +155,13 @@ pub struct FlowShaper {
 
 impl Default for FlowShaper {
     fn default() -> Self {
-        let application_events = Rc::new(RefCell::new(
-                FlowShapingApplicationEvents::default()
-        ));
-        qtrace!("New flow shaper created");
-        let result = FlowShaper {
-            chaff_manager: ChaffManager::new(20, 1000000, application_events.clone()),
-            application_events,
-            .. Default::default()
-        };
-        qtrace!("New flow shaper created");
-        result
+        FlowShaper::new(Config::default(), &Trace::empty(), false)
     }
 }
 
 
-
 impl FlowShaper {
     pub fn new(config: Config, trace: &Trace, pad_only_mode: bool) -> FlowShaper {
-        assert!(trace.len() > 0);
         if let Some(filename) = dummy_schedule_log_file() {
             trace.to_file(&filename).expect("Unable to log trace.");
         }
@@ -184,17 +181,19 @@ impl FlowShaper {
                 csv::Writer::from_writer(writer)
             });
 
-        let application_events = Rc::new(RefCell::new(FlowShapingApplicationEvents::default()));
+        let application_events = Rc::new(RefCell::new(
+                FlowShapingApplicationEvents::default()));
+        let chaff_manager = ChaffManager::new(
+            config.max_chaff_streams, config.low_watermark, application_events.clone());
         let result = FlowShaper{
-            config,
-            target,
+            config, target,
             dummy_id_file,
-            pad_only_mode: pad_only_mode,
-            app_streams: Default::default(),
-            chaff_manager: ChaffManager::new(20, 1000000, application_events.clone()),
-            application_events: application_events,
-            chaff_streams: Default::default(),
+            pad_only_mode,
+            chaff_manager,
+            application_events,
             start_time: None,
+            app_streams: Default::default(),
+            chaff_streams: Default::default(),
             events: Default::default(),
         };
         qtrace!("New flow shaper created {:?}", result);

@@ -88,7 +88,7 @@ pub fn dummy_schedule_log_file() -> Option<String> {
 }
 
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 pub struct ConfigFile {
     pub flow_shaper: Option<flow_shaper::Config>,
     pub front_defence: Option<defences::FrontConfig>
@@ -138,7 +138,7 @@ impl From<Url> for Resource {
 
 
 #[cfg(test)]
-mod tests {
+mod lib_tests {
     use super::*;
     use std::env;
     use std::collections::HashMap;
@@ -218,5 +218,41 @@ mod tests {
             &[("CSDEF_INPUT_TRACE", "pathA.csv"), ("CSDEF_INPUT_TRACE_S", "pathB.csv"),]
         );
         trace_file_from_env(&env);
+    }
+
+    #[test]
+    fn partially_deserialise_flow_shaper() {
+        let config_txt = "
+        [flow_shaper]
+        control_interval = 10
+        ";
+
+        let config: ConfigFile = toml::from_str(config_txt).unwrap();
+
+        assert_eq!(config.front_defence, None);
+        assert_eq!(config.flow_shaper, 
+                   Some(flow_shaper::Config {
+                       control_interval: 10,
+                       ..flow_shaper::Config::default()
+                   }));
+    }
+
+    #[test]
+    fn partially_deserialise_front() {
+        let config_txt = "
+        [front_defence]
+        packet_size = 300
+        n_server_packets = 21
+        ";
+
+        let config: ConfigFile = toml::from_str(config_txt).unwrap();
+
+        assert_eq!(config.flow_shaper, None);
+        assert_eq!(config.front_defence, 
+                   Some(defences::FrontConfig {
+                       n_server_packets: 21,
+                       packet_size: 300,
+                       ..defences::FrontConfig::default()
+                   }));
     }
 }
