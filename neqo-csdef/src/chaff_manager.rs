@@ -30,7 +30,7 @@ pub(crate) struct ChaffManager {
 
 impl ChaffManager {
     pub fn new(
-        max_streams: u32, 
+        max_streams: u32,
         low_watermark: u64,
         events: Rc<RefCell<FlowShapingApplicationEvents>>
     ) -> Self {
@@ -56,7 +56,7 @@ impl ChaffManager {
     }
 
     /// Called when the HTTP stack is ready and able to send requests.
-    /// Requests one of each resource added up to this point. 
+    /// Requests one of each resource added up to this point.
     pub fn start(&mut self) {
         assert!(!self.has_started, "already started");
         qtrace!([self], "starting with {} initial resources", self.resources.len());
@@ -65,6 +65,10 @@ impl ChaffManager {
             self.request(&resource);
         }
         self.has_started = true;
+    }
+
+    pub fn has_started(&self) -> bool {
+        self.has_started
     }
 
     fn modify_headers(headers: &Vec<(String, String)>) -> Vec<(String, String)> {
@@ -78,13 +82,14 @@ impl ChaffManager {
 
     fn request(&self, resource: &Resource) {
         let headers = ChaffManager::modify_headers(&resource.headers);
-        qtrace!([self], "issued request for {} with headers: {:?}", resource.url, headers);
-        self.events.borrow_mut().request_chaff_resource(&resource.url, &headers);
+        let resource = resource.clone().with_headers(headers);
+        self.events.borrow_mut().request_chaff_resource(&resource);
+        qtrace!([self], "issued request for {:?}", resource);
     }
 
-    /// Request chaff streams such that the anticipated amount of data 
+    /// Request chaff streams such that the anticipated amount of data
     /// in total will be greater than the low watermark.
-    /// Will not attempt to create more than max_streams in total, but 
+    /// Will not attempt to create more than max_streams in total, but
     /// calling this function repeatedly without waiting for the streams to
     /// be created will result in too many streams being created.
     pub fn request_chaff_streams(&mut self, streams: &ChaffStreamMap) {
@@ -184,9 +189,9 @@ mod tests {
 
         let events: Vec<FSE> = events.borrow_mut().events().collect();
         let expected = [
-            FSE::RequestResource{ url: url!("https://a.com"), headers: default_hdrs() },
-            FSE::RequestResource{ url: url!("https://b.com"), headers: default_hdrs() },
-            FSE::RequestResource{ url: url!("https://c.com"), headers: default_hdrs() },
+            FSE::RequestResource(Resource::new(url!("https://a.com"), default_hdrs(), 0)),
+            FSE::RequestResource(Resource::new(url!("https://b.com"), default_hdrs(), 0)),
+            FSE::RequestResource(Resource::new(url!("https://c.com"), default_hdrs(), 0)),
         ];
         assert_unord_eq!(&events, &expected);
     }
@@ -211,7 +216,7 @@ mod tests {
         assert_eq!(manager.resources.get(&url), Some(
                 &Resource { url: url.clone(), headers: vec![], length: 25000 }));
     }
- 
+
     #[test]
     fn tracks_last_resource_length() {
         let url = url!("https://y.com");
@@ -242,9 +247,9 @@ mod tests {
         let events: Vec<FSE> = manager.events.borrow_mut().events().collect();
 
         let expected_hdrs = [headers, vec![http_hdr!("accept-encoding", "identity")]].concat();
-        let expected: Vec<FSE> = std::iter::repeat(FSE::RequestResource {
-            url: url!("https://b.com"), headers: expected_hdrs
-        }).take(4).collect();
+        let expected: Vec<FSE> = std::iter::repeat(
+            FSE::RequestResource(Resource::new(url!("https://b.com"), expected_hdrs, 250_000))
+        ).take(4).collect();
 
         assert_unord_eq!(&events, &expected);
     }

@@ -110,6 +110,7 @@ impl SendState {
         }
     }
 
+    #[cfg(test)]
     pub fn name(&self) -> &str {
         match self {
             Self::Throttled { .. } => "Throttled [Send]",
@@ -155,6 +156,7 @@ impl ChaffStream {
         assert!(matches!(self.recv_state, RecvState::Created { .. }));
         assert!(msd_limit > 0, "cannot create with a zero msd limit");
         self.initial_msd_limit = Some(msd_limit);
+        qtrace!([&self], "updated MSD limit {}", msd_limit);
         self
     }
 
@@ -162,6 +164,7 @@ impl ChaffStream {
         &self.url
     }
 
+    #[cfg(test)]
     fn is_throttled(&self) -> bool {
         self.is_recv_throttled() || self.is_send_throttled()
     }
@@ -219,6 +222,7 @@ impl ChaffStream {
         self.recv_state = closed_state;
     }
 
+    #[cfg(test)]
     pub fn close_sending(&mut self) {
         qtrace!([self], "{} -> {}", self.send_state.name(), SendState::Closed.name());
         self.send_state = SendState::Closed;
@@ -243,8 +247,8 @@ impl ChaffStream {
         let msd_available = self.msd_available();
 
         match self.recv_state {
-            RecvState::ReceivingHeaders{ ref mut max_stream_data, .. }
-            | RecvState::ReceivingData{ ref mut max_stream_data, .. } => {
+            RecvState::ReceivingHeaders{ ref mut max_stream_data, max_stream_data_limit, .. }
+            | RecvState::ReceivingData{ ref mut max_stream_data, max_stream_data_limit, .. } => {
                 match std::cmp::min(amount, msd_available) {
                     0 => 0,
                     pull_amount => {
@@ -252,6 +256,10 @@ impl ChaffStream {
                         self.events.borrow_mut()
                             .send_max_stream_data(
                                 &self.stream_id, *max_stream_data, pull_amount);
+
+                        let new_msd = *max_stream_data;
+                        qtrace!([&self], "pulled data: {}, {}/{}", pull_amount, new_msd,
+                                max_stream_data_limit);
                         pull_amount
                     }
                 }
@@ -423,12 +431,19 @@ impl ChaffStreamMap {
     }
 
     /// Push up to the specified amount of data, return the acutal amount
-    /// pushed. Streams are selected in arbitrary order.
+    /// pushed. Streams are selected in order of their stream id.
     pub fn push_data(&mut self, amount: u64) -> u64 {
         let remaining = Cell::new(amount);
 
-        self.0.values_mut()
+        // Sort blocked streams in order of their open state and stream ID
+        // This places closed streams before open streams, and then lower 
+        // stream id first
+        let mut streams: Vec<&mut ChaffStream> = self.0.values_mut()
             .filter(|stream| stream.blocked_pending_bytes() > 0)
+            .collect();
+        streams.sort_by_key(|stream| (stream.is_open(), stream.stream_id));
+
+        streams.iter_mut()
             .take_while(|_| remaining.get() > 0)
             .for_each(|stream| {
                 let pushed = stream.push_data(remaining.get());
@@ -490,6 +505,7 @@ mod tests {
         stream_id: u64,
         throttled: bool,
         initial_msd: u64,
+        recv_open: bool,
         events: Rc<RefCell<FlowShapingEvents>>,
     }
 
@@ -499,6 +515,7 @@ mod tests {
                 stream_id: stream_id,
                 throttled: false,
                 initial_msd: 0,
+                recv_open: false,
                 events: Default::default()
             }
         }
@@ -518,10 +535,14 @@ mod tests {
             self
         }
 
+        fn with_recv_open(&mut self) -> &mut Self {
+            self.recv_open = true;
+            self
+        }
+
         fn opened(&mut self) -> ChaffStream {
-            let mut stream = self.build();
-            stream.open();
-            stream
+            self.recv_open = true;
+            self.build()
         }
 
         fn with_send_state(&mut self, state: SendState) -> ChaffStream {
@@ -531,9 +552,13 @@ mod tests {
         }
 
         fn build(&mut self) -> ChaffStream {
-            ChaffStream::new(
+            let mut stream = ChaffStream::new(
                 self.stream_id, Url::parse("https://www.example.com").unwrap(),
-                Default::default(), self.initial_msd, self.throttled)
+                Default::default(), self.initial_msd, self.throttled);
+            if self.recv_open {
+                stream.open();
+            }
+            stream
         }
     }
 
@@ -853,7 +878,7 @@ mod tests {
         }
 
         #[test]
-        fn test_push_data() {
+        fn push_data() {
             let mut map = ChaffStreamMap::default();
             let events: Rc<RefCell<FlowShapingEvents>> = Default::default();
             let initial_state = [(0, 100, 100), (4, 500, 300), (8, 600, 100)];
@@ -880,7 +905,7 @@ mod tests {
         }
 
         #[test]
-        fn test_push_data_partial() {
+        fn push_data_partial() {
             let mut map = ChaffStreamMap::default();
             let events: Rc<RefCell<FlowShapingEvents>> = Default::default();
             let initial_state = [(0, 300, 100), (4, 200, 200), (8, 600, 000)];
@@ -900,6 +925,44 @@ mod tests {
                 assert_eq!(stream.send_state.allowed_to_send(), *allowed);
                 assert_eq!(stream.send_state.pending_bytes(), *pending);
             }
+        }
+
+        #[test]
+        fn push_data_to_open() {
+            // Push data should first select streams that are not receive openned yet,
+            // so that the initial GET requests are sent
+            let mut map = ChaffStreamMap::default();
+            let events: Rc<RefCell<FlowShapingEvents>> = Default::default();
+
+            map.insert(throttled_stream(0).with_events(&events)
+                       .with_recv_open()
+                       .with_send_state(SendState::with_limits(300, 100)));
+            map.insert(throttled_stream(4).with_events(&events)
+                       .with_send_state(SendState::with_limits(200, 50)));
+            map.insert(throttled_stream(8).with_events(&events)
+                       .with_recv_open()
+                       .with_send_state(SendState::with_limits(1000, 50)));
+            map.insert(throttled_stream(12).with_events(&events)
+                       .with_send_state(SendState::with_limits(300, 0)));
+
+            let pushed = map.push_data(500);
+            assert_eq!(pushed, 500);
+
+            let stream = map.get(&4).unwrap();
+            assert_eq!(stream.send_state.allowed_to_send(), 200);
+            assert_eq!(stream.send_state.pending_bytes(), 200);
+
+            let stream = map.get(&12).unwrap();
+            assert_eq!(stream.send_state.allowed_to_send(), 300);
+            assert_eq!(stream.send_state.pending_bytes(), 300);
+
+            let stream = map.get(&0).unwrap();
+            assert_eq!(stream.send_state.allowed_to_send(), 150);
+            assert_eq!(stream.send_state.pending_bytes(), 300);
+
+            let stream = map.get(&8).unwrap();
+            assert_eq!(stream.send_state.allowed_to_send(), 50);
+            assert_eq!(stream.send_state.pending_bytes(), 1000);
         }
     }
 }
