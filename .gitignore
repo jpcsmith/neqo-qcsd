@@ -12,3 +12,6 @@ activate
 python/env
 # ignore TLS master secrets
 tests/out.log
+
+stdout.txt
+stderr.txt

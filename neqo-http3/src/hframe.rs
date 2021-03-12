@@ -12,6 +12,7 @@ use neqo_common::{
 use neqo_crypto::random;
 use neqo_transport::Connection;
 use neqo_csdef::flow_shaper::FlowShaper;
+use neqo_csdef::event::HEventConsumer;
 use std::convert::TryFrom;
 use std::mem;
 use std::cell::RefCell;

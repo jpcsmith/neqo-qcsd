@@ -32,7 +32,9 @@ use std::path::PathBuf;
 use std::process::exit;
 use std::rc::Rc;
 use std::time::Instant;
-use neqo_csdef::flow_shaper;
+use neqo_csdef::{ ConfigFile };
+use neqo_csdef::flow_shaper::{ self, FlowShaper, FlowShaperBuilder };
+use neqo_csdef::defences::{ FrontDefence, FrontConfig };
 
 use structopt::StructOpt;
 use url::{Origin, Url};
@@ -125,7 +127,7 @@ pub struct Args {
 
     #[structopt(long, number_of_values = 1)]
     /// Read URL dependencies from the the specified file. The file must
-    /// be a header-less CSV with "url, url-dependency" on each line, 
+    /// be a header-less CSV with "url, url-dependency" on each line,
     /// where url-dependency can be the empty string. All the URLs in
     /// the file will be added to the list of URLs to download.
     url_dependencies_from: Option<PathBuf>,
@@ -333,7 +335,6 @@ fn process_loop(
 struct Handler<'a> {
     streams: HashMap<u64, (Url, Option<File>)>,
     url_queue: VecDeque<Url>,
-    dummy_url_queue: VecDeque<Url>,
     all_paths: Vec<PathBuf>,
     args: &'a Args,
     key_update: KeyUpdateState,
@@ -353,17 +354,6 @@ impl<'a> Handler<'a> {
         }
     }
 
-    fn download_dummy_urls(&mut self, client: &mut Http3Client) {
-        loop {
-            if self.dummy_url_queue.is_empty(){
-                break;
-            }
-            if !self.download_next_dummy(client) {
-                break;
-            }
-        }
-    }
-
     fn download_next(&mut self, client: &mut Http3Client) -> bool {
         if self.key_update.needed() {
             println!("Deferring requests until first key update");
@@ -373,9 +363,9 @@ impl<'a> Handler<'a> {
         assert!(!self.url_queue.is_empty(), "download_next called with empty queue");
 
         let url = match self.url_queue.iter()
-            .position(|url| self.url_deps.borrow().is_downloadable(url)) 
+            .position(|url| self.url_deps.borrow().is_downloadable(url))
         {
-            Some(index) => { 
+            Some(index) => {
                 self.url_queue.swap_remove_front(index).unwrap()
             }
             None => {
@@ -417,50 +407,9 @@ impl<'a> Handler<'a> {
         }
     }
 
-    fn download_next_dummy(&mut self, client: &mut Http3Client) -> bool {
-        if self.key_update.needed() {
-            println!("Deferring requests until first key update");
-            return false;
-        }
-        let url = self
-            .dummy_url_queue
-            .pop_front()
-            .expect("download_next_dummy called with empty queue");
-        match client.fetch_dummy(
-            Instant::now(),
-            &self.args.method,
-            &url.scheme(),
-            &url.host_str().unwrap(),
-            &url.path(),
-            &to_headers(&self.args.header),
-        ) {
-            Ok(client_stream_id) => {
-                println!(
-                    "Successfully created dummy stream id {} for {}",
-                    client_stream_id, url
-                );
-
-                let _ = client.stream_close_send(client_stream_id);
-
-                true
-            }
-            e @ Err(Error::TransportError(TransportError::StreamLimitError))
-            | e @ Err(Error::StreamLimitError)
-            | e @ Err(Error::Unavailable) => {
-                println!("Cannot create dummy stream {:?}", e);
-                self.dummy_url_queue.push_front(url);
-                false
-            }
-            Err(e) => {
-                panic!("Can't create dummy stream {}", e);
-            }
-        }
-    }
-
     fn maybe_key_update(&mut self, c: &mut Http3Client) -> Res<()> {
         self.key_update.maybe_update(|| c.initiate_key_update())?;
         self.download_urls(c);
-        self.download_dummy_urls(c);
         Ok(())
     }
 
@@ -551,9 +500,6 @@ impl<'a> Handler<'a> {
                 }
                 Http3ClientEvent::StateChange(Http3State::Connected)
                 | Http3ClientEvent::RequestsCreatable => {
-                    if !neqo_csdef::debug_disable_shaping(){
-                        self.download_dummy_urls(client);
-                    }
                     self.download_urls(client);
                 }
                 Http3ClientEvent::FlowShapingDone => {
@@ -593,6 +539,42 @@ fn to_headers(values: &[impl AsRef<str>]) -> Vec<Header> {
         .collect()
 }
 
+
+fn build_flow_shaper(chaff_urls: &[Url]) -> Option<FlowShaper> {
+    if neqo_csdef::debug_disable_shaping() {
+        return None;
+    }
+
+    println!("Enabling connection shaping.");
+    let mut builder = FlowShaperBuilder::new();
+    let mut front_config = FrontConfig::default();
+
+    if let Some(filename) = neqo_csdef::shaper_config_file() {
+        let configs = ConfigFile::load(&filename)
+            .expect("Unable to load config file");
+
+        if let Some(config) = configs.flow_shaper {
+            builder.config(config);
+        }
+
+        if let Some(config) = configs.front_defence {
+            front_config = config;
+        }
+    }
+
+    builder.chaff_urls(chaff_urls);
+
+    Some(match neqo_csdef::debug_use_trace_file() {
+        Some((filename, is_pad_only)) => {
+            builder.pad_only_mode(is_pad_only)
+                .from_csv(&filename)
+                .expect("unable to create shaper from trace file")
+        },
+        None => builder.from_defence(&FrontDefence::new(front_config))
+    })
+}
+
+
 fn client(
     args: &Args,
     socket: UdpSocket,
@@ -610,13 +592,6 @@ fn client(
         _ => QuicVersion::default(),
     };
     let mut shaping = false;
-    let mut dummy_urls: VecDeque<Url> = VecDeque::new();
-    if !neqo_csdef::debug_disable_shaping() {
-        for url in &args.dummy_urls{
-            dummy_urls.push_back(url.clone());
-        }
-        shaping = true;
-    }
 
     let mut transport = Connection::new_client(
         hostname,
@@ -643,6 +618,11 @@ fn client(
         },
     );
 
+    if let Some(flow_shaper) = build_flow_shaper(&args.dummy_urls) {
+        client = client.with_flow_shaper(flow_shaper);
+        shaping = true;
+    }
+
     let qlog = qlog_new(args, hostname, client.connection_id())?;
     client.set_qlog(qlog);
 
@@ -650,7 +630,6 @@ fn client(
     let mut h = Handler {
         streams: HashMap::new(),
         url_queue: VecDeque::from(urls.to_vec()),
-        dummy_url_queue: VecDeque::from(dummy_urls),
         all_paths: Vec::new(),
         args: &args,
         key_update,
@@ -698,7 +677,7 @@ fn main() -> Res<()> {
 
     let url_deps = match &args.url_dependencies_from {
         Some(path_buf) => {
-            let (mut urls, dependencies) = 
+            let (mut urls, dependencies) =
                 dependency_tracker::load_dependencies(path_buf.as_path())
                 .expect("Invalid path or dependency csv.");
 

@@ -28,6 +28,7 @@ use neqo_crypto::{
     SecretAgentInfo, Server, ZeroRttChecker,
 };
 use neqo_csdef::flow_shaper::{ FlowShaper, FlowShapingEvent };
+use neqo_csdef::event::StreamEventConsumer;
 
 use crate::addr_valid::{AddressValidation, NewTokenState};
 use crate::cc::CongestionControlAlgorithm;
@@ -1574,19 +1575,12 @@ impl Connection {
                 }
             }
 
-            // Consider the stream as created
             if self.is_being_shaped() {
                 if let Some((Frame::Stream { stream_id, offset: 0, ..}, _)) = &frame {
-                    if !self.flow_shaper.as_ref().unwrap().borrow().is_shaping_stream(StreamId::as_u64(*stream_id)) {
-                        self.flow_shaper.as_ref().unwrap().borrow()
-                            .on_stream_created(stream_id.as_u64());
-                    } else {
-                        assert!(self.flow_shaper.as_ref().unwrap().borrow_mut()
-                            .open_for_shaping(stream_id.as_u64()));
-                    }
+                    self.flow_shaper.as_ref().unwrap().borrow_mut()
+                        .on_first_byte_sent(stream_id.as_u64());
                 }
             }
-
 
             if let Some((frame, token)) = frame {
                 ack_eliciting |= frame.ack_eliciting();
@@ -2043,7 +2037,7 @@ impl Connection {
                 if fin && self.is_being_shaped()
                 {
                     self.flow_shaper.as_ref().unwrap().borrow_mut()
-                        .on_stream_closed(stream_id.as_u64());
+                        .on_fin_received(stream_id.as_u64());
                 }
                 if let (_, Some(rs)) = self.obtain_stream(stream_id)? {
                     rs.inbound_stream_frame(fin, offset, data)?;
@@ -2453,7 +2447,7 @@ impl Connection {
                             recv_initial_max_stream_data,
                             self.flow_mgr.clone(),
                             self.events.clone(),
-                        ),
+                        ).with_flow_shaper(self.flow_shaper.clone()),
                     );
 
                     if next_stream_id.is_bidi() {
@@ -2474,7 +2468,7 @@ impl Connection {
                                 send_initial_max_stream_data,
                                 self.flow_mgr.clone(),
                                 self.events.clone(),
-                            ),
+                            ).with_flow_shaper(self.flow_shaper.clone()),
                         );
                     }
 
@@ -2490,14 +2484,6 @@ impl Connection {
             self.send_streams.get_mut(stream_id).ok(),
             self.recv_streams.get_mut(&stream_id),
         ))
-    }
-
-    pub fn disable_automatic_flowc(&mut self, stream_id: u64) {
-        if let Ok((_, Some(rs))) = self.obtain_stream(StreamId::new(stream_id)) {
-            rs.disable_automatic_flowc();
-        } else {
-            panic!("cannot disable flow control on non-existent stream");
-        }
     }
 
     /// Create a stream.
@@ -2552,7 +2538,7 @@ impl Connection {
                         initial_max_stream_data,
                         self.flow_mgr.clone(),
                         self.events.clone(),
-                    ),
+                    ).with_flow_shaper(self.flow_shaper.clone()),
                 );
 
                 new_id.as_u64()
@@ -2592,7 +2578,7 @@ impl Connection {
                         send_initial_max_stream_data,
                         self.flow_mgr.clone(),
                         self.events.clone(),
-                    ),
+                    ).with_flow_shaper(self.flow_shaper.clone()),
                 );
                 // From the local perspective, this is a local- originated BiDi stream. From the
                 // remote perspective, this is a remote-originated BiDi stream. Therefore, look at
@@ -2611,7 +2597,7 @@ impl Connection {
                         recv_initial_max_stream_data,
                         self.flow_mgr.clone(),
                         self.events.clone(),
-                    ),
+                    ).with_flow_shaper(self.flow_shaper.clone()),
                 );
 
                 new_id.as_u64()

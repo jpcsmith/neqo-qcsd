@@ -2,7 +2,7 @@ use std::time::Duration;
 use rand::Rng; // for rayleigh sampling
 use neqo_common::qinfo;
 use serde::Deserialize;
-use crate::Trace;
+use crate::trace::Trace;
 use crate::defences::Defence;
 
 
@@ -51,7 +51,7 @@ impl FrontDefence {
         FrontDefence{ config }
     }
 
-    fn sample_timestamps(&self, n_packets: u32) -> Trace {
+    fn sample_timestamps(&self, n_packets: u32) -> Vec<(Duration, i32)> {
         let config = &self.config;
 
         let n_packets: u64 = rand::thread_rng().gen_range(1, (n_packets + 1).into());
@@ -69,11 +69,15 @@ impl FrontDefence {
     pub fn create_trace(&self) -> Trace {
         qinfo!("Creating padding traces.");
 
-        self.sample_timestamps(self.config.n_server_packets)
+        let packets: Vec<(u32, i32)> = self
+            .sample_timestamps(self.config.n_server_packets)
             .into_iter()
             .map(|(t, l)| (t, l * -1))
             .chain(self.sample_timestamps(self.config.n_client_packets))
-            .collect()
+            .map(|(t, l)| (t.as_millis() as u32, l))
+            .collect();
+
+        Trace::new(&packets)
     }
 
 }
@@ -95,10 +99,10 @@ mod tests {
         }).create_trace();
 
         // All packets should be of absolute size 500
-        assert!(trace.iter().all(|(_, l)| l.abs() == 500));
+        assert!(trace.iter().all(|pkt| pkt.length() == 500));
 
         // Packets should be going in both directions
-        assert!(trace.iter().any(|(_, l)| *l < 0));
-        assert!(trace.iter().any(|(_, l)| *l > 0));
+        assert!(trace.iter().any(|pkt| pkt.signed_length() <= -500));
+        assert!(trace.iter().any(|pkt| pkt.signed_length() >= 500));
     }
 }
