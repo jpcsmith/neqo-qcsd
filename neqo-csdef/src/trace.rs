@@ -105,6 +105,10 @@ impl Trace {
         Trace(VecDeque::from(packets))
     }
 
+    pub fn empty() -> Self {
+        Trace(VecDeque::new())
+    }
+
     pub fn sampled(self, interval_ms: u32) -> Self {
         let mut packets: Vec<(u32, i32)> = self.0.into_iter()
             .map(|x| x.as_tuple())
