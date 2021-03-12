@@ -1,44 +1,38 @@
 use std::cmp::max;
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::collections::{ HashMap, VecDeque, HashSet };
+use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::env; // for reading env variables
 use std::fmt::Display;
 use std::fs::OpenOptions;
 use std::time::{ Duration, Instant };
-use csv::{self, Writer};
-use serde::{Deserialize};
+use serde::Deserialize;
 use url::Url;
 
-use neqo_common::{ qdebug, qwarn, qtrace };
+use neqo_common::{ qwarn, qdebug, qtrace };
 
 use crate::{ Result, dummy_schedule_log_file };
+use crate::trace::{ Trace, Packet };
 use crate::stream_id::StreamId;
 use crate::defences::Defence;
 use crate::chaff_stream::{ ChaffStream, ChaffStreamMap };
-use crate::events::{ FlowShapingEvents, FlowShapingApplicationEvents };
-pub use crate::events::{ FlowShapingEvent };
+use crate::event::{
+    FlowShapingEvents, FlowShapingApplicationEvents, HEventConsumer,
+    StreamEventConsumer, Provider
+};
+use crate::chaff_manager::ChaffManager;
+use crate::Resource;
+pub use crate::event::{ FlowShapingEvent };
 
-const BLOCKED_STREAM_LIMIT: u64 = 20;
+const BLOCKED_STREAM_LIMIT: u64 = 1500;
 
 
-fn debug_check_var_(env_key: &str) -> bool {
-    match env::var(env_key) {
-        Ok(s) => s != "",
-        _ => false
-    }
-}
-
-fn debug_save_ids_path() -> String {
+fn debug_save_ids_path() -> Option<String> {
     match env::var("CSDEF_DUMMY_ID") {
-        Ok(s) => s,
-        _ => String::from("")
+        Ok(s) => Some(s),
+        _ => None
     }
-}
-
-fn debug_enable_save_ids() -> bool {
-    debug_check_var_("CSDEF_DUMMY_ID")
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -61,42 +55,13 @@ impl Default for Config {
     }
 }
 
-type Trace = Vec<(Duration, i32)>;
-
-pub fn load_trace(filename: &str) -> Result<Trace> {
-    let mut packets: Trace = Vec::new();
-
-    let mut reader = csv::ReaderBuilder::new()
-        .has_headers(false)
-        .from_path(filename)?;
-
-    for result in reader.deserialize() {
-        let record: (f64, i32) = result?;
-        packets.push((Duration::from_secs_f64(record.0), record.1));
-    }
-
-    Ok(packets)
-}
-
-fn log_trace(trace: &Trace) -> Result<()> {
-    if let Some(csv_path) = dummy_schedule_log_file() {
-        let mut wtr = Writer::from_path(csv_path)?;
-
-        for (d, s) in trace.iter() {
-            wtr.write_record(&[d.as_secs_f64().to_string(), s.to_string()])?;
-        }
-        wtr.flush()?;
-    }
-
-    Ok(())
-}
-
 
 #[derive(Debug, Default)]
 pub struct FlowShaperBuilder {
     config: Config,
 
     pad_only_mode: bool,
+    chaff_resources: Vec<Resource>,
 }
 
 impl FlowShaperBuilder {
@@ -114,13 +79,25 @@ impl FlowShaperBuilder {
         self
     }
 
+    pub fn chaff_urls(&mut self, urls: &[Url]) -> &mut Self {
+        self.chaff_resources = urls.iter()
+            .cloned()
+            .map(Resource::from)
+            .collect();
+        self
+    }
+
     pub fn pad_only_mode(&mut self, pad_only_mode: bool) -> &mut Self {
         self.pad_only_mode = pad_only_mode;
         self
     }
 
     pub fn from_trace(&self, trace: &Trace) -> FlowShaper {
-        FlowShaper::new(self.config.clone(), trace, self.pad_only_mode)
+        let mut shaper = FlowShaper::new(self.config.clone(), trace, self.pad_only_mode);
+        for resource in self.chaff_resources.iter() {
+            shaper.chaff_manager.add_resource(resource.clone());
+        }
+        shaper
     }
 
     pub fn from_defence(&mut self, defence: &impl Defence) -> FlowShaper {
@@ -130,115 +107,105 @@ impl FlowShaperBuilder {
 
     /// Create a new FlowShaper from a CSV trace file
     pub fn from_csv(&self, filename: &str) -> Result<FlowShaper> {
-        load_trace(filename)
-            .map(|trace| FlowShaper::new(self.config.clone(), &trace, self.pad_only_mode))
+        let mut shaper = FlowShaper::new(
+            self.config.clone(), &Trace::from_file(filename)?, self.pad_only_mode);
+        for resource in self.chaff_resources.iter() {
+            shaper.chaff_manager.add_resource(resource.clone());
+        }
+        Ok(shaper)
     }
 }
 
 
 /// Shaper for the connection. Assumes that it operates on the client,
 /// and not the server.
-#[derive(Default)]
 pub struct FlowShaper {
     /// General configuration
     config: Config,
     /// Whether we are padding or shaping
     pad_only_mode: bool,
 
-    /// The target traces
-    out_target: VecDeque<(u32, u32)>,
-    in_target: VecDeque<(u32, u32)>,
+    /// The target trace
+    target: Trace,
 
     /// The time that the flow shaper was started
     start_time: Option<Instant>,
 
     /// Event Queues
     events: Rc<RefCell<FlowShapingEvents>>,
-    application_events: FlowShapingApplicationEvents,
+    application_events: Rc<RefCell<FlowShapingApplicationEvents>>,
+    chaff_manager: ChaffManager,
 
     /// Streams used for sending chaff traffic
     chaff_streams: ChaffStreamMap,
+    app_streams: ChaffStreamMap,
+
+    /// CSV Writer for debug logging of dummy ids
+    dummy_id_file: Option<csv::Writer<std::fs::File>>,
 }
 
-impl Display for FlowShaper {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        write!(f, "FlowShaper")
+impl Default for FlowShaper {
+    fn default() -> Self {
+        let application_events = Rc::new(RefCell::new(
+                FlowShapingApplicationEvents::default()
+        ));
+        qtrace!("New flow shaper created");
+        let result = FlowShaper {
+            chaff_manager: ChaffManager::new(20, 1000000, application_events.clone()),
+            application_events,
+            .. Default::default()
+        };
+        qtrace!("New flow shaper created");
+        result
     }
 }
 
-impl std::fmt::Debug for FlowShaper {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        write!(f, "FlowShaper {{ config: {:?}, pad_only_mode: {:?}, start_time: {:?}, ... }}",
-               self.config, self.pad_only_mode, self.start_time)
-    }
-}
 
 
 impl FlowShaper {
     pub fn new(config: Config, trace: &Trace, pad_only_mode: bool) -> FlowShaper {
         assert!(trace.len() > 0);
-        log_trace(trace).expect("Unable to log trace.");
-
-        // Bin the trace
-        let mut bins: HashMap<(u32, bool), i32> = HashMap::new();
-        let interval_ms: u128 = config.control_interval as u128;
-
-        for (timestamp, size) in trace.iter() {
-            let timestamp = timestamp.as_millis();
-            let bin = u32::try_from(timestamp - (timestamp % interval_ms))
-                .expect("timestamp in millis to fit in u32");
-
-            assert!(*size != 0, "trace sizes should be non-zero");
-            bins.entry((bin, *size > 0))
-                .and_modify(|e| *e += size)
-                .or_insert(*size);
+        if let Some(filename) = dummy_schedule_log_file() {
+            trace.to_file(&filename).expect("Unable to log trace.");
         }
 
-        let mut in_target: Vec<(u32, u32)> = bins
-            .iter()
-            .filter(|&((_, inc), _)| !*inc)
-            .map(|((ts, _), size)| (*ts, u32::try_from(size.abs()).unwrap()))
-            .collect();
-        in_target.sort();
+        let target = trace.clone().sampled(
+            u32::try_from(config.control_interval).unwrap()
+        );
 
-        let mut out_target: Vec<(u32, u32)> = bins
-            .iter()
-            .filter(|((_, inc), _)| *inc)
-            .map(|((ts, _), size)| (*ts, u32::try_from(*size).unwrap()))
-            .collect();
-        out_target.sort();
-FlowShaper{ config,
-            in_target: VecDeque::from(in_target),
-            out_target: VecDeque::from(out_target),
+        let dummy_id_file = debug_save_ids_path()
+            .map(|filename| {
+                let writer = OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .open(filename)
+                    .unwrap();
+
+                csv::Writer::from_writer(writer)
+            });
+
+        let application_events = Rc::new(RefCell::new(FlowShapingApplicationEvents::default()));
+        let result = FlowShaper{
+            config,
+            target,
+            dummy_id_file,
             pad_only_mode: pad_only_mode,
-            ..FlowShaper::default()
-        }
+            app_streams: Default::default(),
+            chaff_manager: ChaffManager::new(20, 1000000, application_events.clone()),
+            application_events: application_events,
+            chaff_streams: Default::default(),
+            start_time: None,
+            events: Default::default(),
+        };
+        qtrace!("New flow shaper created {:?}", result);
+        result
     }
-
 
     /// Start shaping the traffic using the current time as the reference
     /// point.
     pub fn start(&mut self) {
-        qtrace!([self], "starting shaping.");
+        qdebug!([self], "starting shaping.");
         self.start_time = Some(Instant::now());
-    }
-
-    pub fn awaiting_header_data(&mut self, stream_id: u64, min_remaining: u64) {
-        if let Some(stream) = self.chaff_streams.get_mut(&stream_id) {
-            stream.awaiting_header_data(min_remaining);
-        }
-    }
-
-    pub fn data_consumed(&mut self, stream_id: u64, amount: u64) {
-        if let Some(stream) = self.chaff_streams.get_mut(&stream_id) {
-            stream.data_consumed(amount);
-        }
-    }
-
-    pub fn on_data_frame(&mut self, stream_id: u64, length: u64) {
-        if let Some(stream) = self.chaff_streams.get_mut(&stream_id) {
-            stream.on_data_frame(length);
-        }
     }
 
     /// Report the next instant at which the FlowShaper should be called for
@@ -252,62 +219,139 @@ FlowShaper{ config,
     }
 
     fn next_signal_offset(&self) -> Option<u32> {
-        vec![self.in_target.front(), self.out_target.front()]
-                 .iter()
-                 .filter_map(|x| x.map(|(ts, _)| *ts))
-                 .min()
+        self.target.front().map(|pkt| pkt.timestamp())
     }
 
     pub fn process_timer(&mut self, now: Instant) {
         if let Some(start_time) = self.start_time {
-            self.process_timer_(now.duration_since(start_time));
+            self.process_timer_(now.duration_since(start_time).as_millis());
         }
     }
 
-    fn process_timer_(&mut self, since_start: Duration) {
-        if self.pad_only_mode {
-            // dummy packets out
-            if let Some((ts, _)) = self.out_target.front() {
-                let next = Duration::from_millis(u64::from(*ts));
-                if next < since_start {
-                    let (_, size) = self.out_target.pop_front()
-                        .expect("the deque to be non-empty");
+    fn process_timer_(&mut self, since_start: u128) {
+        qtrace!([self], "now: {}, target: {}", since_start, self.target);
 
-                    qtrace!([self], "sending {} padding bytes", size);
-                    self.events.borrow_mut().send_pad_frames(size);
-                }
+        loop {
+            let to_remove = match self.target.next_outgoing() {
+                Some((index, pkt)) if u128::from(pkt.timestamp()) <= since_start => {
+                    assert!(pkt.is_outgoing());
+                    let length = pkt.length();
+                    let pushed = self.push_traffic(length);
+                    assert_eq!(pushed, length, "Pushes are always fully completed.");
+
+                    Some(index)
+                },
+                Some(_) | None => None,
+            };
+
+            if let Some(index) = to_remove {
+                qtrace!("Popping packet from trace, remaining: {}", (self.target.len() - 1));
+                self.target.remove(index);
+            } else {
+                break;
             }
+        }
 
-            // dummy packets in
-            if self.chaff_streams.pull_available() > 0 {
-                if let Some((ts, _)) = self.in_target.front() {
-                    let next = Duration::from_millis(u64::from(*ts));
-                    if next < since_start {
-                        let (ts, size) = self.in_target.pop_front()
-                            .expect("the deque to be non-empty");
-                        qtrace!([self], "pulling {} padding bytes", size);
+        loop {
+            let pulled = match self.target.next_incoming() {
+                Some((_, pkt)) if u128::from(pkt.timestamp()) <= since_start => {
+                    assert!(pkt.is_incoming());
+                    let length = pkt.length();
+                    self.pull_traffic(length)
+                },
+                Some(_) | None => 0,
+            };
 
-                        let pulled = self.chaff_streams.pull_data(size as u64);
-                        let remaining = size
-                            .checked_sub(u32::try_from(pulled).unwrap())
-                            .unwrap();
-                        if remaining > 0 {
-                            self.in_target.push_front((ts, remaining));
-                        }
-                    }
+            if pulled > 0 {
+                // TODO(jsmith): Evaluate whether we should discard or requeue.
+                // This question also generally applies to data that should be
+                // transfered before the first chaff streams are available as well
+                // as the data that wouldve been lost when we remove a dummy stream
+                // with pending outgoing MSD frames.
+                let to_remove = if let Some((index, Packet::Incoming(_, ref mut length)))
+                        = self.target.next_incoming_mut()
+                {
+                    *length -= pulled;
+                    if *length == 0 { Some(index) } else { None }
+                } else {
+                    None
+                };
+
+                if let Some(index) = to_remove {
+                    qtrace!("Popping packet from trace. {} remaining", self.target.len());
+                    self.target.remove(index);
+                } else {
+                    break;
                 }
             } else {
-                qwarn!([self], "No chaff streams with available pull data.");
+                break;
             }
+        }
 
-            // check dequeues empty, if so send connection close event
-            if self.in_target.is_empty() && self.out_target.is_empty() {
-                qdebug!([self], "shaping complete, notify client");
-                self.application_events.is_done_shaping();
+        // check dequeues empty, if so send connection close event
+        if self.target.is_empty() {
+            if self.pad_only_mode {
+                qdebug!([self], "padding complete, notifying client");
+                self.application_events.borrow_mut().done_shaping();
+            } else {
+                qdebug!([self], "shaping complete, closing connection");
+                self.application_events.borrow_mut().close_connection();
             }
         }
     }
 
+    /// Push amount bytes to the server and return the amount of data
+    /// pushed.
+    ///
+    /// Data is pushed first from application streams if they're being
+    /// shaped, then chaff-streams, then finally using padding frames.
+    fn push_traffic(&mut self, amount: u32) -> u32 {
+        assert!(amount > 0);
+        let amount = u64::from(amount);
+        let mut remaining = amount;
+        qtrace!([self], "attempting to push data: {}", amount);
+
+        if !self.pad_only_mode && remaining > 0 {
+            let pushed = self.app_streams.push_data(remaining);
+            qdebug!([self], "pushed bytes: {{ source: \"app-stream\", bytes: {} }}", pushed);
+            remaining -= pushed;
+        }
+
+        if remaining > 0 {
+            let pushed = self.chaff_streams.push_data(remaining);
+            qdebug!([self], "pushed bytes: {{ source: \"chaff-stream\", bytes: {} }}", pushed);
+            remaining -= pushed;
+        }
+
+        if remaining > 0 {
+            self.events.borrow_mut().send_pad_frames(u32::try_from(remaining).unwrap());
+            qdebug!([self], "pushed bytes: {{ source: \"padding\", bytes: {} }}", remaining);
+        }
+
+        // Since we can send padding bytes, we always push the full amount
+        u32::try_from(amount).expect("unmodified amount was casted from u32")
+    }
+
+    fn pull_traffic(&mut self, amount: u32) -> u32 {
+        qtrace!([self], "attempting to pull {} bytes of data.", amount);
+        let mut remaining: u64 = amount.into();
+
+        if !self.pad_only_mode && self.app_streams.can_pull() {
+            let pulled = self.app_streams.pull_data(remaining);
+            qdebug!([self], "pulled bytes: {{ source: \"app-stream\", bytes: {} }}", pulled);
+            remaining -= pulled;
+        }
+
+        if remaining > 0 && self.chaff_streams.can_pull() {
+            let pulled = self.chaff_streams.pull_data(remaining);
+            qdebug!([self], "pulled bytes: {{ source: \"chaff-stream\", bytes: {} }}", pulled);
+            remaining -= pulled;
+        } else if remaining > 0 && !self.chaff_streams.can_pull() {
+            qwarn!([self], "No chaff streams with available pull capacity.");
+        }
+
+        amount - u32::try_from(remaining).unwrap()
+    }
 
     /// Return the initial values for transport parameters
     pub fn tparam_defaults(&self) -> [(u64, u64); 3] {
@@ -325,78 +369,7 @@ FlowShaper{ config,
         ]
     }
 
-    /// Queue events related to a new stream being created by the peer.
-    pub fn on_stream_incoming(&self, stream_id: u64) {
-        let stream_id = StreamId::new(stream_id);
-        assert!(stream_id.is_server_initiated());
-        assert!(stream_id.is_uni(), "Servers dont initiate BiDi streams in HTTP3");
-
-        // Do nothing, as unidirectional streams were not flow controlled
-    }
-
-    /// Queue events related to a new stream being created by this
-    /// endpoint.
-    pub fn on_stream_created(&self, stream_id: u64) {
-        let stream_id = StreamId::new(stream_id);
-        assert!(stream_id.is_client_initiated());
-        qtrace!([self], "notified of stream {} being created", stream_id);
-
-        if stream_id.is_bidi() {
-            self.events.borrow_mut().send_max_stream_data(
-                &stream_id,
-                self.config.rx_stream_data_window,
-                self.config.rx_stream_data_window - BLOCKED_STREAM_LIMIT);
-            qdebug!([self], "Added send_max_stream_data event to stream {} limit {}",
-                    stream_id, self.config.rx_stream_data_window);
-        }
-    }
-
-    /// Records the creation of a stream for padding.
-    ///
-    /// Assumes that no events have been dequeud since the call of the
-    /// associated `on_new_stream` call for the `stream_id`.
-    pub fn on_new_padding_stream(&mut self, stream_id: u64, dummy_url: Url) {
-        assert!(self.events.borrow_mut()
-                .cancel_max_stream_data(StreamId::new(stream_id)));
-        qdebug!([self], "Removed max stream data event from stream {}", stream_id);
-
-        self.add_padding_stream(stream_id, dummy_url);
-    }
-
-    fn add_padding_stream(&mut self, stream_id: u64, dummy_url: Url) {
-        qtrace!([self], "adding a padding stream for {}: {}", stream_id, dummy_url);
-        self.chaff_streams.insert(
-            ChaffStream::new(stream_id, dummy_url, self.events.clone(), BLOCKED_STREAM_LIMIT));
-    }
-
-    // signals that the stream is ready to receive MSD frames
-    pub fn open_for_shaping(&mut self, stream_id: u64) -> bool {
-        qdebug!([self], "Opening stream {} for shaping", stream_id);
-
-        if debug_enable_save_ids(){
-            let csv_path = debug_save_ids_path();
-            let csv_file = OpenOptions::new()
-                            .write(true)
-                            .create(true)
-                            .append(true)
-                            .open(csv_path)
-                            .unwrap();
-            let mut wtr = csv::Writer::from_writer(csv_file);
-            wtr.write_record(&[stream_id.to_string()])
-                .expect("Failed writing dummy stream id");
-            wtr.flush().expect("Failed saving dummy stream id");
-        }
-
-        self.chaff_streams.open_stream(&stream_id);
-
-        // Queued events should be drained immediately after closing stream
-        // this now is a double safety in case there were no open dummy
-        // streams when the last one was closed.
-        self.maybe_send_queued_msd();
-
-        true
-    }
-
+    // TODO: Need to adjust below here for data streams ----
     fn maybe_send_queued_msd(&mut self) {
         // FIXME(jsmith): This needs to account for available bytes
         // Better yet, it would better to just push the queued MSD
@@ -411,34 +384,10 @@ FlowShaper{ config,
         }
     }
 
-    pub fn remove_dummy_stream(&mut self, stream_id: u64) -> Url{
-        qtrace!([self], "removing chaff stream {}", stream_id);
-        self.events.borrow_mut().remove_by_id(&stream_id);
-        let dummy_url = self.chaff_streams.remove_dummy_stream(&stream_id);
-
-        self.maybe_send_queued_msd();
-
-        qdebug!("Removed dummy stream {} after receiving FIN", stream_id);
-        dummy_url
-    }
-
-    pub fn on_stream_closed(&mut self, stream_id: u64) {
-        if self.is_shaping_stream(stream_id) {
-            let url = self.remove_dummy_stream(stream_id);
-            // TODO (ldolfi) maybe check there is actually
-            // more dummy schedule to consume before opening new stream
-            self.reopen_dummy_stream(url);
-        }
-    }
-
-    pub fn reopen_dummy_stream(&self, dummy_url: Url) {
-        qtrace!([self], "reopenning dummy stream for URL {}", dummy_url);
-        self.application_events.reopen_stream(dummy_url);
-    }
-
     // returns true if the stream_id is contained in the set of streams
     // being currently shaped
     pub fn is_shaping_stream(&self, stream_id: u64) -> bool {
+        // TODO: Need to figure out what this should do
         self.chaff_streams.contains(&stream_id)
     }
 
@@ -451,15 +400,184 @@ FlowShaper{ config,
         self.events.borrow().has_events()
     }
 
-    pub fn next_application_event(&self) -> Option<FlowShapingEvent> {
-        self.application_events.next_event()
+    pub fn next_application_event(&mut self) -> Option<FlowShapingEvent> {
+        self.application_events.borrow_mut().next_event()
     }
 
     #[must_use]
     pub fn has_application_events(&self) -> bool {
-        self.application_events.has_events()
+        self.application_events.borrow_mut().has_events()
+    }
+
+    fn get_stream_mut(&mut self, stream_id: &u64) -> Option<&mut ChaffStream> {
+        match self.chaff_streams.get_mut(stream_id) {
+            Some(stream) => Some(stream),
+            None => self.app_streams.get_mut(stream_id),
+        }
+    }
+
+    fn get_stream(&self, stream_id: &u64) -> Option<&ChaffStream> {
+        match self.chaff_streams.get(stream_id) {
+            Some(stream) => Some(stream),
+            None => self.app_streams.get(stream_id),
+        }
+    }
+
+    pub fn send_budget_available(&self, stream_id: u64) -> u64 {
+        self.get_stream(&stream_id)
+            .expect("Stream to already be tracked.")
+            .send_budget_available()
+    }
+
+    pub fn is_send_throttled(&self, stream_id: u64) -> bool {
+        if StreamId::is_bidi(stream_id.into()) {
+            self.get_stream(&stream_id)
+                .expect("Stream to already be tracked.")
+                .is_send_throttled()
+        } else {
+            false
+        }
+    }
+
+    pub fn is_recv_throttled(&self, stream_id: u64) -> bool {
+        if StreamId::is_bidi(stream_id.into()) {
+            self.get_stream(&stream_id)
+                .expect("Stream to already be tracked.")
+                .is_recv_throttled()
+        } else {
+            false
+        }
     }
 }
+
+impl Display for FlowShaper {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "FlowShaper")
+    }
+}
+
+impl std::fmt::Debug for FlowShaper {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "FlowShaper {{ config: {:?}, pad_only_mode: {:?}, start_time: {:?}, ... }}",
+               self.config, self.pad_only_mode, self.start_time)
+    }
+}
+
+
+impl HEventConsumer for FlowShaper {
+    fn awaiting_header_data(&mut self, stream_id: u64, min_remaining: u64) {
+        self.get_stream_mut(&stream_id)
+            .expect("Stream to already be tracked.")
+            .awaiting_header_data(min_remaining);
+    }
+
+    fn on_data_frame(&mut self, stream_id: u64, length: u64) {
+        self.get_stream_mut(&stream_id)
+            .expect("Stream to already be tracked.")
+            .on_data_frame(length);
+    }
+
+    fn on_http_request_sent(&mut self, stream_id: u64, resource: &Resource, is_chaff: bool) {
+        qdebug!([self], "notified of http reqeuest sent \
+                {{ stream_id: {}, resource: {:?}, is_chaff: {} }}", stream_id, resource, is_chaff);
+
+        let mut stream = ChaffStream::new(
+            stream_id, resource.url.clone(), self.events.clone(), BLOCKED_STREAM_LIMIT,
+            is_chaff || !self.pad_only_mode);
+
+        if is_chaff && resource.length > 0 {
+            stream = stream.with_msd_limit(resource.length)
+        }
+
+        let streams = if is_chaff {
+            if let Some(writer) = self.dummy_id_file.as_mut() {
+                writer.write_record(&[stream_id.to_string()])
+                    .expect("Failed writing dummy stream id");
+                writer.flush().expect("Failed saving dummy stream id");
+            }
+
+            &mut self.chaff_streams
+        } else {
+            &mut self.app_streams
+        };
+
+        streams.insert(stream);
+
+        if !self.chaff_manager.has_started() {
+            self.chaff_manager.start();
+        }
+
+        qtrace!([self], "chaff-streams: {}, app-streams: {}", self.chaff_streams.len(),
+                self.app_streams.len());
+    }
+}
+
+impl StreamEventConsumer for FlowShaper {
+    fn on_first_byte_sent(&mut self, stream_id: u64) {
+        if StreamId::new(stream_id).is_uni() {
+            return;
+        }
+
+        assert!(StreamId::new(stream_id).is_client_initiated());
+        qdebug!([self], "first byte sent on {}", stream_id);
+
+        self.get_stream_mut(&stream_id)
+            .expect("Stream should already be tracked.")
+            .open();
+
+        // Queued events should be drained immediately after closing stream
+        // this now is a double safety in case there were no open dummy
+        // streams when the last one was closed.
+        self.maybe_send_queued_msd();
+    }
+
+    fn data_sent(&mut self, stream_id: u64, amount: u64) {
+        if StreamId::new(stream_id).is_uni() {
+            return;
+        }
+
+        self.get_stream_mut(&stream_id)
+            .expect("Stream should already be tracked.")
+            .data_sent(amount)
+    }
+
+    fn data_queued(&mut self, stream_id: u64, amount: u64) {
+        if StreamId::new(stream_id).is_uni() {
+            return;
+        }
+
+        self.get_stream_mut(&stream_id)
+            .expect("Stream should already be tracked.")
+            .data_queued(amount)
+    }
+
+    fn data_consumed(&mut self, stream_id: u64, amount: u64) {
+        if StreamId::new(stream_id).is_uni() {
+            return;
+        }
+
+        self.get_stream_mut(&stream_id)
+            .expect("Stream to be tracked.")
+            .data_consumed(amount);
+    }
+
+    fn on_fin_received(&mut self, stream_id: u64) {
+        self.events.borrow_mut().remove_by_id(&stream_id);
+
+        let stream = self.get_stream_mut(&stream_id)
+            .expect("Stream should be tracked.");
+        stream.close_receiving();
+
+        let resource = Resource::new(stream.url().clone(), vec![], stream.data_length());
+        self.chaff_manager.add_resource(resource);
+
+        if self.chaff_streams.contains(&stream_id) {
+            self.chaff_manager.request_chaff_streams(&self.chaff_streams);
+        }
+    }
+}
+
+
 
 /// Select count padding URLs from the slice of URLs.
 ///
@@ -497,33 +615,17 @@ pub fn select_padding_urls(urls: &[Url], count: usize) -> Vec<Url> {
 mod tests {
     use super::*;
 
-    // The value below is taken from the QUIC Connection class and defines the
-    // buffer that is allocated for receiving data.
-    const RX_STREAM_DATA_WINDOW: u64 = 0x10_0000; // 1MiB
-
-    type FSE = FlowShapingEvent;
-
-    const CLIENT_BIDI_STREAM_ID: u64 = 0b100;
-    const SERVER_BIDI_STREAM_ID: u64 = 0b101;
-    const CLIENT_UNI_STREAM_ID: u64 =  0b110;
-    const SERVER_UNI_STREAM_ID: u64 =  0b111;
-
     fn create_shaper() -> FlowShaper {
-        let vec = vec![
-                (Duration::from_millis(2), 1350), (Duration::from_millis(16), -4800),
-                (Duration::from_millis(21), 600), (Duration::from_millis(22), -350),
-            ];
-        FlowShaper::new(Config::default(), &vec, true)
+        FlowShaper::new(
+            Config::default(),
+            &Trace::new(&[(2, 1350), (16, -4800), (21, 600), (22, -350)]),
+            true)
     }
 
-    fn create_shaper_with_trace(vec: Vec<(u64, i32)>, interval: u64) -> FlowShaper {
-        let vec = vec
-            .into_iter()
-            .map(|(time, size)| (Duration::from_millis(time), size)).collect();
-
+    fn create_shaper_with_trace(vec: Vec<(u32, i32)>, interval: u64) -> FlowShaper {
         FlowShaper::new(
             Config{ control_interval: interval, ..Config::default() },
-            &vec, true)
+            &Trace::new(&vec), true)
     }
 
     #[test]
@@ -569,14 +671,6 @@ mod tests {
     }
 
     #[test]
-    fn test_sanity() {
-        let trace = load_trace("../data/nytimes.csv").expect("Load failed");
-
-        assert_eq!(trace[0], (Duration::from_secs(0), 74));
-        FlowShaper::new(Config::default(), &trace, true);
-    }
-
-    #[test]
     fn test_next_signal_offset() {
         let shaper = create_shaper_with_trace(
             vec![(100, 1500), (150, -1350), (200, 700)], 1);
@@ -607,77 +701,54 @@ mod tests {
     }
 
     #[test]
-    fn test_process_timer() {
-        let mut shaper = create_shaper();
+    fn process_timer_should_not_block() {
+        let mut shaper = create_shaper_with_trace(
+            vec![(1, -1500), (3, 1350), (10, -700), (18, 500)], 1);
+        shaper.process_timer_(10);
 
-        shaper.process_timer_(Duration::from_millis(3));
-        assert_eq!(shaper.next_event(), None);
-
-        shaper.process_timer_(Duration::from_millis(17));
-        shaper.process_timer_(Duration::from_millis(21));
-
-        assert_eq!(shaper.next_event(), Some(FSE::SendMaxData(4800)));
-        assert_eq!(shaper.next_event(), Some(FSE::SendMaxData(5150)));
+        let mut events = shaper.events.borrow_mut();
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(1350)));
+        assert_eq!(shaper.target, Trace::new(&[(1, -1500), (10, -700), (18, 500)]));
     }
 
     #[test]
-    fn test_on_stream_created_uni() {
-        // It's a unidirectional stream, so we do not queue any events
-        let  shaper = create_shaper();
-        shaper.on_stream_created(CLIENT_UNI_STREAM_ID);
-        assert_eq!(shaper.next_event(), None);
+    fn process_timer_pulls_traffic() {
+        let mut shaper = create_shaper_with_trace(
+            vec![(3, -1500), (9, 1350), (17, -700), (18, 500)], 1);
+        shaper.on_http_request_sent(4, &Resource::from(Url::parse("https://a.com").unwrap()), true);
+        shaper.on_first_byte_sent(4);
+        shaper.data_consumed(4, BLOCKED_STREAM_LIMIT);
+        shaper.on_data_frame(4, 6000);
+
+        shaper.process_timer_(5);
+
+        let mut events = shaper.events.borrow_mut();
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
+            stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 1500, increase: 1500
+        }));
+        assert_eq!(shaper.target, Trace::new(&[(9, 1350), (17, -700), (18, 500)]));
     }
 
     #[test]
-    fn test_on_stream_created_bidi() {
-        // It's a unidirectional stream, so we do not queue any events
-        let  shaper = create_shaper();
-        shaper.on_stream_created(CLIENT_BIDI_STREAM_ID);
-        assert_eq!(
-            shaper.events.borrow_mut().next_event(),
-            Some(FSE::SendMaxStreamData {
-                stream_id: CLIENT_BIDI_STREAM_ID, new_limit: RX_STREAM_DATA_WINDOW,
-                increase: RX_STREAM_DATA_WINDOW - BLOCKED_STREAM_LIMIT
-            }));
+    fn process_timer_pulls_and_pushes_multiple() {
+        let mut shaper = create_shaper_with_trace(
+            vec![(1, -1200), (3, 1350), (10, -700), (12, 600), (15, 800)], 1);
+        shaper.on_http_request_sent(4, &Resource::from(Url::parse("https://a.com").unwrap()), true);
+        shaper.on_first_byte_sent(4);
+        shaper.data_consumed(4, BLOCKED_STREAM_LIMIT);
+        shaper.on_data_frame(4, 6000);
+
+        shaper.process_timer_(14);
+
+        let mut events = shaper.events.borrow_mut();
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(1350)));
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(600)));
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
+            stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 1200, increase: 1200
+        }));
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
+            stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 1200 + 700, increase: 700
+        }));
+        assert_eq!(shaper.target, Trace::new(&[(15, 800)]));
     }
-
-    #[test]
-    fn test_on_stream_created_bidi_padding() {
-        // If a stream is identified as being for a padding URL, its max data
-        // should not be increased
-        let mut shaper = create_shaper();
-
-        shaper.on_stream_created(CLIENT_BIDI_STREAM_ID);
-        shaper.on_new_padding_stream(CLIENT_BIDI_STREAM_ID, Url::parse("").expect("foo"));
-        assert_eq!(shaper.events.borrow_mut().next_event(), None);
-    }
-
-    #[test]
-    fn test_on_stream_incoming_uni() {
-        let  shaper = create_shaper();
-        shaper.on_stream_incoming(SERVER_UNI_STREAM_ID);
-
-        // Incoming Unidirectional streams are not blocked initially, as we do not
-        // expect padding resources to arrive on them.
-        assert_eq!(shaper.events.borrow_mut().next_event(), None);
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_on_stream_incoming_bidi() {
-        // We assume that the server never opens bidi streams in H3
-        let shaper = create_shaper();
-        shaper.on_stream_incoming(SERVER_BIDI_STREAM_ID);
-    }
-
-    #[test]
-    fn test_chaff_streams_always_considered_shaped() {
-        let mut shaper = create_shaper();
-
-        shaper.add_padding_stream(46, Url::parse("https://b.com").unwrap());
-        assert!(shaper.is_shaping_stream(46));
-        shaper.remove_dummy_stream(46);
-        assert!(shaper.is_shaping_stream(46));
-    }
-
 }

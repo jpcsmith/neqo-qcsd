@@ -1,4 +1,4 @@
-use crate::Trace;
+use crate::trace::Trace;
 
 /// Trait for defence implementations to be used with FlowShaper
 pub trait Defence {

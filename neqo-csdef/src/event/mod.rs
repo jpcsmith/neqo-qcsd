@@ -1,22 +1,32 @@
+mod provider;
+
 use std::collections::VecDeque;
 use std::cell::RefCell;
 use std::fmt::Display;
-use url::Url;
 
 use neqo_common::qdebug;
 use crate::stream_id::StreamId;
+use crate::Resource;
+
+pub use self::provider::Provider;
+
 
 pub trait HEventConsumer {
     fn awaiting_header_data(&mut self, stream_id: u64, min_remaining: u64);
     fn on_data_frame(&mut self, stream_id: u64, length: u64);
+    fn on_http_request_sent(&mut self, stream_id: u64, resource: &Resource, is_chaff: bool);
 }
 
 pub trait StreamEventConsumer {
+    fn on_first_byte_sent(&mut self, stream_id: u64);
+    fn on_fin_received(&mut self, stream_id: u64);
     fn data_consumed(&mut self, stream_id: u64, amount: u64);
+    fn data_sent(&mut self, stream_id: u64, amount: u64);
+    fn data_queued(&mut self, stream_id: u64, amount: u64);
 }
 
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Hash)]
 pub enum FlowShapingEvent {
     SendMaxData(u64),
     SendMaxStreamData {
@@ -26,8 +36,8 @@ pub enum FlowShapingEvent {
     },
     SendPaddingFrames(u32),
     CloseConnection,
-    ReopenStream(Url),
-    DoneShaping
+    DoneShaping,
+    RequestResource(Resource),
 }
 
 #[derive(Debug, Default)]
@@ -83,25 +93,6 @@ impl FlowShapingEvents {
                                     if stream_id == id));
     }
 
-    /// Pop the first max_stream_data event with the specified stream
-    /// id. Return true iff the event was found and removed.
-    pub fn cancel_max_stream_data(&self, stream_id: StreamId) -> bool {
-        type FSE = FlowShapingEvent;
-
-        let position = self.events.borrow().iter().position(|item| match item {
-            FSE::SendMaxStreamData { stream_id: sid, .. } => *sid == stream_id.as_u64(),
-            _ => false
-        });
-
-        match position {
-            Some(index) => {
-                self.events.borrow_mut().remove(index);
-                true
-            },
-            None => false
-        }
-    }
-
     pub fn get_queued_msd(&self) -> u64 {
         self.queued_msd
     }
@@ -110,17 +101,21 @@ impl FlowShapingEvents {
         assert!(self.queued_msd >= amount);
         self.queued_msd -= amount;
     }
+}
 
-    #[must_use]
-    pub fn next_event(&self) -> Option<FlowShapingEvent> {
+
+impl Provider for FlowShapingEvents {
+    type Event = FlowShapingEvent;
+
+    fn next_event(&mut self) -> Option<Self::Event> {
         self.events.borrow_mut().pop_front()
     }
 
-    #[must_use]
-    pub fn has_events(&self) -> bool {
+    fn has_events(&self) -> bool {
         !self.events.borrow().is_empty()
     }
 }
+
 
 #[derive(Debug, Default)]
 pub(crate) struct FlowShapingApplicationEvents {
@@ -129,26 +124,31 @@ pub(crate) struct FlowShapingApplicationEvents {
 }
 
 impl FlowShapingApplicationEvents {
+    pub fn request_chaff_resource(&self, resource: &Resource) {
+        self.insert(FlowShapingEvent::RequestResource(resource.clone()));
+    }
 
-    pub fn is_done_shaping(&self) {
+    pub fn done_shaping(&self) {
         self.insert(FlowShapingEvent::DoneShaping)
     }
 
-    pub fn reopen_stream(&self, url: Url) {
-        self.insert(FlowShapingEvent::ReopenStream(url))
+    pub fn close_connection(&self) {
+        self.insert(FlowShapingEvent::CloseConnection)
     }
 
     fn insert(&self, event: FlowShapingEvent) {
         self.events.borrow_mut().push_back(event);
     }
+}
 
-    #[must_use]
-    pub fn next_event(&self) -> Option<FlowShapingEvent> {
+impl Provider for FlowShapingApplicationEvents {
+    type Event = FlowShapingEvent;
+
+    fn next_event(&mut self) -> Option<Self::Event> {
         self.events.borrow_mut().pop_front()
     }
 
-    #[must_use]
-    pub fn has_events(&self) -> bool {
+    fn has_events(&self) -> bool {
         !self.events.borrow().is_empty()
     }
 }
