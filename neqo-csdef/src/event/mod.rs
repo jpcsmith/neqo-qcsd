@@ -3,10 +3,10 @@ mod provider;
 use std::collections::VecDeque;
 use std::cell::RefCell;
 use std::fmt::Display;
-use url::Url;
 
 use neqo_common::qdebug;
 use crate::stream_id::StreamId;
+use crate::Resource;
 
 pub use self::provider::Provider;
 
@@ -14,8 +14,7 @@ pub use self::provider::Provider;
 pub trait HEventConsumer {
     fn awaiting_header_data(&mut self, stream_id: u64, min_remaining: u64);
     fn on_data_frame(&mut self, stream_id: u64, length: u64);
-    fn on_http_request_sent(&mut self, stream_id: u64, url: &Url, is_chaff: bool);
-    fn on_http_ready(&mut self);
+    fn on_http_request_sent(&mut self, stream_id: u64, resource: &Resource, is_chaff: bool);
 }
 
 pub trait StreamEventConsumer {
@@ -38,7 +37,7 @@ pub enum FlowShapingEvent {
     SendPaddingFrames(u32),
     CloseConnection,
     DoneShaping,
-    RequestResource { url: Url, headers: Vec<(String, String)> },
+    RequestResource(Resource),
 }
 
 #[derive(Debug, Default)]
@@ -125,11 +124,8 @@ pub(crate) struct FlowShapingApplicationEvents {
 }
 
 impl FlowShapingApplicationEvents {
-    pub fn request_chaff_resource(&self, url: &Url, headers: &Vec<(String, String)>) {
-        self.insert(FlowShapingEvent::RequestResource { 
-            url: url.clone(),
-            headers: headers.clone(),
-        });
+    pub fn request_chaff_resource(&self, resource: &Resource) {
+        self.insert(FlowShapingEvent::RequestResource(resource.clone()));
     }
 
     pub fn done_shaping(&self) {

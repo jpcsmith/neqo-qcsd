@@ -24,10 +24,9 @@ use neqo_transport::{
     AppError, CongestionControlAlgorithm, Connection, ConnectionEvent, ConnectionId,
     ConnectionIdManager, Output, QuicVersion, StreamId, StreamType, ZeroRttState,
 };
-use neqo_csdef::ConfigFile;
-use neqo_csdef::flow_shaper::{ FlowShaper, FlowShaperBuilder, FlowShapingEvent };
+use neqo_csdef::{ Resource, url };
+use neqo_csdef::flow_shaper::{ FlowShaper, FlowShapingEvent };
 use neqo_csdef::event::HEventConsumer;
-use neqo_csdef::defences::{ FrontDefence, FrontConfig };
 use std::cell::RefCell;
 use std::fmt::Display;
 use std::net::SocketAddr;
@@ -127,7 +126,7 @@ impl Http3Client {
         c: Connection, http3_parameters: &Http3Parameters,
     ) -> Self {
         let events = Http3ClientEvents::default();
-        let mut client = Self {
+        Self {
             conn: c,
             base_handler: Http3Connection::new(http3_parameters.qpack_settings),
             events: events.clone(),
@@ -137,50 +136,18 @@ impl Http3Client {
             ))),
             flow_shaper: None,
             done_shaping: true
-        };
-
-        if !neqo_csdef::debug_disable_shaping() {
-            client.enable_shaping();
         }
-
-        client
     }
 
-    fn enable_shaping(&mut self) {
-        qtrace!([self], "Enabling connection shaping.");
+    #[must_use]
+    pub fn with_flow_shaper(mut self, flow_shaper: FlowShaper) -> Self {
+        let flow_shaper = Rc::new(RefCell::new(flow_shaper));
+        self.conn.set_flow_shaper(&flow_shaper);
+        flow_shaper.borrow_mut().start();
 
-        let mut builder = FlowShaperBuilder::new();
-        let mut front_config = FrontConfig::default();
-
-        if let Some(filename) = neqo_csdef::shaper_config_file() {
-            let configs = ConfigFile::load(&filename)
-                .expect("Unable to load config file");
-
-            if let Some(config) = configs.flow_shaper {
-                builder.config(config);
-            }
-
-            if let Some(config) = configs.front_defence {
-                front_config = config;
-            }
-        }
-
-        let shaper = Rc::new(RefCell::new(
-                match neqo_csdef::debug_use_trace_file() {
-                    Some((filename, is_pad_only)) => {
-                        builder.pad_only_mode(is_pad_only)
-                            .from_csv(&filename)
-                            .expect("unable to create shaper from trace file")
-                    },
-                    None => builder.from_defence(&FrontDefence::new(front_config))
-                }));
-
-        // sets the shaper to the connection
-        self.conn.set_flow_shaper(&shaper);
-
-        shaper.borrow_mut().start();
-        self.flow_shaper = Some(shaper);
+        self.flow_shaper = Some(flow_shaper.clone());
         self.done_shaping = false;
+        self
     }
 
     #[must_use]
@@ -323,6 +290,29 @@ impl Http3Client {
         path: &str,
         headers: &[Header],
     ) -> Res<u64> {
+        let resource = Resource::new(
+            url!(scheme, host, path), headers.iter().cloned().collect(), 0);
+
+        self.fetch_inner(now, method, scheme, host, path, headers, (&resource, false))
+    }
+
+    fn fetch_chaff(&mut self, resource: &Resource) -> Res<u64> {
+        let url = resource.url();
+        self.fetch_inner(
+            Instant::now(), "GET", &url.scheme(), &url.host_str().unwrap(), 
+            &url.path(), resource.headers(), (resource, true))
+    }
+
+    fn fetch_inner(
+        &mut self,
+        now: Instant,
+        method: &str,
+        scheme: &str,
+        host: &str,
+        path: &str,
+        headers: &[Header],
+        metadata: (&Resource, bool),
+    ) -> Res<u64> {
         qinfo!(
             [self],
             "Fetch method={}, scheme={}, host={}, path={}",
@@ -346,11 +336,9 @@ impl Http3Client {
             .map_err(|e| Error::map_stream_create_errors(&e))?;
 
         if let Some(flow_shaper) = self.flow_shaper.as_ref() {
-            flow_shaper.borrow_mut()
-                .on_http_request_sent(id, &Url::parse(
-                        &format!("{}://{}{}", scheme, host, path)).unwrap(),
-                        false
-                );
+            let (resource, is_chaff) = metadata;
+
+            flow_shaper.borrow_mut().on_http_request_sent(id, &resource, is_chaff);
         }
 
         // Transform pseudo-header fields
@@ -378,83 +366,6 @@ impl Http3Client {
 
         // Call immediately send so that at least headers get sent. This will make Firefox faster, since
         // it can send request body immediatly in most cases and does not need to do a complete process loop.
-        if let Err(e) = self
-            .base_handler
-            .send_streams
-            .get_mut(&id)
-            .ok_or(Error::InvalidStreamId)?
-            .send(&mut self.conn, &mut self.base_handler.qpack_encoder)
-        {
-            if e.connection_error() {
-                self.close(now, e.code(), "");
-            }
-            return Err(e);
-        }
-
-        Ok(id)
-    }
-
-    // Like fetch(), this function creates a stream to fetch a resource, but used instead by the
-    // flow_shaper as a dummy resource for padding
-    pub fn fetch_dummy(
-        &mut self,
-        now: Instant,
-        method: &str,
-        scheme: &str,
-        host: &str,
-        path: &str,
-        headers: &[Header],
-    ) -> Res<u64> {
-        qinfo!(
-            [self],
-            "Fetch Dummy method={}, scheme={}, host={}, path={}",
-            method,
-            scheme,
-            host,
-            path
-        );
-        let id = self
-            .conn
-            .stream_create(StreamType::BiDi)
-            .map_err(|e| Error::map_stream_create_errors(&e))?;
-
-        {
-            self.flow_shaper.as_ref()
-                .expect("cannot add dummy stream without flow shaper")
-                .borrow_mut()
-                .on_http_request_sent(
-                    id,
-                    &Url::parse(&format!("{}://{}{}", scheme, host, path)).unwrap(),
-                    true);
-        }
-
-
-        // TODO (ldolfi): here would go the part where we register the stream
-        // and prepare a Box for the received message, but do we need it?
-        // Transform pseudo-header fields
-        let mut final_headers = Vec::new();
-        final_headers.push((":method".into(), method.to_owned()));
-        final_headers.push((":scheme".into(), scheme.to_owned()));
-        final_headers.push((":authority".into(), host.to_owned()));
-        final_headers.push((":path".into(), path.to_owned()));
-        final_headers.extend_from_slice(headers);
-
-        let mut recv_message = RecvMessage::new(
-                id,
-                Box::new(self.events.clone()),
-                Some(self.push_handler.clone()),
-            );
-        if let Some(flow_shaper) = self.flow_shaper.as_ref() {
-            recv_message.set_flow_shaper(flow_shaper.clone());
-        }
-
-        self.base_handler.add_streams(
-            id,
-            SendMessage::new_with_headers(id, final_headers, Box::new(self.events.clone())),
-            Box::new(recv_message),
-        );
-
-        // Send the actual request (headers) immediately
         if let Err(e) = self
             .base_handler
             .send_streams
@@ -750,14 +661,12 @@ impl Http3Client {
                 FlowShapingEvent::CloseConnection => {
                     self.close(Instant::now(), 0, "kthx4shaping!");
                 },
-                FlowShapingEvent::RequestResource { url, headers} => {
-                    let stream_id = self.fetch_dummy(
-                            Instant::now(), "GET", &url.scheme(), &url.host_str().unwrap(),
-                            &url.path(), &headers)
+                FlowShapingEvent::RequestResource(resource) => {
+                    let stream_id = self.fetch_chaff(&resource)
                         .expect("cannot open dummpy stream");
 
                     println!("Successfully created new dummy stream id {} for resource {}",
-                             stream_id, url);
+                             stream_id, resource.url());
                 },
                 _ => {}
             };

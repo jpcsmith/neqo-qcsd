@@ -61,6 +61,7 @@ pub struct FlowShaperBuilder {
     config: Config,
 
     pad_only_mode: bool,
+    chaff_resources: Vec<Resource>,
 }
 
 impl FlowShaperBuilder {
@@ -78,13 +79,25 @@ impl FlowShaperBuilder {
         self
     }
 
+    pub fn chaff_urls(&mut self, urls: &[Url]) -> &mut Self {
+        self.chaff_resources = urls.iter()
+            .cloned()
+            .map(Resource::from)
+            .collect();
+        self
+    }
+
     pub fn pad_only_mode(&mut self, pad_only_mode: bool) -> &mut Self {
         self.pad_only_mode = pad_only_mode;
         self
     }
 
     pub fn from_trace(&self, trace: &Trace) -> FlowShaper {
-        FlowShaper::new(self.config.clone(), trace, self.pad_only_mode)
+        let mut shaper = FlowShaper::new(self.config.clone(), trace, self.pad_only_mode);
+        for resource in self.chaff_resources.iter() {
+            shaper.chaff_manager.add_resource(resource.clone());
+        }
+        shaper
     }
 
     pub fn from_defence(&mut self, defence: &impl Defence) -> FlowShaper {
@@ -94,8 +107,12 @@ impl FlowShaperBuilder {
 
     /// Create a new FlowShaper from a CSV trace file
     pub fn from_csv(&self, filename: &str) -> Result<FlowShaper> {
-        Ok(FlowShaper::new(self.config.clone(), &Trace::from_file(filename)?,
-                        self.pad_only_mode))
+        let mut shaper = FlowShaper::new(
+            self.config.clone(), &Trace::from_file(filename)?, self.pad_only_mode);
+        for resource in self.chaff_resources.iter() {
+            shaper.chaff_manager.add_resource(resource.clone());
+        }
+        Ok(shaper)
     }
 }
 
@@ -134,7 +151,7 @@ impl Default for FlowShaper {
         ));
         qtrace!("New flow shaper created");
         let result = FlowShaper {
-            chaff_manager: ChaffManager::new(5, 1000000, application_events.clone()),
+            chaff_manager: ChaffManager::new(20, 1000000, application_events.clone()),
             application_events,
             .. Default::default()
         };
@@ -174,7 +191,7 @@ impl FlowShaper {
             dummy_id_file,
             pad_only_mode: pad_only_mode,
             app_streams: Default::default(),
-            chaff_manager: ChaffManager::new(5, 1000000, application_events.clone()),
+            chaff_manager: ChaffManager::new(20, 1000000, application_events.clone()),
             application_events: application_events,
             chaff_streams: Default::default(),
             start_time: None,
@@ -460,17 +477,18 @@ impl HEventConsumer for FlowShaper {
             .on_data_frame(length);
     }
 
-    fn on_http_ready(&mut self) {
-        self.chaff_manager.start();
-    }
-
-    fn on_http_request_sent(&mut self, stream_id: u64, url: &Url, is_chaff: bool) {
+    fn on_http_request_sent(&mut self, stream_id: u64, resource: &Resource, is_chaff: bool) {
         qdebug!([self], "notified of http reqeuest sent \
-                {{ stream_id: {}, url: {}, is_chaff: {} }}", stream_id, url, is_chaff);
+                {{ stream_id: {}, resource: {:?}, is_chaff: {} }}", stream_id, resource, is_chaff);
 
-        let stream = ChaffStream::new(
-            stream_id, url.clone(), self.events.clone(), BLOCKED_STREAM_LIMIT,
+        let mut stream = ChaffStream::new(
+            stream_id, resource.url.clone(), self.events.clone(), BLOCKED_STREAM_LIMIT,
             is_chaff || !self.pad_only_mode);
+
+        if is_chaff && resource.length > 0 {
+            stream = stream.with_msd_limit(resource.length)
+        }
+
         let streams = if is_chaff {
             if let Some(writer) = self.dummy_id_file.as_mut() {
                 writer.write_record(&[stream_id.to_string()])
@@ -484,6 +502,10 @@ impl HEventConsumer for FlowShaper {
         };
 
         streams.insert(stream);
+
+        if !self.chaff_manager.has_started() {
+            self.chaff_manager.start();
+        }
 
         qtrace!([self], "chaff-streams: {}, app-streams: {}", self.chaff_streams.len(),
                 self.app_streams.len());
@@ -693,7 +715,7 @@ mod tests {
     fn process_timer_pulls_traffic() {
         let mut shaper = create_shaper_with_trace(
             vec![(3, -1500), (9, 1350), (17, -700), (18, 500)], 1);
-        shaper.on_http_request_sent(4, &Url::parse("https://a.com").unwrap(), true);
+        shaper.on_http_request_sent(4, &Resource::from(Url::parse("https://a.com").unwrap()), true);
         shaper.on_first_byte_sent(4);
         shaper.data_consumed(4, BLOCKED_STREAM_LIMIT);
         shaper.on_data_frame(4, 6000);
@@ -711,7 +733,7 @@ mod tests {
     fn process_timer_pulls_and_pushes_multiple() {
         let mut shaper = create_shaper_with_trace(
             vec![(1, -1200), (3, 1350), (10, -700), (12, 600), (15, 800)], 1);
-        shaper.on_http_request_sent(4, &Url::parse("https://a.com").unwrap(), true);
+        shaper.on_http_request_sent(4, &Resource::from(Url::parse("https://a.com").unwrap()), true);
         shaper.on_first_byte_sent(4);
         shaper.data_consumed(4, BLOCKED_STREAM_LIMIT);
         shaper.on_data_frame(4, 6000);

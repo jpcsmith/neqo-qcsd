@@ -16,6 +16,16 @@ use serde::Deserialize;
 use url::Url;
 
 
+#[macro_export]
+macro_rules! url {
+    ($name:literal) => {
+        Url::parse($name).expect("valid url")
+    };
+    ($scheme:expr, $host:expr, $path:expr) => {
+        Url::parse(&format!("{}://{}{}", $scheme, $host, $path)).expect("valid url")
+    };
+}
+
 trait Env {
     fn get_var(&self, key: &str) -> Option<String> {
         std::env::var(key).ok()
@@ -101,8 +111,21 @@ pub struct Resource {
 }
 
 impl Resource {
-    fn new(url: Url, headers: Vec<(String, String)>, length: u64) -> Self {
+    pub fn new(url: Url, headers: Vec<(String, String)>, length: u64) -> Self {
         Resource { url, headers, length }
+    }
+
+    pub(crate) fn with_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.headers = headers;
+        self
+    }
+
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
+    pub fn headers(&self) -> &Vec<(String, String)> {
+        &self.headers
     }
 }
 
