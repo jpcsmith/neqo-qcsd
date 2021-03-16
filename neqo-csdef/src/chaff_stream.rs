@@ -155,8 +155,15 @@ impl ChaffStream {
     pub fn with_msd_limit(mut self, msd_limit: u64) -> Self {
         assert!(matches!(self.recv_state, RecvState::Created { .. }));
         assert!(msd_limit > 0, "cannot create with a zero msd limit");
-        self.initial_msd_limit = Some(msd_limit);
-        qtrace!([&self], "updated MSD limit {}", msd_limit);
+
+        match self.recv_state {
+            RecvState::Created { initial_msd, .. } => {
+                self.initial_msd_limit = Some(std::cmp::max(msd_limit, initial_msd));
+                qtrace!([&self], "updated MSD limit: max(initial_msd={}, {})",
+                        initial_msd, msd_limit);
+            },
+            _ => unreachable!("must be in the created state.")
+        };
         self
     }
 
@@ -436,7 +443,7 @@ impl ChaffStreamMap {
         let remaining = Cell::new(amount);
 
         // Sort blocked streams in order of their open state and stream ID
-        // This places closed streams before open streams, and then lower 
+        // This places closed streams before open streams, and then lower
         // stream id first
         let mut streams: Vec<&mut ChaffStream> = self.0.values_mut()
             .filter(|stream| stream.blocked_pending_bytes() > 0)

@@ -132,7 +132,9 @@ impl ChaffManager {
     }
 
     fn largest_resource(&self) -> Option<&Resource> {
-        self.resources.values().max_by_key(|resource| resource.length)
+        self.resources.values()
+            .filter(|resource| resource.length > 0)
+            .max_by_key(|resource| resource.length)
     }
 }
 
