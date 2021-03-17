@@ -184,6 +184,13 @@ impl ChaffStream {
         self.send_state.is_throttled()
     }
 
+    pub fn unthrottle_sending(&mut self) {
+        self.send_state = match self.send_state {
+            SendState::Unthrottled | SendState::Throttled{..} => SendState::Unthrottled,
+            SendState::Closed => SendState::Closed,
+        };
+    }
+
     pub fn msd_available(&self) -> u64 {
         self.recv_state.msd_available()
     }
@@ -784,6 +791,15 @@ mod tests {
 
             stream.close_sending();
             assert_eq!(stream.send_state, SendState::Closed);
+        }
+
+        #[test]
+        fn unthrottle_sending() {
+            let mut stream = throttled_stream().build();
+
+            assert!(matches!(stream.send_state, SendState::Throttled{..}));
+            stream.unthrottle_sending();
+            assert!(matches!(stream.send_state, SendState::Unthrottled));
         }
     }
 
