@@ -140,6 +140,9 @@ pub struct FlowShaper {
     /// The time that the flow shaper was started
     start_time: Option<Instant>,
 
+    /// Used to signal that sending has been unthrottled
+    is_sending_unthrottled: bool,
+
     /// Event Queues
     events: Rc<RefCell<FlowShapingEvents>>,
     application_events: Rc<RefCell<FlowShapingApplicationEvents>>,
@@ -192,6 +195,7 @@ impl FlowShaper {
             chaff_manager,
             application_events,
             start_time: None,
+            is_sending_unthrottled: false,
             app_streams: Default::default(),
             chaff_streams: Default::default(),
             events: Default::default(),
@@ -296,7 +300,18 @@ impl FlowShaper {
                 qdebug!([self], "shaping complete, closing connection");
                 self.application_events.borrow_mut().close_connection();
             }
+        } else if self.target.next_outgoing() == None && !self.is_sending_unthrottled {
+            // We're done without outgoing but not incoming
+            self.unthrottle_sending();
         }
+    }
+
+    fn unthrottle_sending(&mut self) {
+        self.is_sending_unthrottled = true;
+
+        qtrace!([self], "unthrottling sending on chaff streams");
+        self.chaff_streams.iter_mut()
+            .for_each(|(_, stream)| stream.unthrottle_sending());
     }
 
     /// Push amount bytes to the server and return the amount of data
@@ -486,6 +501,9 @@ impl HEventConsumer for FlowShaper {
 
         if is_chaff && resource.length > 0 {
             stream = stream.with_msd_limit(resource.length)
+        }
+        if is_chaff && self.is_sending_unthrottled {
+            stream.unthrottle_sending();
         }
 
         let streams = if is_chaff {
