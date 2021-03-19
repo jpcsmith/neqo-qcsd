@@ -25,6 +25,7 @@ use crate::chaff_manager::ChaffManager;
 use crate::Resource;
 pub use crate::event::{ FlowShapingEvent };
 
+
 const BLOCKED_STREAM_LIMIT: u64 = 1500;
 
 
@@ -44,11 +45,15 @@ pub struct Config {
     pub rx_stream_data_window: u64,
     pub local_md: u64,
 
+    /// The initial max stream data of an incoming stream
+    pub initial_max_stream_data: u64,
+    /// Additional leeway on the max stream data of each stream 
+    pub max_stream_data_excess: u64,
+
     /// The maximum number of chaff streams to open
     pub max_chaff_streams: u32,
     /// The amount of chaff data to retain available 
     pub low_watermark: u64,
-
 }
 
 impl Default for Config {
@@ -58,6 +63,8 @@ impl Default for Config {
             initial_md: 3000,
             rx_stream_data_window: 1048576,
             local_md: 4611686018427387903,
+            initial_max_stream_data: BLOCKED_STREAM_LIMIT,
+            max_stream_data_excess: 1500,
             max_chaff_streams: 5,
             low_watermark: 1_000_000,
         }
@@ -373,13 +380,13 @@ impl FlowShaper {
             (0x04, self.config.local_md),
             // Disable the peer sending data on bidirectional streams openned
             // by this endpoint (initial_max_stream_data_bidi_local)
-            (0x05, BLOCKED_STREAM_LIMIT),
+            (0x05, self.config.initial_max_stream_data),
             // Disable the peer sending data on bidirectional streams that
             // they open (initial_max_stream_data_bidi_remote)
-            (0x06, BLOCKED_STREAM_LIMIT),
+            (0x06, self.config.initial_max_stream_data),
             // Disable the peer sending data on unidirectional streams that
             // they open (initial_max_stream_data_uni)
-            // (0x07, BLOCKED_STREAM_LIMIT),
+            // (0x07, self.config.initial_max_stream_data),
         ]
     }
 
@@ -496,7 +503,9 @@ impl HEventConsumer for FlowShaper {
                 {{ stream_id: {}, resource: {:?}, is_chaff: {} }}", stream_id, resource, is_chaff);
 
         let mut stream = ChaffStream::new(
-            stream_id, resource.url.clone(), self.events.clone(), BLOCKED_STREAM_LIMIT,
+            stream_id, resource.url.clone(), self.events.clone(), 
+            self.config.initial_max_stream_data,
+            self.config.max_stream_data_excess,
             is_chaff || !self.pad_only_mode);
 
         if is_chaff && resource.length > 0 {

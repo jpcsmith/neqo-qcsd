@@ -126,6 +126,7 @@ pub(crate) struct ChaffStream {
     stream_id: StreamId,
     url: Url,
     initial_msd_limit: Option<u64>,
+    msd_excess: u64,
     recv_state: RecvState,
     send_state: SendState,
     events: Rc<RefCell<FlowShapingEvents>>,
@@ -137,6 +138,7 @@ impl ChaffStream {
         url: Url,
         events: Rc<RefCell<FlowShapingEvents>>,
         initial_msd: u64,
+        msd_excess: u64,
         throttled: bool,
     ) -> Self {
         let stream = ChaffStream {
@@ -147,6 +149,7 @@ impl ChaffStream {
                         else { SendState::Unthrottled },
             events,
             initial_msd_limit: None,
+            msd_excess,
         };
         qtrace!([stream], "stream created {:?}", stream);
         stream
@@ -568,7 +571,7 @@ mod tests {
         fn build(&mut self) -> ChaffStream {
             let mut stream = ChaffStream::new(
                 self.stream_id, Url::parse("https://www.example.com").unwrap(),
-                Default::default(), self.initial_msd, self.throttled);
+                Default::default(), self.initial_msd, MAX_FRAME_OVERHEAD, self.throttled);
             if self.recv_open {
                 stream.open();
             }
@@ -591,7 +594,7 @@ mod tests {
             let stream = ChaffStream::new(
                 0, Url::parse("https://a.com").unwrap(),
                 Rc::new(RefCell::new(FlowShapingEvents::default())),
-                20, true);
+                20, MAX_FRAME_OVERHEAD, true);
 
             assert!(matches!(stream.recv_state, RecvState::Created { .. }));
             assert_eq!(stream.is_throttled(), true);
@@ -599,7 +602,7 @@ mod tests {
             let stream = ChaffStream::new(
                 0, Url::parse("https://a.com").unwrap(),
                 Rc::new(RefCell::new(FlowShapingEvents::default())),
-                20, false);
+                20, MAX_FRAME_OVERHEAD, false);
             assert!(matches!(stream.recv_state, RecvState::Created { .. }));
             assert_eq!(stream.is_throttled(), false);
         }

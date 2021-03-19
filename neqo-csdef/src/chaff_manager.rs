@@ -260,9 +260,9 @@ mod tests {
     fn requests_less_than_max_streams() {
         let mut streams = ChaffStreamMap::default();
         streams.insert(ChaffStream::new(
-            0, url!("https://a.com"), Default::default(), 20, true));
+            0, url!("https://a.com"), Default::default(), 20, 1500, true));
         streams.insert(ChaffStream::new(
-            4, url!("https://b.com"), Default::default(), 20, false));
+            4, url!("https://b.com"), Default::default(), 20, 1500, false));
 
         let mut manager = ChaffManager::new(3, 1_000_000, Default::default());
         manager.start();
@@ -280,7 +280,7 @@ mod tests {
     fn doesnt_ignore_closed_sending() {
         let mut streams = ChaffStreamMap::default();
         let mut stream = ChaffStream::new(
-            0, url!("https://a.com"), Default::default(), 20, true);
+            0, url!("https://a.com"), Default::default(), 20, 1500, true);
         // The receive side is still open and so this consumes an slot
         stream.close_sending();
         streams.insert(stream);
@@ -301,7 +301,7 @@ mod tests {
     fn ignores_closed_receiving() {
         let mut streams = ChaffStreamMap::default();
         let mut stream = ChaffStream::new(
-            0, url!("https://a.com"), Default::default(), 20, true);
+            0, url!("https://a.com"), Default::default(), 20, 1500, true);
         stream.close_receiving();
         streams.insert(stream);
 

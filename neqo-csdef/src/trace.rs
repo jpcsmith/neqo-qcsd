@@ -122,8 +122,6 @@ impl Trace {
         let mut group = Vec::new();
         let mut groups = Vec::new();
         for (bin, len) in packets {
-            println!("{:?} vs ({}, {})", group, bin, len);
-
             match group.last() {
                 None => group.push((bin, len)),
                 Some((prev_bin, prev_len)) => {
