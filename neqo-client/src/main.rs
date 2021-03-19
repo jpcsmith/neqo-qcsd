@@ -430,7 +430,11 @@ impl<'a> Handler<'a> {
     fn done(&mut self) -> bool {
         println!("Checking if done.");
         println!("Streams is empty: {:?} | url_queue is empty: {:?} | is done shaping: {:?}",
-                    self.streams.is_empty(), self.url_queue.is_empty(), self.is_done_shaping);
+                 self.streams.is_empty(), self.url_queue.is_empty(), self.is_done_shaping);
+
+        if self.is_done_shaping && self.url_queue.is_empty() && !self.streams.is_empty() {
+            println!("Pending streams: {:?}", self.streams.keys().cloned().collect::<Vec<u64>>());
+        }
         self.streams.is_empty() && self.url_queue.is_empty() && self.is_done_shaping
     }
 
@@ -447,9 +451,28 @@ impl<'a> Handler<'a> {
                     headers,
                     fin,
                 } => match self.streams.get(&stream_id) {
-                    Some((_, out_file)) => {
+                    Some((url, out_file)) => {
                         if out_file.is_none() {
                             println!("READ HEADERS[{}]: fin={} {:?}", stream_id, fin, headers);
+                        }
+
+                        if fin {
+                            if out_file.is_none() {
+                                println!("<FIN[{}]>", stream_id);
+                            }
+
+                            self.url_deps.borrow_mut().resource_downloaded(url);
+                            self.download_urls(client);
+                            self.streams.remove(&stream_id);
+
+                            if self.done() {
+                                if !neqo_csdef::debug_disable_shaping(){
+                                    client.close(Instant::now(), 0, "kthx4shaping!");
+                                } else {
+                                    client.close(Instant::now(), 0, "kthxbye!");
+                                }
+                                return Ok(false);
+                            }
                         }
                     }
                     None => {
