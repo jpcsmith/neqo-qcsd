@@ -171,7 +171,7 @@ pub struct Args {
     #[structopt(name = "max-blocked-streams", short = "b", long, default_value = "10")]
     max_blocked_streams: u16,
 
-    #[structopt(name = "max-push", short = "p", long, default_value = "10")]
+    #[structopt(name = "max-push", short = "p", long, default_value = "0")]
     max_concurrent_push_streams: u64,
 
     #[structopt(name = "use-old-http", short = "o", long)]
