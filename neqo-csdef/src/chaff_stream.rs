@@ -7,7 +7,6 @@ use crate::stream_id::StreamId;
 use crate::event::FlowShapingEvents;
 
 const DEFAULT_RX_DATA_WINDOW: u64 = 1048576;
-const MAX_FRAME_OVERHEAD: u64 = 1500;
 
 
 #[derive(Debug, PartialEq, Eq)]
@@ -67,6 +66,33 @@ impl RecvState {
             },
             Self::Created { .. } | Self::Closed { .. } => 0,
             Self::Unthrottled { .. } => std::u64::MAX,
+        }
+    }
+
+    #[cfg(test)]
+    fn max_stream_data_limit(&self) -> Option<u64> {
+        match self {
+            Self::ReceivingHeaders { max_stream_data_limit, .. }
+            | Self::ReceivingData { max_stream_data_limit, .. } 
+                => Some(*max_stream_data_limit),
+            Self::Created { .. } | Self::Closed { .. } | Self::Unthrottled { .. } 
+                => None,
+        }
+
+    }
+
+    /// Ensure that there is at least `credit` more limit available than data 
+    /// consumed to this point.
+    fn make_available(&mut self, credit: u64) {
+        match self {
+            Self::ReceivingHeaders { max_stream_data_limit, data_consumed, .. } 
+            | Self::ReceivingData { max_stream_data_limit, data_consumed, .. } => {
+                if *data_consumed + credit > *max_stream_data_limit {
+                    *max_stream_data_limit = *data_consumed + credit;
+                }
+            },
+            Self::Created {..} | Self::Closed {..} | Self::Unthrottled {..}
+                => panic!("Cannot increase limit in this state"),
         }
     }
 }
@@ -170,6 +196,16 @@ impl ChaffStream {
         self
     }
 
+    fn transition_send(&mut self, next: SendState) {
+        qtrace!([self], "SendState: {:?} -> {:?}", self.send_state, next);
+        self.send_state = next;
+    }
+
+    fn transition_recv(&mut self, next: RecvState) {
+        qtrace!([self], "RecvState: {:?} -> {:?}", self.recv_state, next);
+        self.recv_state = next;
+    }
+
     pub fn url(&self) -> &Url {
         &self.url
     }
@@ -188,10 +224,10 @@ impl ChaffStream {
     }
 
     pub fn unthrottle_sending(&mut self) {
-        self.send_state = match self.send_state {
-            SendState::Unthrottled | SendState::Throttled{..} => SendState::Unthrottled,
-            SendState::Closed => SendState::Closed,
-        };
+        match self.send_state {
+            SendState::Throttled{..} => self.transition_send(SendState::Unthrottled),
+            SendState::Unthrottled | SendState::Closed => (),
+        }
     }
 
     pub fn msd_available(&self) -> u64 {
@@ -199,32 +235,30 @@ impl ChaffStream {
     }
 
     pub fn open(&mut self) {
-        let next_state = match self.recv_state {
+        match self.recv_state {
             RecvState::Created { initial_msd, throttled: true } => {
-                RecvState::ReceivingHeaders {
+                let mut state = RecvState::ReceivingHeaders {
                     max_stream_data: initial_msd,
-                    max_stream_data_limit: match self.initial_msd_limit {
-                        Some(limit) => limit,
-                        None => initial_msd,
-                    },
+                    max_stream_data_limit: initial_msd,
                     data_consumed: 0,
-                }
+                };
+                state.make_available(
+                    std::cmp::max(self.initial_msd_limit.unwrap_or(0), self.msd_excess)
+                );
+                self.transition_recv(state);
             },
             RecvState::Created { initial_msd, throttled: false, .. } => {
                 self.events.borrow_mut()
                     .send_max_stream_data(&self.stream_id, DEFAULT_RX_DATA_WINDOW,
                                           DEFAULT_RX_DATA_WINDOW - initial_msd);
 
-                RecvState::Unthrottled{ data_length: 0 }
+                self.transition_recv(RecvState::Unthrottled{ data_length: 0 });
             },
             _ => {
                 qwarn!([self], "Trying to open stream in state {:?}", self.recv_state);
                 return;
             }
         };
-
-        qtrace!([self], "open: {:?} -> {:?}", self.recv_state, next_state);
-        self.recv_state = next_state;
     }
 
     pub fn data_length(&self) -> u64 {
@@ -232,17 +266,13 @@ impl ChaffStream {
     }
 
     pub fn close_receiving(&mut self) {
-        let closed_state = RecvState::Closed {
-            data_length: self.recv_state.data_length().unwrap_or(0)
-        };
-        qtrace!([self], "{} -> {}", self.recv_state.name(), closed_state.name());
-        self.recv_state = closed_state;
+        let data_length = self.recv_state.data_length().unwrap_or(0);
+        self.transition_recv(RecvState::Closed { data_length });
     }
 
     #[cfg(test)]
     pub fn close_sending(&mut self) {
-        qtrace!([self], "{} -> {}", self.send_state.name(), SendState::Closed.name());
-        self.send_state = SendState::Closed;
+        self.transition_send(SendState::Closed);
     }
 
     pub fn is_open(&self) -> bool {
@@ -261,41 +291,37 @@ impl ChaffStream {
 
     /// Pull data on this stream. Return the amount of data pulled.
     pub fn pull_data(&mut self, amount: u64) -> u64 {
-        let msd_available = self.msd_available();
+        let amount = std::cmp::min(amount, self.msd_available());
+        if amount == 0 { return 0 }
+        qtrace!([self], "pulling data {}: {:?}", amount, self.recv_state);
 
-        match self.recv_state {
-            RecvState::ReceivingHeaders{ ref mut max_stream_data, max_stream_data_limit, .. }
-            | RecvState::ReceivingData{ ref mut max_stream_data, max_stream_data_limit, .. } => {
-                match std::cmp::min(amount, msd_available) {
-                    0 => 0,
-                    pull_amount => {
-                        *max_stream_data += pull_amount;
-                        self.events.borrow_mut()
-                            .send_max_stream_data(
-                                &self.stream_id, *max_stream_data, pull_amount);
+        match &mut self.recv_state {
+            RecvState::ReceivingHeaders{ max_stream_data, .. }
+            | RecvState::ReceivingData{ max_stream_data, .. } => {
+                *max_stream_data += amount;
 
-                        let new_msd = *max_stream_data;
-                        qtrace!([&self], "pulled data: {}, {}/{}", pull_amount, new_msd,
-                                max_stream_data_limit);
-                        pull_amount
-                    }
-                }
+                assert!(amount > 0);
+                self.events.borrow_mut()
+                    .send_max_stream_data(&self.stream_id, *max_stream_data, amount);
+
+                qtrace!([self], "pulled data {:?}", self.recv_state);
+                amount
             },
-            _ => panic!("Cannot pull data for stream in current state!")
+            RecvState::Created { .. } | RecvState::Unthrottled { .. }
+            | RecvState::Closed { .. } 
+                => panic!("Cannot pull data for stream in current state!"),
         }
     }
 
     pub fn data_consumed(&mut self, amount: u64) {
-        qtrace!([self], "Recording consumption of {} data.", amount);
-        match self.recv_state {
-            RecvState::ReceivingHeaders {
-                ref mut data_consumed, max_stream_data_limit, ..  }
-            | RecvState::ReceivingData {
-                ref mut data_consumed, max_stream_data_limit, ..  } => {
+        match &mut self.recv_state {
+            RecvState::ReceivingHeaders { data_consumed, max_stream_data_limit, ..  }
+            | RecvState::ReceivingData { data_consumed, max_stream_data_limit, ..  } => {
+                assert!(data_consumed <= max_stream_data_limit);
                 *data_consumed += amount;
-                qtrace!("New values: {} <= {}", *data_consumed, max_stream_data_limit);
-                // TODO: Enable assert once we actually control
-                // assert!(*data_consumed <= max_stream_data_limit);
+
+                self.recv_state.make_available(self.msd_excess);
+                qtrace!([self], "data consumed {}: {:?}", amount, self.recv_state);
             },
             RecvState::Closed{ .. } | RecvState::Unthrottled { .. } => (),
             _ => panic!("Data should not be consumed in the current state.")
@@ -306,14 +332,10 @@ impl ChaffStream {
     pub fn awaiting_header_data(&mut self, min_remaining: u64) {
         qtrace!([self], "Needs {} bytes for header data {:?}.", min_remaining, self.recv_state);
         match self.recv_state {
-            RecvState::ReceivingHeaders {
-                ref mut max_stream_data_limit, data_consumed, .. }
-            | RecvState::ReceivingData {
-                ref mut max_stream_data_limit, data_consumed, ..
-            } => {
-                *max_stream_data_limit = std::cmp::max(
-                    data_consumed + min_remaining + MAX_FRAME_OVERHEAD,
-                    *max_stream_data_limit);
+            RecvState::ReceivingHeaders { .. } | RecvState::ReceivingData { ..  } => { 
+                self.recv_state.make_available(
+                    std::cmp::max(min_remaining, self.msd_excess));
+                qtrace!([self], "{:?}", self.recv_state);
             },
             RecvState::Closed { .. } | RecvState::Unthrottled { .. } => (),
             _ => panic!("Should not receive data frame in other states!")
@@ -329,31 +351,30 @@ impl ChaffStream {
     pub fn on_data_frame(&mut self, length: u64) {
         qtrace!([self], "Encountered data frame with length {}, {:?}", length, self.recv_state);
         match self.recv_state {
-            RecvState::ReceivingHeaders{ max_stream_data, data_consumed, .. } => {
-                let max_stream_data_limit = std::cmp::max(
-                    data_consumed + length, max_stream_data
-                );
-                self.recv_state = RecvState::ReceivingData {
+            RecvState::ReceivingHeaders{ 
+                max_stream_data, data_consumed, max_stream_data_limit, 
+            } => {
+                let mut state = RecvState::ReceivingData {
                     max_stream_data,
                     max_stream_data_limit,
                     data_consumed,
                     data_length: length,
-                }
+                };
+                state.make_available(std::cmp::max(length, self.msd_excess));
+
+                self.transition_recv(state);
             },
-            RecvState::ReceivingData {
-                ref mut max_stream_data_limit, data_consumed, ref mut data_length,
-                max_stream_data
-            } => {
+            RecvState::ReceivingData { ref mut data_length, .. } => {
                 // It seems to be possible to receive multiple HTTP/3 data
                 // frames in response to a request, we therefore aggregate
                 // their lengths
                 // It's not possible to encounter another dataframe without having parsed
                 // the previous, so we only consider bytes consumed in determining the new
                 // limit.
-                *max_stream_data_limit = std::cmp::max(
-                    data_consumed + length, max_stream_data
-                );
                 *data_length += length;
+
+                self.recv_state.make_available(std::cmp::max(length, self.msd_excess));
+                qtrace!([self], "{:?}", self.recv_state);
             },
             RecvState::Unthrottled { ref mut data_length } => {
                 *data_length += length;
@@ -518,6 +539,38 @@ impl ChaffStreamMap {
 mod tests {
     use super::*;
 
+    const MAX_FRAME_OVERHEAD: u64 = 1500;
+
+
+    mod recv_state {
+        use super::*;
+
+        macro_rules! test_make_available {
+            ($name:ident, $state:expr, $amount:literal, $expected:literal) => {
+                #[test]
+                fn $name() {
+                    let mut state = $state;
+                    state.make_available($amount);
+                    assert_eq!(state.max_stream_data_limit(), Some($expected));
+                }
+            };
+        }
+
+        test_make_available!(
+            make_available_rhdr_sufficient, RecvState::ReceivingHeaders { 
+                max_stream_data: 1000, max_stream_data_limit: 1000, data_consumed: 0
+            }, 500, 1000);
+        test_make_available!(
+            make_available_rhdr_inrease, RecvState::ReceivingHeaders { 
+                max_stream_data: 2000, max_stream_data_limit: 3000, data_consumed: 1900
+            }, 2000, 3900);
+        test_make_available!(
+            make_available_rdata_sufficient, RecvState::ReceivingData { 
+                max_stream_data: 1000, max_stream_data_limit: 1000, data_consumed: 500,
+                data_length: 900,
+            }, 600, 1100);
+    }
+
     struct StreamBuilder {
         stream_id: u64,
         throttled: bool,
@@ -624,7 +677,7 @@ mod tests {
                 .opened();
 
             assert!(matches!(stream.recv_state, RecvState::ReceivingHeaders {
-                max_stream_data_limit: 100, .. }));
+                max_stream_data_limit: MAX_FRAME_OVERHEAD, .. }));
             // We consume 80 bytes and encounter the first data frame
             stream.data_consumed(80);
             stream.on_data_frame(2100);
@@ -661,24 +714,25 @@ mod tests {
             let mut stream = throttled_stream().opened();
 
             assert_eq!(stream.recv_state, RecvState::ReceivingHeaders {
-                max_stream_data_limit: 20, max_stream_data: 20, data_consumed: 0
+                max_stream_data_limit: MAX_FRAME_OVERHEAD, max_stream_data: 20,
+                data_consumed: 0
             });
             stream.awaiting_header_data(45);
             assert_eq!(stream.recv_state, RecvState::ReceivingHeaders {
-                max_stream_data_limit: 45 + MAX_FRAME_OVERHEAD,
+                max_stream_data_limit: MAX_FRAME_OVERHEAD,
                 max_stream_data: 20, data_consumed: 0
             });
 
             stream.awaiting_header_data(90);
             assert_eq!(stream.recv_state, RecvState::ReceivingHeaders {
-                max_stream_data_limit: 90 + MAX_FRAME_OVERHEAD,
+                max_stream_data_limit: MAX_FRAME_OVERHEAD,
                 max_stream_data: 20, data_consumed: 0
             });
 
             stream.data_consumed(70);
             stream.awaiting_header_data(100);
             assert_eq!(stream.recv_state, RecvState::ReceivingHeaders {
-                max_stream_data_limit: 170 + MAX_FRAME_OVERHEAD,
+                max_stream_data_limit: MAX_FRAME_OVERHEAD + 70,
                 max_stream_data: 20, data_consumed: 70
             });
         }
@@ -696,22 +750,23 @@ mod tests {
             let events = stream.events.clone();
 
             let pulled = stream.pull_data(1000);
-            assert_eq!(pulled, 0);
+            assert_eq!(pulled, 1000);
             assert_eq!(stream.recv_state, RecvState::ReceivingHeaders {
-                max_stream_data_limit: 20, max_stream_data: 20, data_consumed: 0,
+                max_stream_data_limit: MAX_FRAME_OVERHEAD, 
+                max_stream_data: 1020, data_consumed: 0,
             });
-            assert_eq!(events.borrow().has_events(), false);
+            assert_eq!(events.borrow().has_events(), true);
 
             stream.on_data_frame(5000);
             let pulled = stream.pull_data(2000);
             assert_eq!(pulled, 2000);
             assert_eq!(stream.recv_state, RecvState::ReceivingData {
-                max_stream_data_limit: 5000, max_stream_data: 2020, data_consumed: 0,
+                max_stream_data_limit: 5000, max_stream_data: 3020, data_consumed: 0,
                 data_length: 5000,
             });
             assert_eq!(events.borrow_mut().next_event(), Some(
                     FlowShapingEvent::SendMaxStreamData {
-                        stream_id: 0, new_limit: 2020, increase: 2000
+                        stream_id: 0, new_limit: 1020, increase: 1000
                     }));
         }
 
