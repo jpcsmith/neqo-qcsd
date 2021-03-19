@@ -33,7 +33,7 @@ use std::process::exit;
 use std::rc::Rc;
 use std::time::Instant;
 use neqo_csdef::{ ConfigFile };
-use neqo_csdef::flow_shaper::{ self, FlowShaper, FlowShaperBuilder };
+use neqo_csdef::flow_shaper::{ self, FlowShaper, FlowShaperBuilder, Config as FlowShaperConfig };
 use neqo_csdef::defences::{ FrontDefence, FrontConfig };
 
 use structopt::StructOpt;
@@ -139,6 +139,9 @@ pub struct Args {
     #[structopt(long)]
     /// Specify whether `target_trace` corresponds to a padding trace
     pad_only_mode: Option<bool>,
+
+    #[structopt(long)]
+    msd_limit_excess: Option<u64>,
 
     #[structopt(long)]
     shaper_config: Option<String>,
@@ -560,23 +563,25 @@ fn build_flow_shaper(args: &Args) -> Option<FlowShaper> {
 
     println!("Enabling connection shaping.");
     let mut builder = FlowShaperBuilder::new();
-    let mut front_config = FrontConfig::default();
 
-    if let Some(filename) = neqo_csdef::shaper_config_file()
-            .or(args.shaper_config.clone()) {
-        let configs = ConfigFile::load(&filename)
-            .expect("Unable to load config file");
+    let (mut config, front_config) = match neqo_csdef::shaper_config_file()
+        .or(args.shaper_config.clone()) {
+        Some(filename) => {
+            let configs = ConfigFile::load(&filename)
+                .expect("Unable to load config file");
 
-        if let Some(config) = configs.flow_shaper {
-            builder.config(config);
-        }
+            (configs.flow_shaper.unwrap_or(FlowShaperConfig::default()),
+             configs.front_defence.unwrap_or(FrontConfig::default()))
+        },
+        None => (FlowShaperConfig::default(), FrontConfig::default())
+    };
 
-        if let Some(config) = configs.front_defence {
-            front_config = config;
-        }
-    }
+    config.max_stream_data_excess = args.msd_limit_excess
+        .unwrap_or(config.max_stream_data_excess);
 
+    builder.config(config);
     builder.chaff_urls(chaff_urls);
+
 
     let args_trace = args.target_trace.clone()
         .and_then(|p| p.into_os_string().to_str().map(str::to_owned))

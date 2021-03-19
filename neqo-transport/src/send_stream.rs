@@ -495,7 +495,8 @@ impl SendStream {
     /// Return the next range to be sent, if any.
     pub fn next_bytes(&mut self) -> Option<(u64, &[u8])> {
         match self.state {
-            SendStreamState::Send { ref send_buf } => self.maybe_throttle(send_buf.next_bytes()),
+            SendStreamState::Send { ref send_buf } 
+                => self.maybe_throttle(send_buf.next_bytes()),
             SendStreamState::DataSent {
                 ref send_buf,
                 fin_sent,

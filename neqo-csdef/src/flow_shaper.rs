@@ -26,7 +26,7 @@ use crate::Resource;
 pub use crate::event::{ FlowShapingEvent };
 
 
-const BLOCKED_STREAM_LIMIT: u64 = 1500;
+const BLOCKED_STREAM_LIMIT: u64 = 16;
 
 
 fn debug_save_ids_path() -> Option<String> {
@@ -594,6 +594,12 @@ impl StreamEventConsumer for FlowShaper {
     }
 
     fn on_fin_received(&mut self, stream_id: u64) {
+        // We have disabled PUSH streams, so these should only be control streams 
+        // from the server
+        if StreamId::new(stream_id).is_uni() {
+            return;
+        }
+
         self.events.borrow_mut().remove_by_id(&stream_id);
 
         let stream = self.get_stream_mut(&stream_id)

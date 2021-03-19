@@ -298,9 +298,11 @@ impl Http3Client {
 
     fn fetch_chaff(&mut self, resource: &Resource) -> Res<u64> {
         let url = resource.url();
-        self.fetch_inner(
+        let result = self.fetch_inner(
             Instant::now(), "GET", &url.scheme(), &url.host_str().unwrap(), 
-            &url.path(), resource.headers(), (resource, true))
+            &url.path(), resource.headers(), (resource, true));
+
+        result.and_then(|stream_id| self.stream_close_send(stream_id).and(Ok(stream_id)))
     }
 
     fn fetch_inner(
