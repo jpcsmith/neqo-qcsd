@@ -239,6 +239,9 @@ impl FlowShaper {
     }
 
     fn process_timer_(&mut self, since_start: u128) {
+        if self.target.is_empty() {
+            return;
+        }
         qtrace!([self], "now: {}, target: {}", since_start, self.target);
 
         loop {
@@ -288,7 +291,7 @@ impl FlowShaper {
                 };
 
                 if let Some(index) = to_remove {
-                    qtrace!("Popping packet from trace. {} remaining", self.target.len());
+                    qtrace!("Popping packet from trace. {} remaining", (self.target.len() - 1));
                     self.target.remove(index);
                 } else {
                     break;
