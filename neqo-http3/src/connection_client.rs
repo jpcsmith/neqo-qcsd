@@ -16,7 +16,7 @@ use crate::Header;
 use crate::RecvMessageEvents;
 use neqo_common::{
     event::Provider as EventProvider, hex, hex_with_len, qdebug, qinfo, qlog::NeqoQlog, qtrace,
-    Datagram, Decoder, Encoder, Role,
+    qwarn, Datagram, Decoder, Encoder, Role,
 };
 use neqo_crypto::{agent::CertificateInfo, AuthenticationStatus, ResumptionToken, SecretAgentInfo};
 use neqo_qpack::{stats::Stats, QpackSettings};
@@ -662,11 +662,16 @@ impl Http3Client {
                     self.close(Instant::now(), 0, "kthx4shaping!");
                 },
                 FlowShapingEvent::RequestResource(resource) => {
-                    let stream_id = self.fetch_chaff(&resource)
-                        .expect("cannot open dummpy stream");
-
-                    println!("Successfully created new dummy stream id {} for resource {}",
-                             stream_id, resource.url());
+                    match self.fetch_chaff(&resource) {
+                        Ok(stream_id) => println!(
+                            "Successfully created new dummy stream id {} for resource {}",
+                            stream_id, resource.url()
+                        ),
+                        Err(Error::StreamLimitError) => qwarn!(
+                            [self], "stream limit on requesting chaff: {}", resource.url()
+                        ),
+                        Err(err) => panic!("cannot open dummy stream: {:?}", err),
+                    };
                 },
                 _ => {}
             };

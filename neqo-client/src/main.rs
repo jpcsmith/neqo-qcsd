@@ -132,6 +132,17 @@ pub struct Args {
     /// the file will be added to the list of URLs to download.
     url_dependencies_from: Option<PathBuf>,
 
+    #[structopt(long)]
+    /// The target trace for adding chaff or shaping.
+    target_trace: Option<PathBuf>,
+
+    #[structopt(long)]
+    /// Specify whether `target_trace` corresponds to a padding trace
+    pad_only_mode: Option<bool>,
+
+    #[structopt(long)]
+    shaper_config: Option<String>,
+
     #[structopt(short = "dummy-urls", long, number_of_values = 5)]
     dummy_urls: Vec<Url>,
 
@@ -540,7 +551,9 @@ fn to_headers(values: &[impl AsRef<str>]) -> Vec<Header> {
 }
 
 
-fn build_flow_shaper(chaff_urls: &[Url]) -> Option<FlowShaper> {
+fn build_flow_shaper(args: &Args) -> Option<FlowShaper> {
+    let chaff_urls = &args.dummy_urls;
+
     if neqo_csdef::debug_disable_shaping() {
         return None;
     }
@@ -549,7 +562,8 @@ fn build_flow_shaper(chaff_urls: &[Url]) -> Option<FlowShaper> {
     let mut builder = FlowShaperBuilder::new();
     let mut front_config = FrontConfig::default();
 
-    if let Some(filename) = neqo_csdef::shaper_config_file() {
+    if let Some(filename) = neqo_csdef::shaper_config_file()
+            .or(args.shaper_config.clone()) {
         let configs = ConfigFile::load(&filename)
             .expect("Unable to load config file");
 
@@ -564,7 +578,11 @@ fn build_flow_shaper(chaff_urls: &[Url]) -> Option<FlowShaper> {
 
     builder.chaff_urls(chaff_urls);
 
-    Some(match neqo_csdef::debug_use_trace_file() {
+    let args_trace = args.target_trace.clone()
+        .and_then(|p| p.into_os_string().to_str().map(str::to_owned))
+        .zip(args.pad_only_mode.or(Some(true)));
+
+    Some(match neqo_csdef::debug_use_trace_file().or(args_trace) {
         Some((filename, is_pad_only)) => {
             builder.pad_only_mode(is_pad_only)
                 .from_csv(&filename)
@@ -618,7 +636,7 @@ fn client(
         },
     );
 
-    if let Some(flow_shaper) = build_flow_shaper(&args.dummy_urls) {
+    if let Some(flow_shaper) = build_flow_shaper(&args) {
         client = client.with_flow_shaper(flow_shaper);
         shaping = true;
     }
