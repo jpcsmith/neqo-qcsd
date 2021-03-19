@@ -334,13 +334,19 @@ impl FlowShaper {
 
         if !self.pad_only_mode && remaining > 0 {
             let pushed = self.app_streams.push_data(remaining);
-            qdebug!([self], "pushed bytes: {{ source: \"app-stream\", bytes: {} }}", pushed);
+            if pushed > 0 {
+                qdebug!([self], "pushed bytes: {{ source: \"app-stream\", bytes: {} }}", 
+                        pushed);
+            }
             remaining -= pushed;
         }
 
         if remaining > 0 {
             let pushed = self.chaff_streams.push_data(remaining);
-            qdebug!([self], "pushed bytes: {{ source: \"chaff-stream\", bytes: {} }}", pushed);
+            if pushed > 0 {
+                qdebug!([self], "pushed bytes: {{ source: \"chaff-stream\", bytes: {} }}", 
+                        pushed);
+            }
             remaining -= pushed;
         }
 
@@ -499,7 +505,7 @@ impl HEventConsumer for FlowShaper {
     }
 
     fn on_http_request_sent(&mut self, stream_id: u64, resource: &Resource, is_chaff: bool) {
-        qdebug!([self], "notified of http reqeuest sent \
+        qdebug!([self], "notified of http request sent \
                 {{ stream_id: {}, resource: {:?}, is_chaff: {} }}", stream_id, resource, is_chaff);
 
         let mut stream = ChaffStream::new(
@@ -591,7 +597,7 @@ impl StreamEventConsumer for FlowShaper {
         self.events.borrow_mut().remove_by_id(&stream_id);
 
         let stream = self.get_stream_mut(&stream_id)
-            .expect("Stream should be tracked.");
+            .expect(&format!("Stream should be tracked: {:?}", stream_id));
         stream.close_receiving();
 
         let resource = Resource::new(stream.url().clone(), vec![], stream.data_length());
