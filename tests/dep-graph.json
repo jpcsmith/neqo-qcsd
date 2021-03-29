@@ -1,0 +1,197 @@
+{
+  "directed": true,
+  "multigraph": false,
+  "graph": {},
+  "nodes": [
+    {
+      "url": "https://www.youtube.com/",
+      "done": true,
+      "type": "Document",
+      "origin": "https://www.youtube.com",
+      "id": 0
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/web-animations-next-lite.min.vflset/web-animations-next-lite.min.js",
+      "done": true,
+      "type": "Script",
+      "origin": "https://www.youtube.com",
+      "id": 1
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/webcomponents-all-noPatch.vflset/webcomponents-all-noPatch.js",
+      "done": true,
+      "type": "Script",
+      "origin": "https://www.youtube.com",
+      "id": 2
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/fetch-polyfill.vflset/fetch-polyfill.js",
+      "done": true,
+      "type": "Script",
+      "origin": "https://www.youtube.com",
+      "id": 3
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/scheduler.vflset/scheduler.js",
+      "done": true,
+      "type": "Script",
+      "origin": "https://www.youtube.com",
+      "id": 4
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/www-i18n-constants-en_US.vflset/www-i18n-constants.js",
+      "done": true,
+      "type": "Script",
+      "origin": "https://www.youtube.com",
+      "id": 5
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/www-tampering.vflset/www-tampering.js",
+      "done": true,
+      "type": "Script",
+      "origin": "https://www.youtube.com",
+      "id": 6
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/www-prepopulator.vflset/www-prepopulator.js",
+      "done": true,
+      "type": "Script",
+      "origin": "https://www.youtube.com",
+      "id": 7
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/spf.vflset/spf.js",
+      "done": true,
+      "type": "Script",
+      "origin": "https://www.youtube.com",
+      "id": 8
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/network.vflset/network.js",
+      "done": true,
+      "type": "Script",
+      "origin": "https://www.youtube.com",
+      "id": 9
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/cssbin/www-main-desktop-home-page-skeleton.css",
+      "done": true,
+      "type": "Stylesheet",
+      "origin": "https://www.youtube.com",
+      "id": 10
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/cssbin/www-onepick.css",
+      "done": true,
+      "type": "Stylesheet",
+      "origin": "https://www.youtube.com",
+      "id": 11
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/desktop_polymer_inlined_html_polymer_flags_legacy_browsers.vflset/desktop_polymer_inlined_html_polymer_flags_legacy_browsers.js",
+      "done": true,
+      "type": "Script",
+      "origin": "https://www.youtube.com",
+      "id": 12
+    },
+    {
+      "url": "https://www.youtube.com/s/desktop/1ee34deb/cssbin/www-main-desktop-watch-page-skeleton.css",
+      "done": true,
+      "type": "Stylesheet",
+      "origin": "https://www.youtube.com",
+      "id": 13
+    },
+    {
+      "url": "https://www.youtube.com/s/player/38c5f870/player_ias.vflset/en_US/base.js",
+      "done": true,
+      "type": "Script",
+      "origin": "https://www.youtube.com",
+      "id": 14
+    },
+    {
+      "url": "https://www.youtube.com/s/player/38c5f870/www-player.css",
+      "done": true,
+      "type": "Stylesheet",
+      "origin": "https://www.youtube.com",
+      "id": 15
+    }
+  ],
+  "links": [
+    {
+      "source": 0,
+      "target": 1
+    },
+    {
+      "source": 0,
+      "target": 2
+    },
+    {
+      "source": 0,
+      "target": 3
+    },
+    {
+      "source": 0,
+      "target": 4
+    },
+    {
+      "source": 0,
+      "target": 5
+    },
+    {
+      "source": 0,
+      "target": 6
+    },
+    {
+      "source": 0,
+      "target": 7
+    },
+    {
+      "source": 0,
+      "target": 8
+    },
+    {
+      "source": 0,
+      "target": 9
+    },
+    {
+      "source": 0,
+      "target": 10
+    },
+    {
+      "source": 0,
+      "target": 11
+    },
+    {
+      "source": 0,
+      "target": 12
+    },
+    {
+      "source": 0,
+      "target": 13
+    },
+    {
+      "source": 0,
+      "target": 14
+    },
+    {
+      "source": 0,
+      "target": 15
+    },
+    {
+      "source": 4,
+      "target": 14
+    },
+    {
+      "source": 4,
+      "target": 15
+    },
+    {
+      "source": 12,
+      "target": 14
+    },
+    {
+      "source": 12,
+      "target": 15
+    }
+  ]
+}
