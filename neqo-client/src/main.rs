@@ -33,15 +33,12 @@ use std::process::exit;
 use std::rc::Rc;
 use std::time::Instant;
 use neqo_csdef::{ ConfigFile };
-use neqo_csdef::flow_shaper::{ self, FlowShaper, FlowShaperBuilder, Config as FlowShaperConfig };
+use neqo_csdef::flow_shaper::{ FlowShaper, FlowShaperBuilder, Config as FlowShaperConfig };
 use neqo_csdef::defences::{ FrontDefence, FrontConfig };
+use neqo_csdef::dependency_tracker::UrlDependencyTracker;
 
 use structopt::StructOpt;
 use url::{Origin, Url};
-
-mod dependency_tracker;
-
-use dependency_tracker::UrlDependencyTracker;
 
 
 #[derive(Debug)]
@@ -347,8 +344,8 @@ fn process_loop(
 }
 
 struct Handler<'a> {
-    streams: HashMap<u64, (Url, Option<File>)>,
-    url_queue: VecDeque<Url>,
+    streams: HashMap<u64, ((u16, Url), Option<File>)>,
+    url_queue: VecDeque<(u16, Url)>, // u16 is a key into url_deps
     all_paths: Vec<PathBuf>,
     args: &'a Args,
     key_update: KeyUpdateState,
@@ -376,8 +373,8 @@ impl<'a> Handler<'a> {
 
         assert!(!self.url_queue.is_empty(), "download_next called with empty queue");
 
-        let url = match self.url_queue.iter()
-            .position(|url| self.url_deps.borrow().is_downloadable(url))
+        let (id, url) = match self.url_queue.iter()
+            .position(|(id, _)| self.url_deps.borrow().is_downloadable(*id))
         {
             Some(index) => {
                 self.url_queue.swap_remove_front(index).unwrap()
@@ -405,14 +402,14 @@ impl<'a> Handler<'a> {
 
                 let out_file = get_output_file(&url, &self.args.output_dir, &mut self.all_paths);
 
-                self.streams.insert(client_stream_id, (url, out_file));
+                self.streams.insert(client_stream_id, ((id, url), out_file));
                 true
             }
             e @ Err(Error::TransportError(TransportError::StreamLimitError))
             | e @ Err(Error::StreamLimitError)
             | e @ Err(Error::Unavailable) => {
                 println!("Cannot create stream {:?}", e);
-                self.url_queue.push_front(url);
+                self.url_queue.push_front((id, url));
                 false
             }
             Err(e) => {
@@ -451,7 +448,7 @@ impl<'a> Handler<'a> {
                     headers,
                     fin,
                 } => match self.streams.get(&stream_id) {
-                    Some((url, out_file)) => {
+                    Some(((id, _), out_file)) => {
                         if out_file.is_none() {
                             println!("READ HEADERS[{}]: fin={} {:?}", stream_id, fin, headers);
                         }
@@ -461,7 +458,7 @@ impl<'a> Handler<'a> {
                                 println!("<FIN[{}]>", stream_id);
                             }
 
-                            self.url_deps.borrow_mut().resource_downloaded(url);
+                            self.url_deps.borrow_mut().resource_downloaded(*id);
                             self.download_urls(client);
                             self.streams.remove(&stream_id);
 
@@ -487,7 +484,7 @@ impl<'a> Handler<'a> {
                             println!("Data on unexpected stream: {}", stream_id);
                             return Ok(false);
                         }
-                        Some((url, out_file)) => loop {
+                        Some(((id, _), out_file)) => loop {
                             let mut data = vec![0; 4096];
                             let (sz, fin) = client
                                 .read_response_data(Instant::now(), stream_id, &mut data)
@@ -510,7 +507,7 @@ impl<'a> Handler<'a> {
                                     println!("<FIN[{}]>", stream_id);
                                 }
 
-                                self.url_deps.borrow_mut().resource_downloaded(url);
+                                self.url_deps.borrow_mut().resource_downloaded(*id);
                                 self.download_urls(client);
 
                                 stream_done = true;
@@ -628,7 +625,6 @@ fn client(
     local_addr: SocketAddr,
     remote_addr: SocketAddr,
     hostname: &str,
-    urls: &[Url],
     url_deps: Rc<RefCell<UrlDependencyTracker>>,
 ) -> Res<()> {
     let quic_protocol = match args.alpn.as_str() {
@@ -674,9 +670,10 @@ fn client(
     client.set_qlog(qlog);
 
     let key_update = KeyUpdateState(args.key_update);
+    let url_queue = VecDeque::from(url_deps.borrow().urls());
     let mut h = Handler {
         streams: HashMap::new(),
-        url_queue: VecDeque::from(urls.to_vec()),
+        url_queue,
         all_paths: Vec::new(),
         args: &args,
         key_update,
@@ -724,24 +721,18 @@ fn main() -> Res<()> {
 
     let url_deps = match &args.url_dependencies_from {
         Some(path_buf) => {
-            let (mut urls, dependencies) =
-                dependency_tracker::load_dependencies(path_buf.as_path())
-                .expect("Invalid path or dependency csv.");
+            let tracker = UrlDependencyTracker::from_json(path_buf.as_path());
+            args.urls = tracker.urls().iter().map(|x| x.1.clone()).collect();
+            tracker
 
-            urls.retain(|u| !args.urls.contains(u));
-            args.urls.extend(urls);
-
-            UrlDependencyTracker::new(&dependencies)
         },
-        None => UrlDependencyTracker::new(&[])
+        None => UrlDependencyTracker::from_urls(&args.urls)
     };
     let url_deps = Rc::new(RefCell::new(url_deps));
 
     // If there are no dummy-urls, extract them from the list of URLs
     if args.dummy_urls.is_empty() {
-        args.dummy_urls.extend(
-            flow_shaper::select_padding_urls(&args.urls, 5)
-        );
+        args.dummy_urls = url_deps.borrow().select_padding_urls(5);
     }
 
     if let Some(testcase) = args.qns_test.as_ref() {
@@ -822,7 +813,6 @@ fn main() -> Res<()> {
                 local_addr,
                 remote_addr,
                 &format!("{}", host),
-                &urls,
                 url_deps.clone(),
             )?;
         } else if !args.download_in_series {
