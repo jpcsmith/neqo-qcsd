@@ -408,7 +408,7 @@ impl FlowShaper {
         if queued_msd > 0 {
             let pulled = self.chaff_streams.pull_data(queued_msd);
 
-            if pulled > 0 && pulled < queued_msd {
+            if pulled > 0 && pulled <= queued_msd {
                 self.events.borrow_mut().consume_queued_msd(pulled);
             }
         }
