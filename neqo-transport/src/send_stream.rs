@@ -508,7 +508,7 @@ impl SendStream {
 
                 if throttled_bytes.is_some() {
                     // Must be a resend
-                    bytes
+                    throttled_bytes
                 } else if throttled_bytes.is_none() && bytes.is_some() {
                     // We were throttled down to zero, just return None
                     None
