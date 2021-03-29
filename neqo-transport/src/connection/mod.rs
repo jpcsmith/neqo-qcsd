@@ -1552,14 +1552,19 @@ impl Connection {
                 if frame.is_none() && space == PNSpace::ApplicationData && self.role == Role::Client {
                     // add shaper padding before anything else
                     let padd_frame = Frame::Padding;
+                    let ping_frame = Frame::Ping;
                     let padd_size = std::cmp::min(self.shaper_padding, remaining as u32);
-                    for _n in 0..padd_size {
-                        padd_frame.marshal(builder);
+                    if padd_size > 0 {
+                        // make it ACK eliciting
+                        ping_frame.marshal(builder);
+                        for _n in 0..padd_size-1 {
+                            padd_frame.marshal(builder);
+                        }
+                        self.shaper_padding -= padd_size;
+                        remaining = limit - builder.len();
+                        // this bypasses the timeout, making the client think to wait for an ACK
+                        ack_eliciting = true;
                     }
-                    self.shaper_padding -= padd_size;
-                    remaining = limit - builder.len();
-                    // this bypasses the timeout, making the client think to wait for an ACK
-                    ack_eliciting = true;
                 }
                 if frame.is_none() {
                     frame = self.crypto.streams.get_frame(space, remaining)
