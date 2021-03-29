@@ -3,6 +3,7 @@ pub mod defences;
 pub mod stream_id;
 pub mod event;
 pub mod trace;
+pub mod dependency_tracker;
 mod error;
 mod chaff_stream;
 mod chaff_manager;

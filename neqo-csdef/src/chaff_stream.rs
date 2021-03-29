@@ -32,16 +32,6 @@ impl RecvState {
         Self::Created { initial_msd, throttled }
     }
 
-    fn name(&self) -> &str {
-        match self {
-            Self::Created { .. } => "Created",
-            Self::ReceivingHeaders { .. } => "ReceivingHeaders",
-            Self::ReceivingData { .. } => "ReceivingData",
-            Self::Closed { .. } => "Closed",
-            Self::Unthrottled { .. } => "Unthrottled",
-        }
-    }
-
     fn data_length(&self) -> Option<u64> {
         match self {
             Self::ReceivingData { data_length, .. } | Self::Unthrottled { data_length, .. }
@@ -133,15 +123,6 @@ impl SendState {
         match self {
             Self::Throttled { allowed, .. } => *allowed,
             Self::Unthrottled | Self::Closed => std::u64::MAX,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn name(&self) -> &str {
-        match self {
-            Self::Throttled { .. } => "Throttled [Send]",
-            Self::Unthrottled => "Unthrottled [Send]",
-            Self::Closed => "Closed [Send]"
         }
     }
 }
