@@ -623,9 +623,8 @@ impl StreamEventConsumer for FlowShaper {
             stream.url().clone(), stream.headers().clone(), stream.data_length());
         self.chaff_manager.add_resource(resource);
 
-        if self.chaff_streams.contains(&stream_id) {
-            self.chaff_manager.request_chaff_streams(&self.chaff_streams);
-        }
+        // Possibly open new chaff streams
+        self.chaff_manager.request_chaff_streams(&self.chaff_streams);
     }
 }
 
