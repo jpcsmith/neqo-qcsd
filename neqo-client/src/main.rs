@@ -605,7 +605,7 @@ fn build_flow_shaper(args: &Args) -> Option<FlowShaper> {
 
     builder.config(config);
     builder.chaff_urls(chaff_urls);
-
+    builder.chaff_headers(&to_headers(&args.header));
 
     let args_trace = args.target_trace.clone()
         .and_then(|p| p.into_os_string().to_str().map(str::to_owned))
