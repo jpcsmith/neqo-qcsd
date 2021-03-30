@@ -112,6 +112,7 @@ impl ChaffManager {
         let mut remaining_streams = self.max_streams.saturating_sub(stream_count);
 
         if remaining_streams == 0 {
+            qtrace!([self], "no capacity to create chaff streams");
             return;
         }
 
