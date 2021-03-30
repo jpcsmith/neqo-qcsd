@@ -1555,15 +1555,13 @@ impl Connection {
                     let ping_frame = Frame::Ping;
                     let padd_size = std::cmp::min(self.shaper_padding, remaining as u32);
                     if padd_size > 0 {
-                        // make it ACK eliciting
-                        ping_frame.marshal(builder);
                         for _n in 0..padd_size-1 {
                             padd_frame.marshal(builder);
                         }
                         self.shaper_padding -= padd_size;
                         remaining = limit - builder.len();
                         // this bypasses the timeout, making the client think to wait for an ACK
-                        ack_eliciting = true;
+                        frame = Some((ping_frame, None));
                     }
                 }
                 if frame.is_none() {
