@@ -103,6 +103,12 @@ impl FlowShaperBuilder {
         self
     }
 
+    pub fn chaff_headers(&mut self, headers: &[(String, String)]) -> &mut Self {
+        self.chaff_resources.iter_mut()
+            .for_each(|res| res.headers = headers.iter().cloned().collect());
+        self
+    }
+
     pub fn pad_only_mode(&mut self, pad_only_mode: bool) -> &mut Self {
         self.pad_only_mode = pad_only_mode;
         self
@@ -515,7 +521,8 @@ impl HEventConsumer for FlowShaper {
             stream_id, resource.url.clone(), self.events.clone(), 
             self.config.initial_max_stream_data,
             self.config.max_stream_data_excess,
-            is_chaff || !self.pad_only_mode);
+            is_chaff || !self.pad_only_mode
+        ).with_headers(&resource.headers);
 
         if is_chaff && resource.length > 0 {
             stream = stream.with_msd_limit(resource.length)
@@ -609,7 +616,8 @@ impl StreamEventConsumer for FlowShaper {
             .expect(&format!("Stream should be tracked: {:?}", stream_id));
         stream.close_receiving();
 
-        let resource = Resource::new(stream.url().clone(), vec![], stream.data_length());
+        let resource = Resource::new(
+            stream.url().clone(), stream.headers().clone(), stream.data_length());
         self.chaff_manager.add_resource(resource);
 
         if self.chaff_streams.contains(&stream_id) {
