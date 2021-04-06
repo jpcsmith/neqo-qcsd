@@ -151,6 +151,7 @@ impl SendState {
 pub(crate) struct ChaffStream {
     stream_id: StreamId,
     url: Url,
+    headers: Vec<(String, String)>,
     initial_msd_limit: Option<u64>,
     msd_excess: u64,
     recv_state: RecvState,
@@ -176,9 +177,19 @@ impl ChaffStream {
             events,
             initial_msd_limit: None,
             msd_excess,
+            headers: Vec::new(),
         };
         qtrace!([stream], "stream created {:?}", stream);
         stream
+    }
+
+    pub fn with_headers(mut self, headers: &[(String, String)]) -> Self {
+        self.headers = headers.iter().cloned().collect();
+        self
+    }
+
+    pub fn headers(&self) -> &Vec<(String, String)> {
+        &self.headers
     }
 
     pub fn with_msd_limit(mut self, msd_limit: u64) -> Self {
