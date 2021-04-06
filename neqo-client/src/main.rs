@@ -567,12 +567,13 @@ fn to_headers(values: &[impl AsRef<str>]) -> Vec<Header> {
         .scan(None, |state, value| {
             if let Some(name) = state.take() {
                 *state = None;
-                Some((name, value.as_ref().to_string())) // TODO use a real type
+                Some(Some((name, value.as_ref().to_string()))) // TODO use a real type
             } else {
                 *state = Some(value.as_ref().to_string());
-                None
+                Some(None)
             }
         })
+        .filter_map(|x| x)
         .collect()
 }
 
@@ -604,7 +605,7 @@ fn build_flow_shaper(args: &Args) -> Option<FlowShaper> {
 
     builder.config(config);
     builder.chaff_urls(chaff_urls);
-
+    builder.chaff_headers(&to_headers(&args.header));
 
     let args_trace = args.target_trace.clone()
         .and_then(|p| p.into_os_string().to_str().map(str::to_owned))
