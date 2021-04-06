@@ -221,6 +221,9 @@ impl FlowShaper {
     /// Report the next instant at which the FlowShaper should be called for
     /// processing events.
     pub fn next_signal_time(&self) -> Option<Instant> {
+        if self.has_events() {
+            return Some(Instant::now());
+        }
         self.next_signal_offset()
             .map(u64::from)
             .map(Duration::from_millis)
