@@ -850,7 +850,7 @@ fn drain_stream(client: &mut Http3Client, stream_id: u64) -> bool {
     loop {
         match client.read_response_data(Instant::now(), stream_id, &mut data) {
             Err(Error::InvalidStreamId) => return false,
-            Err(error) => panic!(error),
+            Err(error) => panic!("{}", error),
             Ok((0, fin)) => return fin,
             Ok((_amount, true)) => return true,
             _ => continue
