@@ -27,6 +27,7 @@ pub use crate::event::{ FlowShapingEvent };
 
 
 const BLOCKED_STREAM_LIMIT: u64 = 16;
+const DEFAULT_MSD_EXCESS: u64 = 1000;
 
 
 fn debug_save_ids_path() -> Option<String> {
@@ -64,7 +65,7 @@ impl Default for Config {
             rx_stream_data_window: 1048576,
             local_md: 4611686018427387903,
             initial_max_stream_data: BLOCKED_STREAM_LIMIT,
-            max_stream_data_excess: 1500,
+            max_stream_data_excess: DEFAULT_MSD_EXCESS,
             max_chaff_streams: 5,
             low_watermark: 1_000_000,
         }
