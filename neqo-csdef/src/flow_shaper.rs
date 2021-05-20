@@ -10,7 +10,7 @@ use std::time::{ Duration, Instant };
 use serde::Deserialize;
 use url::Url;
 
-use neqo_common::{ qwarn, qdebug, qtrace };
+use neqo_common::{ qwarn, qdebug, qtrace, qinfo };
 
 use crate::{ Result, dummy_schedule_log_file };
 use crate::trace::{ Trace, Packet };
@@ -214,7 +214,7 @@ impl FlowShaper {
             chaff_streams: Default::default(),
             events: Default::default(),
         };
-        qtrace!("New flow shaper created {:?}", result);
+        qinfo!("New flow shaper created {:?}", result);
         result
     }
 
