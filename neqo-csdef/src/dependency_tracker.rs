@@ -57,8 +57,8 @@ impl UrlDependencyTracker {
         let file = File::open(path).expect("unable to open file");
         let reader = BufReader::new(file);
 
-        #[derive(Deserialize)] struct Link { source: u16, target: u16 };
-        #[derive(Deserialize)] struct Graph { nodes: Vec<Resource>, links: Vec<Link>, };
+        #[derive(Deserialize)] struct Link { source: u16, target: u16 }
+        #[derive(Deserialize)] struct Graph { nodes: Vec<Resource>, links: Vec<Link>, }
         let data: Graph = serde_json::from_reader(reader).expect("unable to parse json");
 
         // Assert that each index matches the id

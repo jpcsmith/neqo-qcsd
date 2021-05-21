@@ -253,6 +253,7 @@ impl FlowShaper {
             return;
         }
         qtrace!([self], "now: {}, target: {}", since_start, self.target);
+        let mut packet_consumed = false;
 
         loop {
             let to_remove = match self.target.next_outgoing() {
@@ -270,6 +271,7 @@ impl FlowShaper {
             if let Some(index) = to_remove {
                 qtrace!("Popping packet from trace, remaining: {}", (self.target.len() - 1));
                 self.target.remove(index);
+                packet_consumed = true;
             } else {
                 break;
             }
@@ -303,6 +305,7 @@ impl FlowShaper {
                 if let Some(index) = to_remove {
                     qtrace!("Popping packet from trace. {} remaining", (self.target.len() - 1));
                     self.target.remove(index);
+                    packet_consumed = true;
                 } else {
                     break;
                 }
@@ -323,6 +326,10 @@ impl FlowShaper {
         } else if self.target.next_outgoing() == None && !self.is_sending_unthrottled {
             // We're done without outgoing but not incoming
             self.unthrottle_sending();
+        }
+
+        if packet_consumed && self.target.len() <= 10 {
+            println!("[FlowShaper] final remaining packets: {}", self.target.len());
         }
     }
 
