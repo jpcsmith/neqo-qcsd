@@ -657,11 +657,14 @@ impl Http3Client {
             match e {
                 FlowShapingEvent::DoneShaping => {
                     self.done_shaping = true;
-                    self.events.flow_shaping_done();
+                    self.events.flow_shaping_done(false);
                     qdebug!([self], "FlowShaper is done shaping");
                 },
                 FlowShapingEvent::CloseConnection => {
-                    self.close(Instant::now(), 0, "kthx4shaping!");
+                    self.done_shaping = true;
+                    self.events.flow_shaping_done(true);
+                    qdebug!([self], "FlowShaper wants connection closed");
+                    // self.close(Instant::now(), 0, "kthx4shaping!");
                 },
                 FlowShapingEvent::RequestResource(resource) => {
                     match self.fetch_chaff(&resource) {

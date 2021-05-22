@@ -322,6 +322,9 @@ fn process_loop(
         }
 
         if exiting {
+            let urls = handler.url_deps.borrow();
+            println!("Exiting with {} of {} resources remaining, {} streams existing", urls.remaining(),
+                     urls.len(), handler.streams.len());
             return Ok(client.state());
         }
 
@@ -355,6 +358,7 @@ struct Handler<'a> {
     key_update: KeyUpdateState,
     url_deps: Rc<RefCell<UrlDependencyTracker>>,
     is_done_shaping: bool,
+    completion_state: (bool, bool, bool)
 }
 
 impl<'a> Handler<'a> {
@@ -411,6 +415,7 @@ impl<'a> Handler<'a> {
             }
             e @ Err(Error::TransportError(TransportError::StreamLimitError))
             | e @ Err(Error::StreamLimitError)
+            | e @ Err(Error::AlreadyClosed)
             | e @ Err(Error::Unavailable) => {
                 println!("Cannot create stream {:?}", e);
                 self.url_queue.push_front((id, url));
@@ -429,12 +434,17 @@ impl<'a> Handler<'a> {
     }
 
     fn done(&mut self) -> bool {
-        println!("Checking if done.");
-        println!("Streams is empty: {:?} | url_queue is empty: {:?} | is done shaping: {:?}",
-                 self.streams.is_empty(), self.url_queue.is_empty(), self.is_done_shaping);
+        let new_state = (
+            self.streams.is_empty(), self.url_queue.is_empty(), self.is_done_shaping
+        );
+        if new_state != self.completion_state {
+            println!("Checking if done: streams is empty: {:?} | url_queue is empty: {:?} | is done shaping: {:?}", new_state.0, new_state.1, new_state.2);
+            self.completion_state = new_state;
+        }
 
         if self.is_done_shaping && self.url_queue.is_empty() && !self.streams.is_empty() {
-            println!("Pending streams: {:?}", self.streams.keys().cloned().collect::<Vec<u64>>());
+            let pending_streams = self.streams.keys().cloned().collect::<Vec<u64>>();
+            println!("Pending streams: {:?}", pending_streams);
         }
         self.streams.is_empty() && self.url_queue.is_empty() && self.is_done_shaping
     }
@@ -540,8 +550,13 @@ impl<'a> Handler<'a> {
                 | Http3ClientEvent::RequestsCreatable => {
                     self.download_urls(client);
                 }
-                Http3ClientEvent::FlowShapingDone => {
+                Http3ClientEvent::FlowShapingDone(should_close) => {
                     self.is_done_shaping = true;
+
+                    if should_close {
+                        client.close(Instant::now(), 0, "kthx4shaping!");
+                        return Ok(false);
+                    }
                 }
                 _ => {
                     println!("Unhandled event {:?}", event);
@@ -688,6 +703,7 @@ fn client(
         key_update,
         url_deps,
         is_done_shaping: !shaping,
+        completion_state: (false, false, !shaping)
     };
 
     process_loop(&local_addr, &remote_addr, &socket, &mut client, &mut h)?;

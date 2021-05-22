@@ -63,8 +63,8 @@ pub enum Http3ClientEvent {
     GoawayReceived,
     /// Connection state change.
     StateChange(Http3State),
-    // Flow shaper is done shaping
-    FlowShapingDone,
+    /// Flow shaper is done shaping, bool indicates should close connection
+    FlowShapingDone(bool),
 }
 
 #[derive(Debug, Default, Clone)]
@@ -164,8 +164,8 @@ impl Http3ClientEvents {
         self.insert(Http3ClientEvent::GoawayReceived);
     }
 
-    pub(crate) fn flow_shaping_done(&self) {
-        self.insert(Http3ClientEvent::FlowShapingDone);
+    pub(crate) fn flow_shaping_done(&self, should_close: bool) {
+        self.insert(Http3ClientEvent::FlowShapingDone(should_close));
     }
 
     pub fn insert(&self, event: Http3ClientEvent) {
