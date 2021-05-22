@@ -391,6 +391,7 @@ impl ChaffStream {
     /// Called to indicate the new or retransmitted data is awaiting
     /// being sent on this stream.
     pub fn data_queued(&mut self, amount: u64) {
+        qtrace!([self], "data queued: {}", amount);
         match &mut self.send_state {
             SendState::Throttled { pending, .. } => *pending += amount,
             SendState::Unthrottled => (),
@@ -400,6 +401,7 @@ impl ChaffStream {
 
     /// Called to indicate that data was sent on the stream.
     pub fn data_sent(&mut self, amount: u64) {
+        qtrace!([self], "data sent: {}", amount);
         match &mut self.send_state {
             SendState::Throttled { pending, allowed } => {
                 assert!(amount <= *pending, "More data sent than was known pending.");
@@ -422,7 +424,7 @@ impl ChaffStream {
     }
 
     pub fn push_data(&mut self, amount: u64) -> u64 {
-        match &mut self.send_state {
+        let pushed = match &mut self.send_state {
             SendState::Throttled { pending, allowed } => {
                 assert!(*allowed <= *pending);
                 let pushed = std::cmp::min(*pending - *allowed, amount);
@@ -433,7 +435,10 @@ impl ChaffStream {
             SendState::Unthrottled | SendState::Closed => {
                 panic!("Cannot push data in this state.");
             }
-        }
+        };
+
+        qtrace!([self], "released data to be sent: {}", pushed);
+        pushed
     }
 }
 
