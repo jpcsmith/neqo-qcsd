@@ -109,6 +109,16 @@ impl UrlDependencyTracker {
 
         urls.into_iter().take(count).map(|(_, url)| url).collect()
     }
+
+    /// Return the number of URLs remaining to be collected
+    pub fn remaining(&self) -> usize {
+        self.dependencies.iter().filter(|x| !x.has_completed).count()
+    }
+
+    /// Return the number of elements in the tracker
+    pub fn len(&self) -> usize {
+        self.dependencies.len()
+    }
 }
 
 

@@ -138,6 +138,10 @@ pub struct Args {
     pad_only_mode: Option<bool>,
 
     #[structopt(long)]
+    /// Drop unsatisified shaping events when true, delay when false
+    drop_unsat_events: Option<bool>,
+
+    #[structopt(long)]
     msd_limit_excess: Option<u64>,
 
     #[structopt(long)]
@@ -597,8 +601,13 @@ fn build_flow_shaper(args: &Args) -> Option<FlowShaper> {
         None => (FlowShaperConfig::default(), FrontConfig::default())
     };
 
-    config.max_stream_data_excess = args.msd_limit_excess
-        .unwrap_or(config.max_stream_data_excess);
+    if let Some(value) = args.msd_limit_excess {
+        config.max_stream_data_excess = value;
+    }
+
+    if let Some(value) = args.drop_unsat_events {
+        config.drop_unsat_events = value;
+    }
 
     builder.config(config);
     builder.chaff_urls(chaff_urls);

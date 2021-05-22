@@ -55,6 +55,9 @@ pub struct Config {
     pub max_chaff_streams: u32,
     /// The amount of chaff data to retain available 
     pub low_watermark: u64,
+
+    /// Whether to drop unsatisfied shaping events
+    pub drop_unsat_events: bool,
 }
 
 impl Default for Config {
@@ -68,6 +71,7 @@ impl Default for Config {
             max_stream_data_excess: DEFAULT_MSD_EXCESS,
             max_chaff_streams: 5,
             low_watermark: 1_000_000,
+            drop_unsat_events: false,
         }
     }
 }
@@ -278,16 +282,17 @@ impl FlowShaper {
         }
 
         loop {
-            let pulled = match self.target.next_incoming() {
+            let (pulled, tried_pull) = match self.target.next_incoming() {
                 Some((_, pkt)) if u128::from(pkt.timestamp()) <= since_start => {
                     assert!(pkt.is_incoming());
                     let length = pkt.length();
-                    self.pull_traffic(length)
+
+                    (self.pull_traffic(length), true)
                 },
-                Some(_) | None => 0,
+                Some(_) | None => (0, false),
             };
 
-            if pulled > 0 {
+            if tried_pull {
                 // TODO(jsmith): Evaluate whether we should discard or requeue.
                 // This question also generally applies to data that should be
                 // transfered before the first chaff streams are available as well
@@ -297,7 +302,12 @@ impl FlowShaper {
                         = self.target.next_incoming_mut()
                 {
                     *length -= pulled;
-                    if *length == 0 { Some(index) } else { None }
+
+                    if *length == 0 || self.config.drop_unsat_events  { 
+                        Some(index) 
+                    } else { 
+                        None 
+                    }
                 } else {
                     None
                 };
@@ -416,25 +426,28 @@ impl FlowShaper {
         ]
     }
 
-    // TODO: Need to adjust below here for data streams ----
     fn maybe_send_queued_msd(&mut self) {
         // FIXME(jsmith): This needs to account for available bytes
         // Better yet, it would better to just push the queued MSD
         // back onto the trace so that it is handled in the main code
-        let queued_msd = self.events.borrow().get_queued_msd();
+        let queued_msd = u32::try_from(self.events.borrow().get_queued_msd()).unwrap();
         if queued_msd > 0 {
-            let pulled = self.chaff_streams.pull_data(queued_msd);
+            let consumed = if !self.config.drop_unsat_events {
+                self.pull_traffic(queued_msd)
+            } else {
+                queued_msd
+            };
 
-            if pulled > 0 && pulled <= queued_msd {
-                self.events.borrow_mut().consume_queued_msd(pulled);
+            if consumed > 0 {
+                assert!(consumed <= queued_msd);
+                self.events.borrow_mut().consume_queued_msd(u64::from(consumed));
             }
-        }
+        } 
     }
 
     // returns true if the stream_id is contained in the set of streams
     // being currently shaped
-    pub fn is_shaping_stream(&self, stream_id: u64) -> bool {
-        // TODO: Need to figure out what this should do
+    pub fn is_chaff_stream(&self, stream_id: u64) -> bool {
         self.chaff_streams.contains(&stream_id)
     }
 
