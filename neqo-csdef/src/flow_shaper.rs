@@ -42,7 +42,6 @@ fn debug_save_ids_path() -> Option<String> {
 pub struct Config {
     /// The control interval in milliseconds
     pub control_interval: u64,
-    pub initial_md: u64,
     pub rx_stream_data_window: u64,
     pub local_md: u64,
 
@@ -64,7 +63,6 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             control_interval: 5,
-            initial_md: 3000,
             rx_stream_data_window: 1048576,
             local_md: 4611686018427387903,
             initial_max_stream_data: BLOCKED_STREAM_LIMIT,
@@ -529,6 +527,12 @@ impl HEventConsumer for FlowShaper {
         self.get_stream_mut(&stream_id)
             .expect("Stream to already be tracked.")
             .awaiting_header_data(min_remaining);
+    }
+
+    fn on_content_length(&mut self, stream_id: u64, length: u64) {
+        self.get_stream_mut(&stream_id)
+            .expect("Stream to already be tracked.")
+            .on_content_length(length);
     }
 
     fn on_data_frame(&mut self, stream_id: u64, length: u64) {

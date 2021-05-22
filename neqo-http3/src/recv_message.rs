@@ -150,7 +150,23 @@ impl RecvMessage {
         Ok(())
     }
 
+    fn check_for_content_length(&mut self, headers: &Vec<Header>) {
+        if let Some(flow_shaper) = self.flow_shaper.as_ref() {
+            if let Some(content_len) = headers.iter()
+                .find(|(key, _)| key.to_lowercase() == "content-length") 
+                .and_then(|(_, value)| value.parse::<u64>().ok())
+            {
+                flow_shaper.borrow_mut()
+                    .on_content_length(self.stream_id, content_len);
+            }
+        }
+    }
+
     fn add_headers(&mut self, headers: Option<Vec<Header>>, fin: bool, decoder: &mut QPackDecoder) {
+        if headers.is_some() {
+            self.check_for_content_length(headers.as_ref().unwrap());
+        }
+
         if fin {
             self.conn_events.header_ready(self.stream_id, headers, true);
             self.set_closed(decoder);

@@ -323,8 +323,8 @@ fn process_loop(
 
         if exiting {
             let urls = handler.url_deps.borrow();
-            println!("Exiting with {} of {} resources remaining, {} streams existing", urls.remaining(),
-                     urls.len(), handler.streams.len());
+            println!("Exiting with {} of {} resources remaining, {} streams existing",
+                     urls.remaining(), urls.len(), handler.streams.len());
             return Ok(client.state());
         }
 
