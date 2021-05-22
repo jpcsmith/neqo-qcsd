@@ -376,6 +376,18 @@ impl ChaffStream {
         }
     }
 
+    pub fn on_content_length(&mut self, amount: u64) {
+        qtrace!([self], "Notified of content-length of {}", amount);
+        match self.recv_state {
+            RecvState::ReceivingHeaders { ref mut max_stream_data_limit, .. } 
+            | RecvState::ReceivingData { ref mut max_stream_data_limit, .. } => {
+                *max_stream_data_limit = std::cmp::max(*max_stream_data_limit, amount);
+            }
+            RecvState::Created { .. } => panic!("header received in created state."),
+            | RecvState::Unthrottled { .. } | RecvState::Closed { .. } => ()
+        }
+    }
+
     /// Called to indicate the new or retransmitted data is awaiting
     /// being sent on this stream.
     pub fn data_queued(&mut self, amount: u64) {
@@ -441,12 +453,6 @@ impl ChaffStreamMap {
     /// Pull data from various streams amounting to `amount`.
     /// Return the actual amount pulled.
     pub fn pull_data(&mut self, amount: u64) -> u64 {
-        // The priority for pulling data is as follows: 
-        // - First, we pull data on streams that are in the receiving header
-        // phase, as this
-
-
-
         // TODO(jsmith): We ought to pull data from streams that are in the
         // receiving header phase first, so that they open up.
         let mut remaining = amount;
