@@ -441,6 +441,12 @@ impl ChaffStreamMap {
     /// Pull data from various streams amounting to `amount`.
     /// Return the actual amount pulled.
     pub fn pull_data(&mut self, amount: u64) -> u64 {
+        // The priority for pulling data is as follows: 
+        // - First, we pull data on streams that are in the receiving header
+        // phase, as this
+
+
+
         // TODO(jsmith): We ought to pull data from streams that are in the
         // receiving header phase first, so that they open up.
         let mut remaining = amount;
