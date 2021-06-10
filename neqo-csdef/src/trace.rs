@@ -45,21 +45,26 @@ impl Packet {
     }
 }
 
-impl std::convert::From<(u32, i32)> for Packet {
-    fn from(tuple: (u32, i32)) -> Self {
+
+impl<T> std::convert::From<(T, i32)> for Packet where 
+    T: TryInto<u32> ,
+    <T as TryInto<u32>>::Error: std::fmt::Debug
+{
+    fn from(tuple: (T, i32)) -> Self {
         assert!(tuple.1 != 0);
 
         match tuple {
             (time, length) if length.is_positive() => {
-                Packet::Outgoing(time, u32::try_from(length).unwrap())
+                Packet::Outgoing(time.try_into().unwrap(), u32::try_from(length).unwrap())
             },
             (time, length) if length.is_negative() => {
-                Packet::Incoming(time, u32::try_from(length.abs()).unwrap())
+                Packet::Incoming(time.try_into().unwrap(), u32::try_from(length.abs()).unwrap())
             },
             _ => panic!("Packets with zero bytes not allowed!"),
         }
     }
 }
+
 
 impl std::convert::Into<(u32, i32)> for Packet {
     fn into(self) -> (u32, i32) {
