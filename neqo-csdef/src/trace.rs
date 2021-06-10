@@ -13,6 +13,7 @@ pub enum Packet {
     Outgoing(u32, u32),
 }
 
+
 impl Packet {
     pub fn is_outgoing(&self) -> bool { matches!(self, Packet::Outgoing(..)) }
     pub fn is_incoming(&self) -> bool { !self.is_outgoing() }
