@@ -1,7 +1,10 @@
 use std::time::Duration;
+use std::convert::TryInto;
 use std::collections::VecDeque;
+
 use crate::trace::Packet;
 use crate::defences::traits::Defencev2 as Defence;
+use crate::Result;
 
 
 #[derive(Debug)]
@@ -19,7 +22,30 @@ impl StaticSchedule {
 
         StaticSchedule { trace: trace.into(), is_padding, }
     }
+
+    /// Read the schedule from the specified CSV file.
+    ///
+    /// The CSV should have no headers, and each row should be of the form
+    /// time,size where time is a floating point value in seconds and size
+    /// is a signed integer packet size (positive is outgoing).
+    pub fn from_file(filename: &str, is_padding: bool) -> Result<Self> {
+        let mut reader = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .from_path(filename)?;
+
+        let mut packets: Vec<Packet> = Vec::new();
+        for result in reader.deserialize() {
+            let record: (f64, i32) = result?;
+            let timestamp: u32 = Duration::from_secs_f64(record.0)
+                .as_millis().try_into()
+                .expect("timestamps to fit within 32 bits");
+            packets.push(Packet::from((timestamp, record.1)));
+        }
+
+        Ok(Self::new(&packets, is_padding))
+    }
 }
+
 
 impl Defence for StaticSchedule {
     fn next_event(&mut self, since_start: Duration) -> Option<Packet> { 
