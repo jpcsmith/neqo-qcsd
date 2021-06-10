@@ -10,7 +10,7 @@ pub trait Defence {
 }
 
 
-pub trait Defencev2 {
+pub trait Defencev2: std::fmt::Debug {
     /// Return the next event at or before or at the specified time point.
     /// May be called repeatedly with the same time point.
     ///

@@ -114,7 +114,7 @@ fn sample_timestamps(peak_min: f64, peak_max: f64, max_packets: u32, rng: &mut i
 /// J. Gong and T. Wang, "Zero-delay Lightweight Defenses against Website Fingerprinting," 
 /// in 29ᵗʰ USENIX Security Symposium (USENIX Security 20)
 #[derive(Debug)]
-struct Front {
+pub struct Front {
     config: FrontConfig,
     schedule: StaticSchedule,
 }
