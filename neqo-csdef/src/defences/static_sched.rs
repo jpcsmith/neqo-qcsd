@@ -7,7 +7,6 @@ use crate::defences::traits::Defencev2 as Defence;
 use crate::Result;
 
 
-#[derive(Debug)]
 pub struct StaticSchedule {
     trace: VecDeque<Packet>,
     is_padding: bool,
@@ -21,6 +20,12 @@ impl StaticSchedule {
         trace.sort();
 
         StaticSchedule { trace: trace.into(), is_padding, }
+    }
+
+    /// Return a new empty chaff-only static schedule that adds no padding
+    /// to the connection.
+    pub fn empty() -> Self {
+        StaticSchedule { trace: VecDeque::new(), is_padding: true }
     }
 
     /// Read the schedule from the specified CSV file.
@@ -68,6 +73,16 @@ impl Defence for StaticSchedule {
 
     fn is_padding_only(&self) -> bool { self.is_padding }
     fn on_application_complete(&mut self) {}
+}
+
+impl std::fmt::Debug for StaticSchedule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StaticSchedule")
+            .field("is_padding", &self.is_padding) 
+            .field("next", &self.trace.front())
+            .field("remaining", &self.trace.len())
+            .finish()
+    }
 }
 
 

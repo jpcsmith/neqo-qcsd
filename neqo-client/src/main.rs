@@ -31,10 +31,11 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket}
 use std::path::PathBuf;
 use std::process::exit;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{ Instant, Duration };
+use std::boxed::Box;
 use neqo_csdef::{ ConfigFile };
 use neqo_csdef::flow_shaper::{ FlowShaper, FlowShaperBuilder, Config as FlowShaperConfig };
-use neqo_csdef::defences::{ FrontDefence, FrontConfig };
+use neqo_csdef::defences::{ Defencev2, FrontConfig, StaticSchedule, Front, Tamaraw };
 use neqo_csdef::dependency_tracker::UrlDependencyTracker;
 
 use structopt::StructOpt;
@@ -108,6 +109,94 @@ impl KeyUpdateState {
     }
 }
 
+
+#[derive(Debug, StructOpt)]
+pub struct ShapingArgs {
+    #[structopt(long, possible_values=&["none", "schedule", "front", "tamaraw"])]
+    /// Specify the defence (if any) to be used for shaping.
+    defence: Option<String>,
+
+    #[structopt(long, required_if("defence", "front"))]
+    /// Seed for the random number generator used by the defence (if applicable).
+    defence_seed: Option<u64>,
+
+    #[structopt(long)]
+    /// Size of the packets when using non-schedule defences.
+    defence_packet_size: Option<u32>,
+
+    #[structopt(long, required_if("defence", "schedule"))]
+    /// The target schedule for adding chaff or shaping.
+    target_trace: Option<PathBuf>,
+
+    #[structopt(
+        long,
+        required_if("defence", "schedule"),
+        possible_values=&["chaff-only", "chaff-and-shape"]
+    )]
+    /// Specify whether `target_trace` corresponds to a padding trace
+    target_trace_type: Option<String>,
+
+    #[structopt(long)]
+    /// Maximum number of packets added to the FRONT defence from the client
+    front_max_client_pkts: Option<u32>,
+
+    #[structopt(long)]
+    /// Maximum number of packets added to the FRONT defence from the server
+    front_max_server_pkts: Option<u32>,
+
+    #[structopt(long)]
+    /// Maximum value in seconds at which the distribution peak will occur.
+    front_peak_max: Option<f64>,
+
+    #[structopt(long)]
+    /// Minimum value in seconds at which the distribution peak will occur.
+    front_peak_min: Option<f64>,
+
+    #[structopt(long, default_value = "5")]
+    /// Incoming rate for the Tamaraw defence in milliseconds
+    tamaraw_rate_in: u64,
+
+    #[structopt(long, default_value = "20")]
+    /// Outgoing rate for the Tamaraw defence in milliseconds
+    tamaraw_rate_out: u64,
+
+    #[structopt(long, default_value = "100")]
+    /// Number of packets to whose multiple Tamaraw will pad each direction
+    tamaraw_modulo: u32,
+
+    #[structopt(long, number_of_values = 1)]
+    /// Read URL dependencies from the the specified file. The file must
+    /// be a header-less CSV with "url, url-dependency" on each line,
+    /// where url-dependency can be the empty string. All the URLs in
+    /// the file will be added to the list of URLs to download.
+    url_dependencies_from: Option<PathBuf>,
+
+    #[structopt(long)]
+    /// Drop unsatisified shaping events when true, delay when false
+    drop_unsat_events: Option<bool>,
+
+    #[structopt(long)]
+    /// The MSD limit excess value
+    msd_limit_excess: Option<u64>,
+
+    #[structopt(long)]
+    /// Configuration for shaping
+    shaper_config: Option<String>,
+
+    #[structopt(short = "dummy-urls", long, number_of_values = 5)]
+    /// Dummy URLs to use in shaping
+    dummy_urls: Vec<Url>,
+
+    #[structopt(long)]
+    /// File to which to log chaff stream ids
+    chaff_ids_log: Option<String>,
+
+    #[structopt(long)]
+    /// File to which to log the defence schedule as events are encountered
+    defence_event_log: Option<String>,
+}
+
+
 #[derive(Debug, StructOpt)]
 #[structopt(
     name = "neqo-client",
@@ -121,34 +210,6 @@ pub struct Args {
     alpn: String,
 
     urls: Vec<Url>,
-
-    #[structopt(long, number_of_values = 1)]
-    /// Read URL dependencies from the the specified file. The file must
-    /// be a header-less CSV with "url, url-dependency" on each line,
-    /// where url-dependency can be the empty string. All the URLs in
-    /// the file will be added to the list of URLs to download.
-    url_dependencies_from: Option<PathBuf>,
-
-    #[structopt(long)]
-    /// The target trace for adding chaff or shaping.
-    target_trace: Option<PathBuf>,
-
-    #[structopt(long)]
-    /// Specify whether `target_trace` corresponds to a padding trace
-    pad_only_mode: Option<bool>,
-
-    #[structopt(long)]
-    /// Drop unsatisified shaping events when true, delay when false
-    drop_unsat_events: Option<bool>,
-
-    #[structopt(long)]
-    msd_limit_excess: Option<u64>,
-
-    #[structopt(long)]
-    shaper_config: Option<String>,
-
-    #[structopt(short = "dummy-urls", long, number_of_values = 5)]
-    dummy_urls: Vec<Url>,
 
     #[structopt(short = "m", default_value = "GET")]
     method: String,
@@ -215,6 +276,9 @@ pub struct Args {
     /// The set of TLS cipher suites to enable.
     /// From: TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256.
     ciphers: Vec<String>,
+
+    #[structopt(flatten)]
+    shaping_args: ShapingArgs,
 }
 
 impl Args {
@@ -594,18 +658,17 @@ fn to_headers(values: &[impl AsRef<str>]) -> Vec<Header> {
 }
 
 
-fn build_flow_shaper(args: &Args) -> Option<FlowShaper> {
-    let chaff_urls = &args.dummy_urls;
-
-    if neqo_csdef::debug_disable_shaping() {
+fn build_flow_shaper(args: &ShapingArgs, header: &Vec<String>) -> Option<FlowShaper> {
+    let defence = args.defence.as_deref();
+    if matches!(defence, None | Some("none")) {
         return None;
     }
+    let defence_type = defence.unwrap();
 
     println!("Enabling connection shaping.");
-    let mut builder = FlowShaperBuilder::new();
 
-    let (mut config, front_config) = match neqo_csdef::shaper_config_file()
-        .or(args.shaper_config.clone()) {
+    let mut builder = FlowShaperBuilder::new();
+    let (mut config, mut front_config) = match args.shaper_config.clone() {
         Some(filename) => {
             let configs = ConfigFile::load(&filename)
                 .expect("Unable to load config file");
@@ -625,21 +688,53 @@ fn build_flow_shaper(args: &Args) -> Option<FlowShaper> {
     }
 
     builder.config(config);
-    builder.chaff_urls(chaff_urls);
-    builder.chaff_headers(&to_headers(&args.header));
+    builder.chaff_urls(&args.dummy_urls);
+    builder.chaff_headers(&to_headers(&header));
 
-    let args_trace = args.target_trace.clone()
-        .and_then(|p| p.into_os_string().to_str().map(str::to_owned))
-        .zip(args.pad_only_mode.or(Some(true)));
+    if let Some(filename) = args.chaff_ids_log.as_ref() {
+        builder.chaff_ids_log(filename);
+    }
+    if let Some(filename) = args.defence_event_log.as_ref() {
+        builder.defence_event_log(filename);
+    }
 
-    Some(match neqo_csdef::debug_use_trace_file().or(args_trace) {
-        Some((filename, is_pad_only)) => {
-            builder.pad_only_mode(is_pad_only)
-                .from_csv(&filename)
-                .expect("unable to create shaper from trace file")
-        },
-        None => builder.from_defence(&FrontDefence::new(front_config))
-    })
+    let defence: Box<dyn Defencev2> = match defence_type {
+        "schedule" => {
+            let filename = args.target_trace.clone()
+                .and_then(|p| p.into_os_string().to_str().map(str::to_owned))
+                .expect("filename to be specified");
+            let is_padding = matches!(args.target_trace_type.as_deref(), Some("chaff-only"));
+
+            Box::new(StaticSchedule::from_file(&filename, is_padding).unwrap())
+        }
+        "front" => {
+            front_config.n_client_packets = args.front_max_client_pkts
+                .unwrap_or(front_config.n_client_packets);
+            front_config.n_server_packets = args.front_max_server_pkts
+                .unwrap_or(front_config.n_server_packets);
+            front_config.peak_maximum = args.front_peak_max
+                .unwrap_or(front_config.peak_maximum);
+            front_config.peak_minimum = args.front_peak_min
+                .unwrap_or(front_config.peak_minimum);
+            front_config.packet_size = args.defence_packet_size
+                .unwrap_or(front_config.packet_size);
+            front_config.seed = args.defence_seed.clone();
+
+            Box::new(Front::new(front_config))
+        }
+        "tamaraw" => {
+            let packet_length = args.defence_packet_size.unwrap_or(1450);
+            Box::new(Tamaraw::new(
+                Duration::from_millis(args.tamaraw_rate_in),
+                Duration::from_millis(args.tamaraw_rate_out),
+                packet_length, args.tamaraw_modulo
+            ))
+        }
+        other => panic!("unknown defence: {:?}", other),
+    };
+    println!("Defence: {:?}", defence);
+
+    Some(builder.from_defence(defence))
 }
 
 
@@ -685,7 +780,7 @@ fn client(
         },
     );
 
-    if let Some(flow_shaper) = build_flow_shaper(&args) {
+    if let Some(flow_shaper) = build_flow_shaper(&args.shaping_args, &args.header) {
         client = client.with_flow_shaper(flow_shaper);
         shaping = true;
     }
@@ -744,7 +839,7 @@ fn main() -> Res<()> {
 
     let mut args = Args::from_args();
 
-    let url_deps = match &args.url_dependencies_from {
+    let url_deps = match &args.shaping_args.url_dependencies_from {
         Some(path_buf) => {
             let tracker = UrlDependencyTracker::from_json(path_buf.as_path());
             args.urls = tracker.urls().iter().map(|x| x.1.clone()).collect();
@@ -756,8 +851,8 @@ fn main() -> Res<()> {
     let url_deps = Rc::new(RefCell::new(url_deps));
 
     // If there are no dummy-urls, extract them from the list of URLs
-    if args.dummy_urls.is_empty() {
-        args.dummy_urls = url_deps.borrow().select_padding_urls(5);
+    if args.shaping_args.dummy_urls.is_empty() {
+        args.shaping_args.dummy_urls = url_deps.borrow().select_padding_urls(5);
     }
 
     if let Some(testcase) = args.qns_test.as_ref() {
