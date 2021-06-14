@@ -16,6 +16,7 @@ pub trait HEventConsumer {
     fn on_data_frame(&mut self, stream_id: u64, length: u64);
     fn on_http_request_sent(&mut self, stream_id: u64, resource: &Resource, is_chaff: bool);
     fn on_content_length(&mut self, stream_id: u64, length: u64);
+    fn on_application_complete(&mut self);
 }
 
 pub trait StreamEventConsumer {

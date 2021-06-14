@@ -569,6 +569,10 @@ impl HEventConsumer for FlowShaper {
         qtrace!([self], "chaff-streams: {}, app-streams: {}", self.chaff_streams.len(),
                 self.app_streams.len());
     }
+
+    fn on_application_complete(&mut self) {
+        self.defence.on_application_complete();
+    }
 }
 
 impl StreamEventConsumer for FlowShaper {
