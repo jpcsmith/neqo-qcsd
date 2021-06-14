@@ -437,25 +437,6 @@ impl FlowShaper {
         ]
     }
 
-    fn maybe_send_queued_msd(&mut self) {
-        // FIXME(jsmith): This needs to account for available bytes
-        // Better yet, it would better to just push the queued MSD
-        // back onto the trace so that it is handled in the main code
-        let queued_msd = u32::try_from(self.events.borrow().get_queued_msd()).unwrap();
-        if queued_msd > 0 {
-            let consumed = if !self.config.drop_unsat_events {
-                self.pull_traffic(queued_msd)
-            } else {
-                queued_msd
-            };
-
-            if consumed > 0 {
-                assert!(consumed <= queued_msd);
-                self.events.borrow_mut().consume_queued_msd(u64::from(consumed));
-            }
-        }
-    }
-
     // returns true if the stream_id is contained in the set of streams
     // being currently shaped
     pub fn is_chaff_stream(&self, stream_id: u64) -> bool {
@@ -602,11 +583,6 @@ impl StreamEventConsumer for FlowShaper {
         self.get_stream_mut(&stream_id)
             .expect("Stream should already be tracked.")
             .open();
-
-        // Queued events should be drained immediately after closing stream
-        // this now is a double safety in case there were no open dummy
-        // streams when the last one was closed.
-        self.maybe_send_queued_msd();
     }
 
     fn data_sent(&mut self, stream_id: u64, amount: u64) {
@@ -646,7 +622,12 @@ impl StreamEventConsumer for FlowShaper {
             return;
         }
 
-        self.events.borrow_mut().remove_by_id(&stream_id);
+        let unsent_msd_increase = self.events.borrow_mut().remove_by_id(&stream_id);
+        if !self.config.drop_unsat_events && unsent_msd_increase > 0 {
+            self.incoming_backlog += u32::try_from(unsent_msd_increase).unwrap();
+            qtrace!([self], "Unsatisifed excess MSD of stream {} added to backlog: {}",
+                    stream_id, unsent_msd_increase);
+        }
 
         let stream = self.get_stream_mut(&stream_id)
             .expect(&format!("Stream should be tracked: {:?}", stream_id));

@@ -46,8 +46,6 @@ pub(crate) struct FlowShapingEvents {
     /// This is in a RefCell to allow borrowing a mutable reference in an
     /// immutable context
     events: RefCell<VecDeque<FlowShapingEvent>>,
-    /// Queued MSD budget that needs to be sent.
-    queued_msd: u64,
 }
 
 impl Display for FlowShapingEvents {
@@ -71,7 +69,9 @@ impl FlowShapingEvents {
         self.events.borrow_mut().push_back(event);
     }
 
-    pub fn remove_by_id(&mut self, id: &u64) {
+    /// Remove all events corresponding to the stream with the provided ID, and
+    /// return the total MSD increase that was pending to be sent.
+    pub fn remove_by_id(&mut self, id: &u64) -> u64 {
         qdebug!([self], "Removing events for stream {}", *id);
 
         type FSE = FlowShapingEvent;
@@ -81,26 +81,16 @@ impl FlowShapingEvents {
         let maybe_increase = events.iter()
             .filter_map(|e| match e {
                 FSE::SendMaxStreamData{ stream_id, increase, ..  }
-                    if stream_id == id =>  Some(increase),
+                    if stream_id == id => Some(increase),
                 _ => None
-            }).max();
-
-        if let Some(size) = maybe_increase  {
-            self.queued_msd += size
-        }
+            });
+        let result = maybe_increase.sum();
 
         // remove events for id
         events.retain(|e| !matches!(e, FSE::SendMaxStreamData{ stream_id, .. }
                                     if stream_id == id));
-    }
 
-    pub fn get_queued_msd(&self) -> u64 {
-        self.queued_msd
-    }
-
-    pub fn consume_queued_msd(&mut self, amount: u64) {
-        assert!(self.queued_msd >= amount);
-        self.queued_msd -= amount;
+        result
     }
 }
 
