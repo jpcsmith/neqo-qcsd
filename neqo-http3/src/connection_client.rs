@@ -150,6 +150,10 @@ impl Http3Client {
         self
     }
 
+    pub fn get_flow_shaper_mut(&mut self) -> Option<Rc<RefCell<FlowShaper>>> {
+        self.flow_shaper.clone()
+    }
+
     #[must_use]
     pub fn role(&self) -> Role {
         self.conn.role()

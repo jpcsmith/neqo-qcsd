@@ -34,6 +34,7 @@ use std::rc::Rc;
 use std::time::{ Instant, Duration };
 use std::boxed::Box;
 use neqo_csdef::{ ConfigFile };
+use neqo_csdef::event::HEventConsumer;
 use neqo_csdef::flow_shaper::{ FlowShaper, FlowShaperBuilder, Config as FlowShaperConfig };
 use neqo_csdef::defences::{ Defencev2, FrontConfig, StaticSchedule, Front, Tamaraw };
 use neqo_csdef::dependency_tracker::UrlDependencyTracker;
@@ -497,12 +498,20 @@ impl<'a> Handler<'a> {
         Ok(())
     }
 
-    fn done(&mut self) -> bool {
+    fn done(&mut self, client: &mut Http3Client) -> bool {
         let new_state = (
             self.streams.is_empty(), self.url_queue.is_empty(), self.is_done_shaping
         );
         if new_state != self.completion_state {
             println!("Checking if done: streams is empty: {:?} | url_queue is empty: {:?} | is done shaping: {:?}", new_state.0, new_state.1, new_state.2);
+            if (!self.completion_state.0 || !self.completion_state.1) && (new_state.0 && new_state.1) {
+                // If either there were running streams, or the URL queue was not empty, but now
+                // there are no running streams and the URL queue is empty, then signal that we are
+                // done.
+                if let Some(fs) = client.get_flow_shaper_mut() {
+                    fs.borrow_mut().on_application_complete();
+                }
+            }
             self.completion_state = new_state;
         }
 
@@ -540,7 +549,7 @@ impl<'a> Handler<'a> {
                             self.download_urls(client);
                             self.streams.remove(&stream_id);
 
-                            if self.done() {
+                            if self.done(client) {
                                 if !neqo_csdef::debug_disable_shaping(){
                                     client.close(Instant::now(), 0, "kthx4shaping!");
                                 } else {
@@ -600,7 +609,7 @@ impl<'a> Handler<'a> {
 
                     if stream_done {
                         self.streams.remove(&stream_id);
-                        if self.done() {
+                        if self.done(client) {
                             if !neqo_csdef::debug_disable_shaping(){
                                 client.close(Instant::now(), 0, "kthx4shaping!");
                             } else {
@@ -629,7 +638,7 @@ impl<'a> Handler<'a> {
         }
         // check for connection done outside loop because dummy events are not
         // notified to main.rs
-        if self.done() {
+        if self.done(client) {
             if !neqo_csdef::debug_disable_shaping(){
                 client.close(Instant::now(), 0, "kthx4shaping!");
             } else {
