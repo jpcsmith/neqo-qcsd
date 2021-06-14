@@ -39,12 +39,12 @@ pub struct Config {
 
     /// The initial max stream data of an incoming stream
     pub initial_max_stream_data: u64,
-    /// Additional leeway on the max stream data of each stream 
+    /// Additional leeway on the max stream data of each stream
     pub max_stream_data_excess: u64,
 
     /// The maximum number of chaff streams to open
     pub max_chaff_streams: u32,
-    /// The amount of chaff data to retain available 
+    /// The amount of chaff data to retain available
     pub low_watermark: u64,
 
     /// Whether to drop unsatisfied shaping events
@@ -226,7 +226,7 @@ impl FlowShaper {
 
         let shaper = FlowShaper{
             next_ci: Duration::from_millis(config.control_interval),
-            config, 
+            config,
             defence,
             chaff_manager,
             application_events,
@@ -261,7 +261,7 @@ impl FlowShaper {
             Some(Instant::now())
         } else {
             self.defence.next_event_at()
-                .map(|dur| max(self.next_ci, dur))
+                .map(|dur| std::cmp::min(self.next_ci, dur))
                 .or(Some(self.next_ci))
                 .zip(self.start_time)
                 .map(|(dur, start)| max(start + dur, Instant::now()))
@@ -298,7 +298,7 @@ impl FlowShaper {
             // Do nothing, since we havent reached the next control interval
             0
         };
-        // By definition, the next control interval is after now, and the previous control 
+        // By definition, the next control interval is after now, and the previous control
         // interval could be equal to since_start.
         assert!(since_start < self.next_ci);
 
@@ -316,10 +316,10 @@ impl FlowShaper {
                     incoming_length += length;
                 }
                 Packet::Incoming(_, length) => {
-                    // This packet is before or at the current time, but but after the 
+                    // This packet is before or at the current time, but but after the
                     // previous control interval. Note by definition of previous and next
                     // control intervals, the next control interval is strictly > since_start.
-                    // 
+                    //
                     // We can therefore add it to the next batch to be pulled
                     self.incoming_backlog += length;
                 }
@@ -328,11 +328,13 @@ impl FlowShaper {
 
         // Perform the actual pulling of the incoming data
         if incoming_length > 0 {
+            qtrace!([self], "Pulling data for CI {} of total length {}",
+                    previous_ci, incoming_length);
             let pulled = self.pull_traffic(incoming_length);
 
-            // If we failed to pull all the data, only store the remaineder if 
+            // If we failed to pull all the data, only store the remaineder if
             // we are not configure to drop the amount
-            if !self.config.drop_unsat_events  { 
+            if !self.config.drop_unsat_events  {
                 self.incoming_backlog += incoming_length - pulled;
             }
         }
@@ -374,7 +376,7 @@ impl FlowShaper {
         if !self.defence.is_padding_only() && remaining > 0 {
             let pushed = self.app_streams.push_data(remaining);
             if pushed > 0 {
-                qdebug!([self], "pushed bytes: {{ source: \"app-stream\", bytes: {} }}", 
+                qdebug!([self], "pushed bytes: {{ source: \"app-stream\", bytes: {} }}",
                         pushed);
             }
             remaining -= pushed;
@@ -383,7 +385,7 @@ impl FlowShaper {
         if remaining > 0 {
             let pushed = self.chaff_streams.push_data(remaining);
             if pushed > 0 {
-                qdebug!([self], "pushed bytes: {{ source: \"chaff-stream\", bytes: {} }}", 
+                qdebug!([self], "pushed bytes: {{ source: \"chaff-stream\", bytes: {} }}",
                         pushed);
             }
             remaining -= pushed;
@@ -451,7 +453,7 @@ impl FlowShaper {
                 assert!(consumed <= queued_msd);
                 self.events.borrow_mut().consume_queued_msd(u64::from(consumed));
             }
-        } 
+        }
     }
 
     // returns true if the stream_id is contained in the set of streams
@@ -557,7 +559,7 @@ impl HEventConsumer for FlowShaper {
                 {{ stream_id: {}, resource: {:?}, is_chaff: {} }}", stream_id, resource, is_chaff);
 
         let mut stream = ChaffStream::new(
-            stream_id, resource.url.clone(), self.events.clone(), 
+            stream_id, resource.url.clone(), self.events.clone(),
             self.config.initial_max_stream_data,
             self.config.max_stream_data_excess,
             is_chaff || !self.defence.is_padding_only()
@@ -638,7 +640,7 @@ impl StreamEventConsumer for FlowShaper {
     }
 
     fn on_fin_received(&mut self, stream_id: u64) {
-        // We have disabled PUSH streams, so these should only be control streams 
+        // We have disabled PUSH streams, so these should only be control streams
         // from the server
         if StreamId::new(stream_id).is_uni() {
             return;
