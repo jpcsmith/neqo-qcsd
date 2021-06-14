@@ -111,7 +111,6 @@ impl FlowShaperLogger {
 }
 
 
-
 #[derive(Debug, Default)]
 pub struct FlowShaperBuilder {
     config: Config,
@@ -190,6 +189,9 @@ pub struct FlowShaper {
     /// The amount of incoming data that we were unable to send and is now pending
     incoming_backlog: u32,
 
+    /// The next timepoint for pulling incoming data
+    next_ci: Duration,
+
     /// The time that the flow shaper was started
     start_time: Option<Instant>,
 
@@ -223,6 +225,7 @@ impl FlowShaper {
             config.max_chaff_streams, config.low_watermark, application_events.clone());
 
         let shaper = FlowShaper{
+            next_ci: Duration::from_millis(config.control_interval),
             config, 
             defence,
             chaff_manager,
@@ -258,6 +261,8 @@ impl FlowShaper {
             Some(Instant::now())
         } else {
             self.defence.next_event_at()
+                .map(|dur| max(self.next_ci, dur))
+                .or(Some(self.next_ci))
                 .zip(self.start_time)
                 .map(|(dur, start)| max(start + dur, Instant::now()))
         }
@@ -274,12 +279,28 @@ impl FlowShaper {
             return;
         }
 
-        if self.incoming_backlog > 0 {
-            qtrace!([self], "Attempting to pull backlog of: {}", self.incoming_backlog);
-            let pulled = self.pull_traffic(self.incoming_backlog);
-            self.incoming_backlog -= pulled;
-            qtrace!([self], "Remaining backlog: {}", self.incoming_backlog);
-        }
+        let ci_index = since_start.as_millis() / u128::from(self.config.control_interval);
+        let previous_ci = ci_index * u128::from(self.config.control_interval);
+
+        let mut incoming_length = if self.next_ci <= since_start {
+            // We have reached the next incoming control interval
+            //
+            // Update to the next control interval
+            self.next_ci = Duration::from_millis(
+                u64::try_from(ci_index+1).unwrap() * u64::from(self.config.control_interval));
+
+            // Reset the amount waiting to be pulled
+            let length = self.incoming_backlog;
+            self.incoming_backlog = 0;
+
+            length
+        } else {
+            // Do nothing, since we havent reached the next control interval
+            0
+        };
+        // By definition, the next control interval is after now, and the previous control 
+        // interval could be equal to since_start.
+        assert!(since_start < self.next_ci);
 
         while let Some(pkt) = self.defence.next_event(since_start) {
             self.log.defence_event(&pkt).expect("logging failed");
@@ -289,13 +310,31 @@ impl FlowShaper {
                     let pushed = self.push_traffic(length);
                     assert_eq!(pushed, length, "Pushes are always fully completed.");
                 }
+                Packet::Incoming(time, length) if u128::from(time) <= previous_ci => {
+                    // This packet should have been pulled at the previous control interval
+                    // Add it to the amount that we should be pulling now.
+                    incoming_length += length;
+                }
                 Packet::Incoming(_, length) => {
-                    let pulled = self.pull_traffic(length);
-                    if !self.config.drop_unsat_events  { 
-                        self.incoming_backlog += length - pulled;
-                    }
+                    // This packet is before or at the current time, but but after the 
+                    // previous control interval. Note by definition of previous and next
+                    // control intervals, the next control interval is strictly > since_start.
+                    // 
+                    // We can therefore add it to the next batch to be pulled
+                    self.incoming_backlog += length;
                 }
             };
+        }
+
+        // Perform the actual pulling of the incoming data
+        if incoming_length > 0 {
+            let pulled = self.pull_traffic(incoming_length);
+
+            // If we failed to pull all the data, only store the remaineder if 
+            // we are not configure to drop the amount
+            if !self.config.drop_unsat_events  { 
+                self.incoming_backlog += incoming_length - pulled;
+            }
         }
 
         if self.is_complete() {
@@ -652,145 +691,163 @@ pub fn select_padding_urls(urls: &[Url], count: usize) -> Vec<Url> {
 }
 
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-// 
-//     // % TODO: Reinstate these tests
-//     fn create_shaper() -> FlowShaper {
-//         FlowShaper::new(
-//             Config::default(),
-//             &Trace::new(&[(2, 1350), (16, -4800), (21, 600), (22, -350)]),
-//             true)
-//     }
-// 
-//     fn create_shaper_with_trace(vec: Vec<(u32, i32)>, interval: u64) -> FlowShaper {
-//         FlowShaper::new(
-//             Config{ control_interval: interval, ..Config::default() },
-//             &Trace::new(&vec), true)
-//     }
-// 
-//     #[test]
-//     fn test_select_padding_urls() {
-//         let urls = vec![
-//             Url::parse("https://a.com").unwrap(),
-//             Url::parse("https://a.com/image.png").unwrap(),
-//             Url::parse("https://a.com/image.jpg").unwrap(),
-//             Url::parse("https://b.com").unwrap(),
-//         ];
-//         assert_eq!(select_padding_urls(&urls, 2)[..], urls[1..3]);
-// 
-//         let urls = vec![
-//             Url::parse("https://a.com").unwrap(),
-//             Url::parse("https://a.com/image.png").unwrap(),
-//             Url::parse("https://b.com").unwrap(),
-//             Url::parse("https://b.com/image-2.jpg").unwrap(),
-//         ];
-//         assert_eq!(select_padding_urls(&urls, 2), vec![urls[1].clone(), urls[3].clone()]);
-// 
-//         let urls = vec![
-//             Url::parse("https://b.com/script.js").unwrap(),
-//             Url::parse("https://a.com/image.png").unwrap(),
-//             Url::parse("https://a.com").unwrap(),
-//             Url::parse("https://b.com").unwrap(),
-//         ];
-//         assert_eq!(select_padding_urls(&urls, 2), vec![urls[1].clone(), urls[0].clone()]);
-//     }
-// 
-//     #[test]
-//     fn test_select_padding_urls_insufficient_urls() {
-//         let urls = vec![
-//             Url::parse("https://b.com/script.js").unwrap(),
-//             Url::parse("https://a.com/image.png").unwrap(),
-//             Url::parse("https://a.com").unwrap(),
-//             Url::parse("https://b.com").unwrap(),
-//         ];
-// 
-//         assert_eq!(
-//             select_padding_urls(&urls, 3).iter().collect::<HashSet<&Url>>(),
-//             urls[0..3].iter().collect::<HashSet<&Url>>()
-//         );
-//     }
-// 
-//     #[test]
-//     fn test_next_signal_offset() {
-//         let shaper = create_shaper_with_trace(
-//             vec![(100, 1500), (150, -1350), (200, 700)], 1);
-//         assert_eq!(shaper.next_signal_offset().unwrap(), 100);
-// 
-//         let shaper = create_shaper_with_trace(
-//             vec![(2, 1350), (16, -4800), (21, 600), (22, -350)], 1);
-//         assert_eq!(shaper.next_signal_offset().unwrap(), 2);
-// 
-//         let shaper = create_shaper_with_trace(
-//             vec![(0, 1350), (16, -4800), (21, 600), (22, -350)], 1);
-//         assert_eq!(shaper.next_signal_offset().unwrap(), 0);
-// 
-//         let shaper = create_shaper_with_trace(
-//             vec![(2, 1350), (16, -4800), (21, 600), (22, -350)], 5);
-//         assert_eq!(shaper.next_signal_offset().unwrap(), 0);
-//     }
-// 
-//     #[test]
-//     fn test_next_signal_time() {
-//         let mut shaper = create_shaper();
-//         assert_eq!(shaper.next_signal_time(), None);
-// 
-//         shaper.start();
-//         // next_signal_time() also will take the greater of the time and now
-//         assert!(shaper.next_signal_time()
-//                 > Some(shaper.start_time.unwrap() + Duration::from_millis(0)))
-//     }
-// 
-//     #[test]
-//     fn process_timer_should_not_block() {
-//         let mut shaper = create_shaper_with_trace(
-//             vec![(1, -1500), (3, 1350), (10, -700), (18, 500)], 1);
-//         shaper.process_timer_(10);
-// 
-//         let mut events = shaper.events.borrow_mut();
-//         assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(1350)));
-//         assert_eq!(shaper.target, Trace::new(&[(1, -1500), (10, -700), (18, 500)]));
-//     }
-// 
-//     #[test]
-//     fn process_timer_pulls_traffic() {
-//         let mut shaper = create_shaper_with_trace(
-//             vec![(3, -1500), (9, 1350), (17, -700), (18, 500)], 1);
-//         shaper.on_http_request_sent(4, &Resource::from(Url::parse("https://a.com").unwrap()), true);
-//         shaper.on_first_byte_sent(4);
-//         shaper.data_consumed(4, BLOCKED_STREAM_LIMIT);
-//         shaper.on_data_frame(4, 6000);
-// 
-//         shaper.process_timer_(5);
-// 
-//         let mut events = shaper.events.borrow_mut();
-//         assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
-//             stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 1500, increase: 1500
-//         }));
-//         assert_eq!(shaper.target, Trace::new(&[(9, 1350), (17, -700), (18, 500)]));
-//     }
-// 
-//     #[test]
-//     fn process_timer_pulls_and_pushes_multiple() {
-//         let mut shaper = create_shaper_with_trace(
-//             vec![(1, -1200), (3, 1350), (10, -700), (12, 600), (15, 800)], 1);
-//         shaper.on_http_request_sent(4, &Resource::from(Url::parse("https://a.com").unwrap()), true);
-//         shaper.on_first_byte_sent(4);
-//         shaper.data_consumed(4, BLOCKED_STREAM_LIMIT);
-//         shaper.on_data_frame(4, 6000);
-// 
-//         shaper.process_timer_(14);
-// 
-//         let mut events = shaper.events.borrow_mut();
-//         assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(1350)));
-//         assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(600)));
-//         assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
-//             stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 1200, increase: 1200
-//         }));
-//         assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
-//             stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 1200 + 700, increase: 700
-//         }));
-//         assert_eq!(shaper.target, Trace::new(&[(15, 800)]));
-//     }
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn drain(defence: &mut Box<dyn Defencev2>) -> Vec<(u32, i32)> {
+        let mut remaining = Vec::new();
+        while let Some(pkt) = defence.next_event(Duration::from_millis(10000)) {
+            remaining.push(pkt.as_tuple());
+        }
+        remaining
+    }
+
+    fn create_shaper() -> FlowShaper {
+        let packets = vec![(2, 1350), (16, -4800), (21, 600), (22, -350)];
+        let packets: Vec<Packet> = packets.into_iter().map(Packet::from).collect();
+        let schedule = StaticSchedule::new(&packets, true);
+
+        FlowShaper::new(Config::default(), Box::new(schedule))
+    }
+
+    fn create_shaper_with_trace(vec: Vec<(u32, i32)>, interval: u64) -> FlowShaper {
+        let packets: Vec<Packet> = vec.into_iter().map(Packet::from).collect();
+        let schedule = StaticSchedule::new(&packets, true);
+
+        FlowShaper::new(
+            Config{ control_interval: interval, ..Config::default() }, Box::new(schedule))
+    }
+
+    #[test]
+    fn test_select_padding_urls() {
+        let urls = vec![
+            Url::parse("https://a.com").unwrap(),
+            Url::parse("https://a.com/image.png").unwrap(),
+            Url::parse("https://a.com/image.jpg").unwrap(),
+            Url::parse("https://b.com").unwrap(),
+        ];
+        assert_eq!(select_padding_urls(&urls, 2)[..], urls[1..3]);
+
+        let urls = vec![
+            Url::parse("https://a.com").unwrap(),
+            Url::parse("https://a.com/image.png").unwrap(),
+            Url::parse("https://b.com").unwrap(),
+            Url::parse("https://b.com/image-2.jpg").unwrap(),
+        ];
+        assert_eq!(select_padding_urls(&urls, 2), vec![urls[1].clone(), urls[3].clone()]);
+
+        let urls = vec![
+            Url::parse("https://b.com/script.js").unwrap(),
+            Url::parse("https://a.com/image.png").unwrap(),
+            Url::parse("https://a.com").unwrap(),
+            Url::parse("https://b.com").unwrap(),
+        ];
+        assert_eq!(select_padding_urls(&urls, 2), vec![urls[1].clone(), urls[0].clone()]);
+    }
+
+
+    #[test]
+    fn test_select_padding_urls_insufficient_urls() {
+        let urls = vec![
+            Url::parse("https://b.com/script.js").unwrap(),
+            Url::parse("https://a.com/image.png").unwrap(),
+            Url::parse("https://a.com").unwrap(),
+            Url::parse("https://b.com").unwrap(),
+        ];
+
+        assert_eq!(
+            select_padding_urls(&urls, 3).iter().collect::<HashSet<&Url>>(),
+            urls[0..3].iter().collect::<HashSet<&Url>>()
+        );
+    }
+
+    #[test]
+    fn test_next_signal_time() {
+        let mut shaper = create_shaper();
+        assert_eq!(shaper.next_signal_time(), None);
+
+        shaper.start();
+        // next_signal_time() also will take the greater of the time and now
+        assert!(shaper.next_signal_time()
+                > Some(shaper.start_time.unwrap() + Duration::from_millis(0)))
+    }
+
+    #[test]
+    fn process_timer_should_not_block() {
+        let mut shaper = create_shaper_with_trace(
+            vec![(1, -1500), (3, 1350), (10, -700), (18, 500)], 1);
+        shaper.process_timer_(Duration::from_millis(10));
+
+        let mut events = shaper.events.borrow_mut();
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(1350)));
+    }
+
+    #[test]
+    fn process_timer_pulls_traffic() {
+        let mut shaper = create_shaper_with_trace(
+            vec![(3, -1500), (9, 1350), (17, -700), (18, 500)], 1);
+        shaper.on_http_request_sent(4, &Resource::from(Url::parse("https://a.com").unwrap()), true);
+        shaper.on_first_byte_sent(4);
+        shaper.data_consumed(4, BLOCKED_STREAM_LIMIT);
+        shaper.on_data_frame(4, 6000);
+
+        shaper.process_timer_(Duration::from_millis(5));
+
+        let mut events = shaper.events.borrow_mut();
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
+            stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 1500, increase: 1500
+        }));
+
+        assert_eq!(drain(&mut shaper.defence), vec![(9, 1350), (17, -700), (18, 500)]);
+    }
+
+    #[test]
+    fn process_timer_pulls_and_pushes_multiple() {
+        let mut shaper = create_shaper_with_trace(
+            vec![(1, -1200), (3, 1350), (10, -700), (12, 600), (15, 800)], 1);
+        shaper.on_http_request_sent(4, &Resource::from(Url::parse("https://a.com").unwrap()), true);
+        shaper.on_first_byte_sent(4);
+        shaper.data_consumed(4, BLOCKED_STREAM_LIMIT);
+        shaper.on_data_frame(4, 6000);
+
+        shaper.process_timer_(Duration::from_millis(14));
+
+        let mut events = shaper.events.borrow_mut();
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(1350)));
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendPaddingFrames(600)));
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
+            stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 1900, increase: 1900
+        }));
+
+        assert_eq!(drain(&mut shaper.defence), vec![(15, 800)]);
+    }
+
+    #[test]
+    fn process_timer_pulls_per_ci() {
+        let mut shaper = create_shaper_with_trace(
+            vec![(1, -100), (2, -200), (4, -400), (6, -350)], 3);
+
+        // Fake open a stream, and increase the limit by 6000 bytes
+        shaper.on_http_request_sent(
+            4, &Resource::from(Url::parse("https://a.com").unwrap()), true);
+        shaper.on_first_byte_sent(4);
+        shaper.data_consumed(4, BLOCKED_STREAM_LIMIT);
+        shaper.on_data_frame(4, 6000);
+
+        assert_eq!(shaper.next_ci, Duration::from_millis(3));
+        assert_eq!(shaper.incoming_backlog, 0);
+
+        shaper.process_timer_(Duration::from_millis(1));
+        assert_eq!(shaper.next_ci, Duration::from_millis(3));
+        assert_eq!(shaper.incoming_backlog, 100);
+
+        shaper.process_timer_(Duration::from_millis(5));
+        assert_eq!(shaper.next_ci, Duration::from_millis(6));
+        assert_eq!(shaper.incoming_backlog, 400);
+        let mut events = shaper.events.borrow_mut();
+        assert_eq!(events.next_event(), Some(FlowShapingEvent::SendMaxStreamData {
+            stream_id: 4, new_limit: BLOCKED_STREAM_LIMIT + 300, increase: 300
+        }));
+    }
+}
