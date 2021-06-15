@@ -550,7 +550,7 @@ impl<'a> Handler<'a> {
                             self.streams.remove(&stream_id);
 
                             if self.done(client) {
-                                if !neqo_csdef::debug_disable_shaping(){
+                                if client.is_being_shaped() {
                                     client.close(Instant::now(), 0, "kthx4shaping!");
                                 } else {
                                     client.close(Instant::now(), 0, "kthxbye!");
@@ -610,7 +610,7 @@ impl<'a> Handler<'a> {
                     if stream_done {
                         self.streams.remove(&stream_id);
                         if self.done(client) {
-                            if !neqo_csdef::debug_disable_shaping(){
+                            if client.is_being_shaped() {
                                 client.close(Instant::now(), 0, "kthx4shaping!");
                             } else {
                                 client.close(Instant::now(), 0, "kthxbye!");
@@ -639,7 +639,7 @@ impl<'a> Handler<'a> {
         // check for connection done outside loop because dummy events are not
         // notified to main.rs
         if self.done(client) {
-            if !neqo_csdef::debug_disable_shaping(){
+            if client.is_being_shaped() {
                 client.close(Instant::now(), 0, "kthx4shaping!");
             } else {
                 client.close(Instant::now(), 0, "kthxbye!");

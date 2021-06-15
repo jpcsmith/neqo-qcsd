@@ -3,11 +3,8 @@ use std::convert::TryFrom;
 use serde::Deserialize;
 use rand::{ Rng, StdRng, SeedableRng }; // for rayleigh sampling
 
-use neqo_common::qinfo;
-
-use crate::trace::{ Trace, Packet };
-use crate::defences::{ Defence, StaticSchedule };
-use crate::defences::traits::Defencev2;
+use crate::trace::Packet;
+use crate::defences::{ Defencev2, StaticSchedule };
 
 
 // TODO(ldolfi): possibly use rgsl.randist.rayleigh
@@ -49,51 +46,6 @@ impl Default for FrontConfig {
     }
 }
 
-#[derive(Default)]
-pub struct FrontDefence {
-    config: FrontConfig,
-}
-
-impl FrontDefence {
-    pub fn new(config: FrontConfig) -> Self {
-        FrontDefence{ config }
-    }
-
-    fn sample_timestamps(&self, n_packets: u32) -> Vec<(Duration, i32)> {
-        let config = &self.config;
-
-        let n_packets: u64 = rand::thread_rng().gen_range(1, (n_packets + 1).into());
-        let weight: f64 = rand::thread_rng().gen_range(
-            config.peak_minimum, config.peak_maximum);
-        println!("n_packets: {}\tw: {}", n_packets, weight);
-
-        std::iter::repeat_with(move || {
-            let timestamp = rayleigh_cdf_inv(rand::thread_rng().gen_range(0.,1.), weight);
-
-            (Duration::from_secs_f64(timestamp), config.packet_size as i32)
-        }).take(n_packets as usize).collect()
-    }
-
-    pub fn create_trace(&self) -> Trace {
-        qinfo!("Creating padding traces.");
-
-        let packets: Vec<(u32, i32)> = self
-            .sample_timestamps(self.config.n_server_packets)
-            .into_iter()
-            .map(|(t, l)| (t, l * -1))
-            .chain(self.sample_timestamps(self.config.n_client_packets))
-            .map(|(t, l)| (t.as_millis() as u32, l))
-            .collect();
-
-        Trace::new(&packets)
-    }
-
-}
-
-impl Defence for FrontDefence {
-    fn trace(&self) -> Trace { self.create_trace() }
-    fn is_padding_only(&self) -> bool { true }
-}
 
 fn sample_timestamps(peak_min: f64, peak_max: f64, max_packets: u32, rng: &mut impl Rng) 
         -> Vec<Duration> {
@@ -161,20 +113,6 @@ impl Defencev2 for Front {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_font_create_trace() {
-        let trace = FrontDefence::new(FrontConfig{ 
-            packet_size: 500, ..Default::default() 
-        }).create_trace();
-
-        // All packets should be of absolute size 500
-        assert!(trace.iter().all(|pkt| pkt.length() == 500));
-
-        // Packets should be going in both directions
-        assert!(trace.iter().any(|pkt| pkt.signed_length() <= -500));
-        assert!(trace.iter().any(|pkt| pkt.signed_length() >= 500));
-    }
 
     #[test]
     fn is_reproducible() {
