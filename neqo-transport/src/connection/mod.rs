@@ -2103,14 +2103,18 @@ impl Connection {
                 }
             }
             Frame::StreamsBlocked { stream_type, .. } => {
+                let is_being_shaped = self.is_being_shaped();
                 let local_max = match stream_type {
                     StreamType::BiDi => &mut self.indexes.local_max_stream_bidi,
                     StreamType::UniDi => &mut self.indexes.local_max_stream_uni,
                 };
 
-                self.flow_mgr
-                    .borrow_mut()
-                    .max_streams(*local_max, stream_type)
+                // Only increase the unidirectional stream limit when not shaping
+                if !(stream_type == StreamType::UniDi && is_being_shaped) {
+                    self.flow_mgr
+                        .borrow_mut()
+                        .max_streams(*local_max, stream_type)
+                }
             }
             Frame::NewConnectionId {
                 sequence_number,
