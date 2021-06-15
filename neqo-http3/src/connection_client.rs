@@ -441,10 +441,6 @@ impl Http3Client {
         stream_id: u64,
         buf: &mut [u8],
     ) -> Res<(usize, bool)> {
-        // if !neqo_csdef::debug_disable_shaping() {
-        //     qdebug!([self], "Ignoring read_data for dummy stream {}", stream_id);
-        //     return Ok((0, false));
-        // }
         qinfo!([self], "read_data from stream {}.", stream_id);
         let recv_stream = self
             .base_handler

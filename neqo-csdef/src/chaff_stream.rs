@@ -284,12 +284,15 @@ impl ChaffStream {
     /// Pull data on this stream. Return the amount of data pulled.
     pub fn pull_data(&mut self, amount: u64) -> u64 {
         let amount = std::cmp::min(amount, self.msd_available());
-        if amount == 0 { return 0 }
-        qtrace!([self], "pulling data {}: {:?}", amount, self.recv_state);
+        if amount > 0 {
+            qtrace!([self], "pulling data {}: {:?}", amount, self.recv_state);
+        }
 
         match &mut self.recv_state {
             RecvState::ReceivingHeaders{ max_stream_data, .. }
             | RecvState::ReceivingData{ max_stream_data, .. } => {
+                if amount == 0 { return 0 }
+
                 *max_stream_data += amount;
 
                 assert!(amount > 0);
