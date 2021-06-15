@@ -832,8 +832,9 @@ impl Connection {
 
         if let Some(ref shaper) = self.flow_shaper {
             let shaper2 = shaper.clone();
+            let expiry_time = self.idle_timeout.expiry(now, pto);
 
-            shaper2.borrow_mut().process_timer(now);
+            shaper2.borrow_mut().process_timer(now, expiry_time);
             while shaper2.borrow().has_events() {
                 match shaper2.borrow_mut().next_event().unwrap() {
                     FlowShapingEvent::SendMaxData(size) => {
@@ -926,16 +927,11 @@ impl Connection {
             }
         }
 
-        if self.is_being_shaped() {
-            if let Some(signal_time) = self.flow_shaper
-                    .as_ref()
-                    .expect("Being shaped but no shaper?")
-                    .borrow()
-                    .next_signal_time()
-            {
-                qtrace!([self], "Shape timer {:?}", signal_time);
-                delays.push(signal_time);
-            }
+        if let Some(signal_time) = self.flow_shaper
+            .as_ref().and_then(|fs| fs.borrow().next_signal_time(idle_time)) 
+        {
+            qtrace!([self], "Shape timer {:?}", signal_time);
+            delays.push(signal_time);
         }
 
         // `release_resumption_token_timer` is not considered here, because
