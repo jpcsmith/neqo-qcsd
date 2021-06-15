@@ -449,7 +449,7 @@ impl FlowShaper {
     }
 
     /// Return the initial values for transport parameters
-    pub fn tparam_defaults(&self) -> [(u64, u64); 3] {
+    pub fn tparam_defaults(&self) -> [(u64, u64); 4] {
         [
             (0x04, self.config.local_md),
             // Disable the peer sending data on bidirectional streams openned
@@ -458,9 +458,10 @@ impl FlowShaper {
             // Disable the peer sending data on bidirectional streams that
             // they open (initial_max_stream_data_bidi_remote)
             (0x06, self.config.initial_max_stream_data),
-            // Disable the peer sending data on unidirectional streams that
-            // they open (initial_max_stream_data_uni)
-            // (0x07, self.config.initial_max_stream_data),
+            // Disable the peer creating unidirectional streams to send push 
+            // data (initial_max_streams_uni). The minimum allowed is 3 for 
+            // HTTP/3 settings and the mandatory QPACK extensions
+            (0x09, 3),
         ]
     }
 
