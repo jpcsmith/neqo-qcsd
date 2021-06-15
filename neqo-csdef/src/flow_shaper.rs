@@ -49,6 +49,9 @@ pub struct Config {
 
     /// Whether to drop unsatisfied shaping events
     pub drop_unsat_events: bool,
+
+    /// How long before expiry to send a ping in milliseconds
+    pub keep_alive_lead_time: u64,
 }
 
 
@@ -63,6 +66,7 @@ impl Default for Config {
             max_chaff_streams: 5,
             low_watermark: 1_000_000,
             drop_unsat_events: false,
+            keep_alive_lead_time: 100,
         }
     }
 }
@@ -256,21 +260,44 @@ impl FlowShaper {
 
     /// Report the next instant at which the FlowShaper should be called for
     /// processing events.
-    pub fn next_signal_time(&self) -> Option<Instant> {
+    pub fn next_signal_time(&self, expiry_time: Instant) -> Option<Instant> {
         if self.has_events() {
             Some(Instant::now())
         } else {
+            // Schedule a possible cancellation o the timeoutbefore expiry.
+            // This is only to be considered when next_event_at() is not 
+            // None (thus shaping is not complete).
+            //
+            // This should not result in an infinite loop when called within 
+            // 200 ms of the expiry time. The first time it is called, it 
+            // schedules a callback. On the process_timer call, we send a ping
+            // which resets/delays the expiry time before this is called again.
+            let cancel_expiry_at = expiry_time - Duration::from_millis(
+                self.config.keep_alive_lead_time);
+
             self.defence.next_event_at()
                 .map(|dur| std::cmp::min(self.next_ci, dur))
                 .or(Some(self.next_ci))
                 .zip(self.start_time)
-                .map(|(dur, start)| max(start + dur, Instant::now()))
+                .map(|(dur, start)| std::cmp::min(start + dur, cancel_expiry_at))
+                .map(|inst| max(inst, Instant::now()))
         }
     }
 
-    pub fn process_timer(&mut self, now: Instant) {
+    pub fn process_timer(&mut self, now: Instant, expiry_time: Instant) {
         if let Some(start_time) = self.start_time {
             self.process_timer_(now.duration_since(start_time));
+
+            let cancel_expiry_at = expiry_time - Duration::from_millis(
+                self.config.keep_alive_lead_time);
+            if !self.is_complete() && cancel_expiry_at <= now && !self.has_events() {
+                // We send a ping if we're not complete, the connection will expire shortly
+                // and there are no pending events that would delay that expiry (such as a
+                // ping)
+                qtrace!([self], "Sending PING to keep the connection alive");
+                // This sends at least a PING frame
+                self.events.borrow_mut().send_pad_frames(1);
+            }
         }
     }
 
@@ -751,12 +778,13 @@ mod tests {
 
     #[test]
     fn test_next_signal_time() {
+        let inf_expiry = Instant::now() + Duration::from_millis(10000);
         let mut shaper = create_shaper();
-        assert_eq!(shaper.next_signal_time(), None);
+        assert_eq!(shaper.next_signal_time(inf_expiry), None);
 
         shaper.start();
         // next_signal_time() also will take the greater of the time and now
-        assert!(shaper.next_signal_time()
+        assert!(shaper.next_signal_time(inf_expiry)
                 > Some(shaper.start_time.unwrap() + Duration::from_millis(0)))
     }
 
