@@ -113,55 +113,60 @@ impl KeyUpdateState {
 
 #[derive(Debug, StructOpt)]
 pub struct ShapingArgs {
-    #[structopt(long, possible_values=&["none", "schedule", "front", "tamaraw"])]
+    #[structopt(
+        long,
+        possible_values=&["none", "schedule", "front", "tamaraw"],
+        display_order=1001
+    )]
     /// Specify the defence (if any) to be used for shaping.
     defence: Option<String>,
 
-    #[structopt(long, required_if("defence", "front"))]
+    #[structopt(long, required_if("defence", "front"), display_order=1001)]
     /// Seed for the random number generator used by the defence (if applicable).
     defence_seed: Option<u64>,
 
-    #[structopt(long)]
+    #[structopt(long, requires("defence"), display_order=1001)]
     /// Size of the packets when using non-schedule defences.
     defence_packet_size: Option<u32>,
 
-    #[structopt(long, required_if("defence", "schedule"))]
+    #[structopt(long, required_if("defence", "schedule"), requires("defence"), display_order=1002)]
     /// The target schedule for adding chaff or shaping.
     target_trace: Option<PathBuf>,
 
     #[structopt(
         long,
         required_if("defence", "schedule"),
-        possible_values=&["chaff-only", "chaff-and-shape"]
+        possible_values=&["chaff-only", "chaff-and-shape"],
+        display_order=1002,
     )]
     /// Specify whether `target_trace` corresponds to a padding trace
     target_trace_type: Option<String>,
 
-    #[structopt(long)]
+    #[structopt(long, requires("defence"), display_order=1003)]
     /// Maximum number of packets added to the FRONT defence from the client
     front_max_client_pkts: Option<u32>,
 
-    #[structopt(long)]
+    #[structopt(long, requires("defence"), display_order=1003)]
     /// Maximum number of packets added to the FRONT defence from the server
     front_max_server_pkts: Option<u32>,
 
-    #[structopt(long)]
+    #[structopt(long, requires("defence"), display_order=1003)]
     /// Maximum value in seconds at which the distribution peak will occur.
     front_peak_max: Option<f64>,
 
-    #[structopt(long)]
+    #[structopt(long, requires("defence"), display_order=1003)]
     /// Minimum value in seconds at which the distribution peak will occur.
     front_peak_min: Option<f64>,
 
-    #[structopt(long, default_value = "5")]
+    #[structopt(long, default_value = "5", requires("defence"), display_order=1004)]
     /// Incoming rate for the Tamaraw defence in milliseconds
     tamaraw_rate_in: u64,
 
-    #[structopt(long, default_value = "20")]
+    #[structopt(long, default_value = "20", requires("defence"), display_order=1004)]
     /// Outgoing rate for the Tamaraw defence in milliseconds
     tamaraw_rate_out: u64,
 
-    #[structopt(long, default_value = "100")]
+    #[structopt(long, default_value = "100", requires("defence"), display_order=1004)]
     /// Number of packets to whose multiple Tamaraw will pad each direction
     tamaraw_modulo: u32,
 
@@ -172,15 +177,15 @@ pub struct ShapingArgs {
     /// the file will be added to the list of URLs to download.
     url_dependencies_from: Option<PathBuf>,
 
-    #[structopt(long)]
+    #[structopt(long, requires("defence"), display_order=1001)]
     /// Drop unsatisified shaping events when true, delay when false
     drop_unsat_events: Option<bool>,
 
-    #[structopt(long)]
+    #[structopt(long, requires("defence"), display_order=1001)]
     /// The MSD limit excess value
     msd_limit_excess: Option<u64>,
 
-    #[structopt(long)]
+    #[structopt(long, requires("defence"), display_order=1001)]
     /// Configuration for shaping
     shaper_config: Option<String>,
 
@@ -188,11 +193,11 @@ pub struct ShapingArgs {
     /// Dummy URLs to use in shaping
     dummy_urls: Vec<Url>,
 
-    #[structopt(long)]
+    #[structopt(long, requires("defence"), display_order=1001)]
     /// File to which to log chaff stream ids
     chaff_ids_log: Option<String>,
 
-    #[structopt(long)]
+    #[structopt(long, requires("defence"), display_order=1001)]
     /// File to which to log the defence schedule as events are encountered
     defence_event_log: Option<String>,
 }
