@@ -197,6 +197,10 @@ pub struct ShapingArgs {
     /// Dummy URLs to use in shaping
     dummy_urls: Vec<Url>,
 
+    #[structopt(long, display_order=1001)]
+    /// Whether to select padding to URLs by size instead of type
+    select_padding_by_size: bool,
+
     #[structopt(long, requires("defence"), display_order=1001)]
     /// File to which to log chaff stream ids
     chaff_ids_log: Option<String>,
@@ -874,7 +878,11 @@ fn main() -> Res<()> {
 
     // If there are no dummy-urls, extract them from the list of URLs
     if args.shaping_args.dummy_urls.is_empty() {
-        args.shaping_args.dummy_urls = url_deps.borrow().select_padding_urls(5);
+        args.shaping_args.dummy_urls = if args.shaping_args.select_padding_by_size {
+            url_deps.borrow().select_padding_urls_by_size(5) 
+        } else { 
+            url_deps.borrow().select_padding_urls(5) 
+        };
     }
 
     if let Some(testcase) = args.qns_test.as_ref() {
