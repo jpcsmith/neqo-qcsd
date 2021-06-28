@@ -33,7 +33,7 @@ use std::process::exit;
 use std::rc::Rc;
 use std::time::{ Instant, Duration };
 use std::boxed::Box;
-use neqo_csdef::{ ConfigFile };
+use neqo_csdef::{ ConfigFile, Resource };
 use neqo_csdef::event::HEventConsumer;
 use neqo_csdef::flow_shaper::{ FlowShaper, FlowShaperBuilder, Config as FlowShaperConfig };
 use neqo_csdef::defences::{ Defencev2, FrontConfig, StaticSchedule, Front, Tamaraw };
@@ -680,7 +680,7 @@ fn to_headers(values: &[impl AsRef<str>]) -> Vec<Header> {
 }
 
 
-fn build_flow_shaper(args: &ShapingArgs, header: &Vec<String>) -> Option<FlowShaper> {
+fn build_flow_shaper(args: &ShapingArgs, resources: Vec<Resource>, header: &Vec<String>) -> Option<FlowShaper> {
     let defence = args.defence.as_deref();
     if matches!(defence, None | Some("none")) {
         return None;
@@ -714,7 +714,7 @@ fn build_flow_shaper(args: &ShapingArgs, header: &Vec<String>) -> Option<FlowSha
     }
 
     builder.config(config);
-    builder.chaff_urls(&args.dummy_urls);
+    builder.chaff_resources(&resources);
     builder.chaff_headers(&to_headers(&header));
 
     if let Some(filename) = args.chaff_ids_log.as_ref() {
@@ -806,7 +806,18 @@ fn client(
         },
     );
 
-    if let Some(flow_shaper) = build_flow_shaper(&args.shaping_args, &args.header) {
+    // If there are no dummy-urls, extract them from the list of URLs
+    let chaff_resources = match (&args.shaping_args.dummy_urls,
+                                 args.shaping_args.select_padding_by_size) {
+        (vec, _) if !vec.is_empty() => vec.iter().cloned().map(|x| x.into()).collect(),
+        (_, false) => url_deps.borrow().select_padding_urls(5)
+            .into_iter().map(|x| x.into()).collect(),
+        (_, true) => url_deps.borrow().select_padding_urls_by_size(5) 
+    };
+
+    if let Some(flow_shaper) = build_flow_shaper(
+        &args.shaping_args, chaff_resources, &args.header)
+    {
         client = client.with_flow_shaper(flow_shaper);
         shaping = true;
     }
@@ -875,15 +886,6 @@ fn main() -> Res<()> {
         None => UrlDependencyTracker::from_urls(&args.urls)
     };
     let url_deps = Rc::new(RefCell::new(url_deps));
-
-    // If there are no dummy-urls, extract them from the list of URLs
-    if args.shaping_args.dummy_urls.is_empty() {
-        args.shaping_args.dummy_urls = if args.shaping_args.select_padding_by_size {
-            url_deps.borrow().select_padding_urls_by_size(5) 
-        } else { 
-            url_deps.borrow().select_padding_urls(5) 
-        };
-    }
 
     if let Some(testcase) = args.qns_test.as_ref() {
         match testcase.as_str() {
