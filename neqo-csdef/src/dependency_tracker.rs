@@ -20,6 +20,9 @@ struct Resource {
     #[serde(rename = "done")]
     known_to_be_valid: bool,
 
+    /// The previously observed content-length header value
+    content_length: Option<u64>,
+
     /// Whether this has been successfully downloaded
     #[serde(skip)]
     has_completed: bool,
@@ -45,6 +48,7 @@ impl UrlDependencyTracker {
                 url: url.to_string(),
                 resource_type: "Unknown".into(),
                 known_to_be_valid: false,
+                content_length: None,
                 has_completed: false,
                 depends_on: Vec::new(),
             }).collect();
@@ -110,6 +114,29 @@ impl UrlDependencyTracker {
         urls.into_iter().take(count).map(|(_, url)| url).collect()
     }
 
+    /// Select up to count padding URLs.
+    ///
+    /// Prefers padding URLs which have a large, known content length.
+    /// resorts to selecting by type to break ties.
+    pub fn select_padding_urls_by_size(&self, count: usize) -> Vec<Url> {
+        let mut urls: Vec<(&String, u64, Url)> = self.dependencies.iter()
+            .map(|res| (&res.resource_type, 
+                        // Use 1 for None as unknown is better than a 0 content length
+                        res.content_length.unwrap_or(1),
+                        Url::parse((*res.url).into()).unwrap()))
+            .collect();
+
+        // Sorts in ascending order so the largest sizes are at the end of
+        // the list. Reverse to take the largest sizes
+        urls.sort_by_key(|(res_type, size, _)| match res_type.as_str() {
+            "Image" => (*size, 4),
+            "Font" | "Stylesheet" | "Script" => (*size, 3),
+            "Document" => (*size, 2),
+            _ => (*size, 1),
+        });
+        urls.into_iter().rev().take(count).map(|(_, _, url)| url).collect()
+    }
+
     /// Return the number of URLs remaining to be collected
     pub fn remaining(&self) -> usize {
         self.dependencies.iter().filter(|x| !x.has_completed).count()
@@ -143,18 +170,22 @@ mod tests {
                 Resource {
                     id: 0, url: "https://z.com".into(), resource_type: "Document".into(),
                     known_to_be_valid: true, has_completed: false, depends_on: vec![],
+                    content_length: Some(5000),
                 },
                 Resource {
                     id: 1, url: "https://a.z.com".into(), resource_type: "Script".into(),
                     known_to_be_valid: true, has_completed: false, depends_on: vec![0, ],
+                    content_length: None,
                 },
                 Resource {
                     id: 2, url: "https://b.z.com".into(), resource_type: "Script".into(),
                     known_to_be_valid: true, has_completed: false, depends_on: vec![0, 1],
+                    content_length: Some(3000),
                 },
                 Resource {
                     id: 3, url: "https://c.z.com".into(), resource_type: "Image".into(),
                     known_to_be_valid: true, has_completed: false, depends_on: vec![2, ],
+                    content_length: Some(0),
                 }
             ]
         }
@@ -200,6 +231,14 @@ mod tests {
         let tracker = create_tracker();
         assert_eq!(tracker.select_padding_urls(3), [
            url!("https://c.z.com"), url!("https://a.z.com"), url!("https://b.z.com")
+        ]);
+    }
+
+    #[test]
+    fn select_padding_url_sorts_by_size() {
+        let tracker = create_tracker();
+        assert_eq!(tracker.select_padding_urls_by_size(4), [
+           url!("https://z.com"), url!("https://b.z.com"), url!("https://a.z.com"), url!("https://c.z.com"),
         ]);
     }
 }
