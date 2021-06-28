@@ -134,11 +134,8 @@ impl FlowShaperBuilder {
         self
     }
 
-    pub fn chaff_urls(&mut self, urls: &[Url]) -> &mut Self {
-        self.chaff_resources = urls.iter()
-            .cloned()
-            .map(Resource::from)
-            .collect();
+    pub fn chaff_resources(&mut self, urls: &[Resource]) -> &mut Self {
+        self.chaff_resources = urls.iter().cloned().collect();
         self
     }
 

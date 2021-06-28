@@ -5,6 +5,8 @@ use serde_json;
 use serde::Deserialize;
 use url::Url;
 
+use crate::Resource as ChaffResource;
+
 
 #[derive(Debug, Deserialize, Clone)]
 struct Resource {
@@ -118,7 +120,7 @@ impl UrlDependencyTracker {
     ///
     /// Prefers padding URLs which have a large, known content length.
     /// resorts to selecting by type to break ties.
-    pub fn select_padding_urls_by_size(&self, count: usize) -> Vec<Url> {
+    pub fn select_padding_urls_by_size(&self, count: usize) -> Vec<ChaffResource> {
         let mut urls: Vec<(&String, u64, Url)> = self.dependencies.iter()
             .map(|res| (&res.resource_type, 
                         // Use 1 for None as unknown is better than a 0 content length
@@ -134,7 +136,9 @@ impl UrlDependencyTracker {
             "Document" => (*size, 2),
             _ => (*size, 1),
         });
-        urls.into_iter().rev().take(count).map(|(_, _, url)| url).collect()
+        urls.into_iter().rev().take(count)
+            .map(|(_, length, url)| ChaffResource{ url, length, headers: Vec::new() })
+            .collect()
     }
 
     /// Return the number of URLs remaining to be collected
@@ -238,7 +242,10 @@ mod tests {
     fn select_padding_url_sorts_by_size() {
         let tracker = create_tracker();
         assert_eq!(tracker.select_padding_urls_by_size(4), [
-           url!("https://z.com"), url!("https://b.z.com"), url!("https://a.z.com"), url!("https://c.z.com"),
+           ChaffResource::new(url!("https://z.com"), Vec::new(), 5000),
+           ChaffResource::new(url!("https://b.z.com"), Vec::new(), 3000),
+           ChaffResource::new(url!("https://a.z.com"), Vec::new(), 1),
+           ChaffResource::new(url!("https://c.z.com"), Vec::new(), 0),
         ]);
     }
 }
