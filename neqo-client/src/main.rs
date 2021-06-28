@@ -186,6 +186,10 @@ pub struct ShapingArgs {
     msd_limit_excess: Option<u64>,
 
     #[structopt(long, requires("defence"), display_order=1001)]
+    /// The maximum number of chaff streams
+    max_chaff_streams: Option<u32>,
+
+    #[structopt(long, requires("defence"), display_order=1001)]
     /// Configuration for shaping
     shaper_config: Option<String>,
 
@@ -695,6 +699,10 @@ fn build_flow_shaper(args: &ShapingArgs, header: &Vec<String>) -> Option<FlowSha
 
     if let Some(value) = args.msd_limit_excess {
         config.max_stream_data_excess = value;
+    }
+
+    if let Some(value) = args.max_chaff_streams {
+        config.max_chaff_streams = value;
     }
 
     if let Some(value) = args.drop_unsat_events {
