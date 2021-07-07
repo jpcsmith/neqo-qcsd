@@ -493,7 +493,7 @@ impl<'a> Handler<'a> {
             }
             e @ Err(Error::TransportError(TransportError::StreamLimitError))
             | e @ Err(Error::StreamLimitError)
-            | e @ Err(Error::AlreadyClosed)
+            // | e @ Err(Error::AlreadyClosed)
             | e @ Err(Error::Unavailable) => {
                 println!("Cannot create stream {:?}", e);
                 self.url_queue.push_front((id, url));
