@@ -8,112 +8,128 @@
       "done": true,
       "type": "Document",
       "origin": "https://www.youtube.com",
-      "id": 0
+      "id": 0,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/web-animations-next-lite.min.vflset/web-animations-next-lite.min.js",
       "done": true,
       "type": "Script",
       "origin": "https://www.youtube.com",
-      "id": 1
+      "id": 1,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/webcomponents-all-noPatch.vflset/webcomponents-all-noPatch.js",
       "done": true,
       "type": "Script",
       "origin": "https://www.youtube.com",
-      "id": 2
+      "id": 2,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/fetch-polyfill.vflset/fetch-polyfill.js",
       "done": true,
       "type": "Script",
       "origin": "https://www.youtube.com",
-      "id": 3
+      "id": 3,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/scheduler.vflset/scheduler.js",
       "done": true,
       "type": "Script",
       "origin": "https://www.youtube.com",
-      "id": 4
+      "id": 4,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/www-i18n-constants-en_US.vflset/www-i18n-constants.js",
       "done": true,
       "type": "Script",
       "origin": "https://www.youtube.com",
-      "id": 5
+      "id": 5,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/www-tampering.vflset/www-tampering.js",
       "done": true,
       "type": "Script",
       "origin": "https://www.youtube.com",
-      "id": 6
+      "id": 6,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/www-prepopulator.vflset/www-prepopulator.js",
       "done": true,
       "type": "Script",
       "origin": "https://www.youtube.com",
-      "id": 7
+      "id": 7,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/spf.vflset/spf.js",
       "done": true,
       "type": "Script",
       "origin": "https://www.youtube.com",
-      "id": 8
+      "id": 8,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/network.vflset/network.js",
       "done": true,
       "type": "Script",
       "origin": "https://www.youtube.com",
-      "id": 9
+      "id": 9,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/cssbin/www-main-desktop-home-page-skeleton.css",
       "done": true,
       "type": "Stylesheet",
       "origin": "https://www.youtube.com",
-      "id": 10
+      "id": 10,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/cssbin/www-onepick.css",
       "done": true,
       "type": "Stylesheet",
       "origin": "https://www.youtube.com",
-      "id": 11
+      "id": 11,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/jsbin/desktop_polymer_inlined_html_polymer_flags_legacy_browsers.vflset/desktop_polymer_inlined_html_polymer_flags_legacy_browsers.js",
       "done": true,
       "type": "Script",
       "origin": "https://www.youtube.com",
-      "id": 12
+      "id": 12,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/desktop/1ee34deb/cssbin/www-main-desktop-watch-page-skeleton.css",
       "done": true,
       "type": "Stylesheet",
       "origin": "https://www.youtube.com",
-      "id": 13
+      "id": 13,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/player/38c5f870/player_ias.vflset/en_US/base.js",
       "done": true,
       "type": "Script",
       "origin": "https://www.youtube.com",
-      "id": 14
+      "id": 14,
+      "data_length": 0
     },
     {
       "url": "https://www.youtube.com/s/player/38c5f870/www-player.css",
       "done": true,
       "type": "Stylesheet",
       "origin": "https://www.youtube.com",
-      "id": 15
+      "id": 15,
+      "data_length": 0
     }
   ],
   "links": [
