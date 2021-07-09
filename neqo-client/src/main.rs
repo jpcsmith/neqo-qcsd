@@ -199,7 +199,12 @@ pub struct ShapingArgs {
 
     #[structopt(long, display_order=1001)]
     /// Whether to select padding to URLs by size instead of type
-    select_padding_by_size: bool,
+    dont_select_padding_by_size: bool,
+
+    #[structopt(long, display_order=1001)]
+    /// Duration after the defence is complete to wait before closing. 
+    /// Allows responses from the server to be delivered
+    tail_wait: Option<u64>,
 
     #[structopt(long, requires("defence"), display_order=1001)]
     /// File to which to log chaff stream ids
@@ -705,6 +710,10 @@ fn build_flow_shaper(args: &ShapingArgs, resources: Vec<Resource>, header: &Vec<
         config.max_stream_data_excess = value;
     }
 
+    if let Some(value) = args.tail_wait {
+        config.tail_wait = value;
+    }
+
     if let Some(value) = args.max_chaff_streams {
         config.max_chaff_streams = value;
     }
@@ -808,11 +817,11 @@ fn client(
 
     // If there are no dummy-urls, extract them from the list of URLs
     let chaff_resources = match (&args.shaping_args.dummy_urls,
-                                 args.shaping_args.select_padding_by_size) {
+                                 args.shaping_args.dont_select_padding_by_size) {
         (vec, _) if !vec.is_empty() => vec.iter().cloned().map(|x| x.into()).collect(),
-        (_, false) => url_deps.borrow().select_padding_urls(5)
+        (_, true) => url_deps.borrow().select_padding_urls(5)
             .into_iter().map(|x| x.into()).collect(),
-        (_, true) => url_deps.borrow().select_padding_urls_by_size(5) 
+        (_, false) => url_deps.borrow().select_padding_urls_by_size(5) 
     };
 
     if let Some(flow_shaper) = build_flow_shaper(

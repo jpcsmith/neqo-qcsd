@@ -852,8 +852,12 @@ impl Connection {
                     },
                     FlowShapingEvent::SendPaddingFrames(pad_size) => {
                         self.shaper_padding += pad_size;
-                    }
-                    _ => {}
+                    },
+                    FlowShapingEvent::CloseConnection | FlowShapingEvent::DoneShaping 
+                    | FlowShapingEvent::RequestResource(_) 
+                    | FlowShapingEvent::ResetStream(_) => {
+                        panic!("event on wrong queue.");
+                    } 
                 };
             }
         }

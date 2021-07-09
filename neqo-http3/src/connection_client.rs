@@ -678,6 +678,11 @@ impl Http3Client {
                         Err(err) => panic!("cannot open dummy stream: {:?}", err),
                     };
                 },
+                FlowShapingEvent::ResetStream(stream_id) => {
+                    if let Err(err) = self.stream_reset(stream_id, 0) {
+                        qtrace!([self], "error on stream reset {:?}", err);
+                    }
+                }
                 _ => {}
             };
         };
