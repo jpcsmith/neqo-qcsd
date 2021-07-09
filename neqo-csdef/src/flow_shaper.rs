@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::cmp::max;
 use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::fmt::Display;
@@ -52,6 +51,9 @@ pub struct Config {
 
     /// How long before expiry to send a ping in milliseconds
     pub keep_alive_lead_time: u64,
+
+    /// How long after last event to keep the connection open for
+    pub tail_wait: u64,
 }
 
 
@@ -67,6 +69,7 @@ impl Default for Config {
             low_watermark: 1_000_000,
             drop_unsat_events: false,
             keep_alive_lead_time: 100,
+            tail_wait: 0,
         }
     }
 }
@@ -196,6 +199,11 @@ pub struct FlowShaper {
     /// The time that the flow shaper was started
     start_time: Option<Instant>,
 
+    /// Set once the defence has completed to allow waiting for any tail end packets 
+    /// from the server. Once elapsed, will be set to a duration of zero and the 
+    /// shaper will be closed.
+    end_time: Option<Duration>,
+
     /// Used to signal that sending has been unthrottled
     is_sending_unthrottled: bool,
 
@@ -209,6 +217,8 @@ pub struct FlowShaper {
     app_streams: ChaffStreamMap,
 
     log: FlowShaperLogger,
+
+    needs_immediate_callback: RefCell<bool>,
 }
 
 
@@ -238,6 +248,8 @@ impl FlowShaper {
             events: Default::default(),
             log: FlowShaperLogger::default(),
             incoming_backlog: 0,
+            end_time: None,
+            needs_immediate_callback: RefCell::new(false),
         };
 
         qinfo!([shaper], "New flow shaper created {:?}", shaper);
@@ -252,41 +264,54 @@ impl FlowShaper {
     }
 
     pub fn is_complete(&self) -> bool {
-        self.defence.is_complete() && self.incoming_backlog == 0
+        if self.end_time.map_or(false, |d| d == Duration::new(0, 0)) {
+            assert!(self.defence.is_complete() && self.incoming_backlog == 0);
+            true
+        } else {
+            false
+        }
     }
 
     /// Report the next instant at which the FlowShaper should be called for
     /// processing events.
     pub fn next_signal_time(&self, expiry_time: Instant) -> Option<Instant> {
-        if self.has_events() {
+        let instant = if self.has_events() || *self.needs_immediate_callback.borrow() {
+            self.needs_immediate_callback.replace(false);
             Some(Instant::now())
+        } else if let Some(end_time) = self.end_time { 
+            if end_time > Duration::new(0, 0) {
+                Some(self.start_time.expect("start_time must have been set") + end_time)
+            } else {
+                None
+            }
         } else {
-            // Schedule a possible cancellation o the timeoutbefore expiry.
-            // This is only to be considered when next_event_at() is not 
-            // None (thus shaping is not complete).
-            //
-            // This should not result in an infinite loop when called within 
-            // 200 ms of the expiry time. The first time it is called, it 
-            // schedules a callback. On the process_timer call, we send a ping
-            // which resets/delays the expiry time before this is called again.
-            let cancel_expiry_at = expiry_time - Duration::from_millis(
-                self.config.keep_alive_lead_time);
-
             self.defence.next_event_at()
                 .map(|dur| std::cmp::min(self.next_ci, dur))
                 .or(Some(self.next_ci))
                 .zip(self.start_time)
-                .map(|(dur, start)| std::cmp::min(start + dur, cancel_expiry_at))
-                .map(|inst| max(inst, Instant::now()))
-        }
+                .map(|(dur, start)| start + dur)
+        };
+
+        // Schedule a possible cancellation o the timeoutbefore expiry.
+        // This is only to be considered when next_event_at() is not 
+        // None (thus shaping is not complete).
+        //
+        // This should not result in an infinite loop when called within 
+        // 200 ms of the expiry time. The first time it is called, it 
+        // schedules a callback. On the process_timer call, we send a ping
+        // which resets/delays the expiry time before this is called again.
+        let cancel_expiry_at = expiry_time - Duration::from_millis(
+            self.config.keep_alive_lead_time);
+        instant.map(|inst| std::cmp::min(inst, cancel_expiry_at))
+            .map(|inst| std::cmp::max(inst, Instant::now()))
     }
 
     pub fn process_timer(&mut self, now: Instant, expiry_time: Instant) {
         if let Some(start_time) = self.start_time {
             self.process_timer_(now.duration_since(start_time));
-
             let cancel_expiry_at = expiry_time - Duration::from_millis(
                 self.config.keep_alive_lead_time);
+
             if !self.is_complete() && cancel_expiry_at <= now && !self.has_events() {
                 // We send a ping if we're not complete, the connection will expire shortly
                 // and there are no pending events that would delay that expiry (such as a
@@ -298,8 +323,35 @@ impl FlowShaper {
         }
     }
 
+    fn close(&mut self) {
+        // Mark that the end time has elapsed
+        self.end_time = Some(Duration::new(0, 0));
+
+        for (stream_id, _) in self.chaff_streams.iter() {
+            self.application_events.borrow_mut().reset_stream(*stream_id);
+        }
+        self.needs_immediate_callback.replace(true);
+
+        // Signal to the app that we are now complete
+        if self.defence.is_padding_only() {
+            qdebug!([self], "padding complete, notifying client");
+            self.application_events.borrow_mut().done_shaping();
+        } else {
+            qdebug!([self], "shaping complete, closing connection");
+            self.application_events.borrow_mut().close_connection();
+        }
+    }
+
     fn process_timer_(&mut self, since_start: Duration) {
         if self.is_complete() {
+            qtrace!([self], "Is already complete, skipping process_timer_");
+            return;
+        } else if let Some(end_time) = self.end_time {
+            assert!(end_time > Duration::new(0, 0), "should then be complete");
+            if end_time < since_start {
+                self.close();
+                assert!(self.is_complete(), "must now be complete");
+            }
             return;
         }
 
@@ -363,15 +415,10 @@ impl FlowShaper {
             }
         }
 
-        if self.is_complete() {
-            // The entry guard above ensures that we know this recently completed
-            if self.defence.is_padding_only() {
-                qdebug!([self], "padding complete, notifying client");
-                self.application_events.borrow_mut().done_shaping();
-            } else {
-                qdebug!([self], "shaping complete, closing connection");
-                self.application_events.borrow_mut().close_connection();
-            }
+        if self.defence.is_complete() && self.incoming_backlog == 0 {
+            assert!(self.end_time.is_none());
+            self.end_time = Some(since_start + Duration::from_millis(self.config.tail_wait));
+            qtrace!([self], "setting end_time to {:?}", self.end_time);
         } else if self.defence.is_outgoing_complete() && !self.is_sending_unthrottled {
             // We're done with outgoing but not incoming
             self.unthrottle_sending();
@@ -666,8 +713,10 @@ impl StreamEventConsumer for FlowShaper {
             stream.url().clone(), stream.headers().clone(), stream.data_length());
         self.chaff_manager.add_resource(resource);
 
-        // Possibly open new chaff streams
-        self.chaff_manager.request_chaff_streams(&self.chaff_streams);
+        if !self.is_complete() {
+            // Possibly open new chaff streams
+            self.chaff_manager.request_chaff_streams(&self.chaff_streams);
+        }
     }
 }
 

@@ -40,6 +40,7 @@ pub enum FlowShapingEvent {
     CloseConnection,
     DoneShaping,
     RequestResource(Resource),
+    ResetStream(u64),
 }
 
 #[derive(Debug, Default)]
@@ -118,6 +119,10 @@ pub(crate) struct FlowShapingApplicationEvents {
 impl FlowShapingApplicationEvents {
     pub fn request_chaff_resource(&self, resource: &Resource) {
         self.insert(FlowShapingEvent::RequestResource(resource.clone()));
+    }
+
+    pub fn reset_stream(&self, stream_id: u64) {
+        self.insert(FlowShapingEvent::ResetStream(stream_id));
     }
 
     pub fn done_shaping(&self) {
