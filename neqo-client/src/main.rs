@@ -116,7 +116,7 @@ pub struct ShapingArgs {
     #[structopt(
         long,
         possible_values=&["none", "schedule", "front", "tamaraw"],
-        display_order=1001
+        display_order=1001,
     )]
     /// Specify the defence (if any) to be used for shaping.
     defence: Option<String>,
@@ -158,15 +158,15 @@ pub struct ShapingArgs {
     /// Minimum value in seconds at which the distribution peak will occur.
     front_peak_min: Option<f64>,
 
-    #[structopt(long, default_value = "5", requires("defence"), display_order=1004)]
+    #[structopt(long, default_value = "5", display_order=1004)]
     /// Incoming rate for the Tamaraw defence in milliseconds
     tamaraw_rate_in: u64,
 
-    #[structopt(long, default_value = "20", requires("defence"), display_order=1004)]
+    #[structopt(long, default_value = "20", display_order=1004)]
     /// Outgoing rate for the Tamaraw defence in milliseconds
     tamaraw_rate_out: u64,
 
-    #[structopt(long, default_value = "100", requires("defence"), display_order=1004)]
+    #[structopt(long, default_value = "100", display_order=1004)]
     /// Number of packets to whose multiple Tamaraw will pad each direction
     tamaraw_modulo: u32,
 
