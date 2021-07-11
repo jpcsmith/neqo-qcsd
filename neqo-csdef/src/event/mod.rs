@@ -36,11 +36,13 @@ pub enum FlowShapingEvent {
         new_limit: u64,
         increase: u64,
     },
+    SendPacketOfSize(u32),
     SendPaddingFrames(u32),
     CloseConnection,
     DoneShaping,
     RequestResource(Resource),
     ResetStream(u64),
+    PushControl,
 }
 
 #[derive(Debug, Default)]
@@ -65,6 +67,14 @@ impl FlowShapingEvents {
 
     pub fn send_pad_frames(&self, pad_size: u32) {
         self.insert(FlowShapingEvent::SendPaddingFrames(pad_size));
+    }
+
+    pub fn send_packet_of_size(&self, size: u32) {
+        self.insert(FlowShapingEvent::SendPacketOfSize(size));
+    }
+
+    pub fn push_control(&self) {
+        self.insert(FlowShapingEvent::PushControl);
     }
 
     fn insert(&self, event: FlowShapingEvent) {

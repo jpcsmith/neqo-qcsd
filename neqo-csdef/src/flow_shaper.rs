@@ -256,6 +256,10 @@ impl FlowShaper {
         shaper
     }
 
+    pub fn is_paced(&self) -> bool {
+        !self.defence.is_padding_only()
+    }
+
     /// Start shaping the traffic using the current time as the reference
     /// point.
     pub fn start(&mut self) {
@@ -439,36 +443,39 @@ impl FlowShaper {
     /// Data is pushed first from application streams if they're being
     /// shaped, then chaff-streams, then finally using padding frames.
     fn push_traffic(&mut self, amount: u32) -> u32 {
-        assert!(amount > 0);
-        let amount = u64::from(amount);
-        let mut remaining = amount;
-        qtrace!([self], "attempting to push data: {}", amount);
+        qtrace!([self], "Pushing traffic of length {}", amount);
+        self.events.borrow_mut().send_packet_of_size(amount);
+        amount
+        // assert!(amount > 0);
+        // let amount = u64::from(amount);
+        // let mut remaining = amount;
+        // qtrace!([self], "attempting to push data: {}", amount);
 
-        if !self.defence.is_padding_only() && remaining > 0 {
-            let pushed = self.app_streams.push_data(remaining);
-            if pushed > 0 {
-                qdebug!([self], "pushed bytes: {{ source: \"app-stream\", bytes: {} }}",
-                        pushed);
-            }
-            remaining -= pushed;
-        }
+        // if !self.defence.is_padding_only() && remaining > 0 {
+        //     let pushed = self.app_streams.push_data(remaining);
+        //     if pushed > 0 {
+        //         qdebug!([self], "pushed bytes: {{ source: \"app-stream\", bytes: {} }}",
+        //                 pushed);
+        //     }
+        //     remaining -= pushed;
+        // }
 
-        if remaining > 0 {
-            let pushed = self.chaff_streams.push_data(remaining);
-            if pushed > 0 {
-                qdebug!([self], "pushed bytes: {{ source: \"chaff-stream\", bytes: {} }}",
-                        pushed);
-            }
-            remaining -= pushed;
-        }
+        // if remaining > 0 {
+        //     let pushed = self.chaff_streams.push_data(remaining);
+        //     if pushed > 0 {
+        //         qdebug!([self], "pushed bytes: {{ source: \"chaff-stream\", bytes: {} }}",
+        //                 pushed);
+        //     }
+        //     remaining -= pushed;
+        // }
 
-        if remaining > 0 {
-            self.events.borrow_mut().send_pad_frames(u32::try_from(remaining).unwrap());
-            qdebug!([self], "pushed bytes: {{ source: \"padding\", bytes: {} }}", remaining);
-        }
+        // if remaining > 0 {
+        //     self.events.borrow_mut().send_pad_frames(u32::try_from(remaining).unwrap());
+        //     qdebug!([self], "pushed bytes: {{ source: \"padding\", bytes: {} }}", remaining);
+        // }
 
-        // Since we can send padding bytes, we always push the full amount
-        u32::try_from(amount).expect("unmodified amount was casted from u32")
+        // // Since we can send padding bytes, we always push the full amount
+        // u32::try_from(amount).expect("unmodified amount was casted from u32")
     }
 
     fn pull_traffic(&mut self, amount: u32) -> u32 {
@@ -487,6 +494,10 @@ impl FlowShaper {
             remaining -= pulled;
         } else if remaining > 0 && !self.chaff_streams.can_pull() {
             qwarn!([self], "No chaff streams with available pull capacity.");
+        }
+
+        if remaining < u64::from(amount) {
+            self.events.borrow_mut().push_control();
         }
 
         amount - u32::try_from(remaining).unwrap()
@@ -553,14 +564,15 @@ impl FlowShaper {
             .send_budget_available()
     }
 
-    pub fn is_send_throttled(&self, stream_id: u64) -> bool {
-        if StreamId::is_bidi(stream_id.into()) {
-            self.get_stream(&stream_id)
-                .expect("Stream to already be tracked.")
-                .is_send_throttled()
-        } else {
-            false
-        }
+    pub fn is_send_throttled(&self, _stream_id: u64) -> bool {
+        false
+        // if StreamId::is_bidi(stream_id.into()) {
+        //     self.get_stream(&stream_id)
+        //         .expect("Stream to already be tracked.")
+        //         .is_send_throttled()
+        // } else {
+        //     false
+        // }
     }
 
     pub fn is_recv_throttled(&self, stream_id: u64) -> bool {
