@@ -277,6 +277,8 @@ pub struct Connection {
 
     // Added for flow shaping
     flow_shaper: Option<Rc<RefCell<FlowShaper>>>,
+    shaper_pkt_queue: std::collections::VecDeque<usize>,
+    push_control: bool,
     shaper_padding: u32
 }
 
@@ -421,6 +423,8 @@ impl Connection {
             quic_version,
             flow_shaper: None,
             shaper_padding: 0u32,
+            shaper_pkt_queue: Default::default(),
+            push_control: false,
         };
 
         c.stats.borrow_mut().init(format!("{}", c));
@@ -853,6 +857,12 @@ impl Connection {
                     FlowShapingEvent::SendPaddingFrames(pad_size) => {
                         self.shaper_padding += pad_size;
                     },
+                    FlowShapingEvent::SendPacketOfSize(size) => {
+                        self.shaper_pkt_queue.push_back(usize::try_from(size).unwrap());
+                    },
+                    FlowShapingEvent::PushControl => {
+                        self.push_control = true;
+                    },
                     FlowShapingEvent::CloseConnection | FlowShapingEvent::DoneShaping 
                     | FlowShapingEvent::RequestResource(_) 
                     | FlowShapingEvent::ResetStream(_) => {
@@ -905,6 +915,7 @@ impl Connection {
 
         let mut delays = SmallVec::<[_; 6]>::new();
         if let Some(ack_time) = self.acks.ack_time(now) {
+            let ack_time = std::cmp::max(ack_time, Instant::now());
             qtrace!([self], "Delayed ACK timer {:?}", ack_time);
             delays.push(ack_time);
         }
@@ -1611,9 +1622,34 @@ impl Connection {
         let profile = self.loss_recovery.send_profile(now, path.mtu());
         qdebug!([self], "output_path send_profile {:?}", profile);
 
+        let is_paced_shaping = self.flow_shaper.as_ref()
+            .map_or(false, |fs| fs.borrow_mut().is_paced());
+
+        let dgram_limit = if is_paced_shaping {
+            qtrace!([self], "shaper_pkt_queue has length: {}", self.shaper_pkt_queue.len());
+            let mut limit = self.shaper_pkt_queue.pop_front().unwrap_or(0);
+            if self.push_control && limit == 0 {
+                limit = 150;
+            }
+            self.push_control = false;
+            qtrace!([self], "using a limit of {} on path with mtu of {}", limit, path.mtu());
+
+            if limit > path.mtu() {
+                qwarn!([self], "Clamping attempt to send larger than mtu: {} > {}", 
+                       limit, path.mtu());
+            }
+            std::cmp::min(limit, path.mtu())
+        } else {
+            profile.limit()
+        };
+
+        let last_space = PNSpace::iter()
+            .filter_map(|space| self.crypto.states.select_tx(*space).and(Some(*space)))
+            .last().expect("should be some space");
+
         // Frames for different epochs must go in different packets, but then these
         // packets can go in a single datagram
-        let mut encoder = Encoder::with_capacity(profile.limit());
+        let mut encoder = Encoder::with_capacity(dgram_limit);
         for space in PNSpace::iter() {
             // Ensure we have tx crypto state for this epoch, or skip it.
             let (cspace, tx) = if let Some(crypto) = self.crypto.states.select_tx(*space) {
@@ -1636,19 +1672,30 @@ impl Connection {
 
             // Work out if we have space left.
             let aead_expansion = tx.expansion();
-            if builder.len() + aead_expansion > profile.limit() {
+            if builder.len() + aead_expansion > dgram_limit {
                 // No space for a packet of this type.
                 encoder = builder.abort();
                 continue;
             }
 
             // Add frames to the packet.
-            let limit = profile.limit() - aead_expansion;
+            let limit = dgram_limit - aead_expansion;
             let (tokens, ack_eliciting) =
                 self.add_frames(&mut builder, *space, limit, &profile, now);
-            if builder.is_empty() {
+            if is_paced_shaping && *space == last_space {
+                // This is the last builder to be encountered, but it's empty, so we need
+                // to fill it with padding
+                let remaining = limit - builder.len();
+                if remaining >= 1 {
+                    qtrace!([self], "padding with {} bytes to length {}",
+                            remaining, dgram_limit);
+                    Frame::Ping.marshal(&mut builder);
+                    for _ in 0..(remaining-1) {
+                        Frame::Padding.marshal(&mut builder);
+                    }
+                }
+            } else if builder.is_empty() {
                 // Nothing to include in this packet.
-                // TODO (ldolfi): possible point where add just padding frames
                 encoder = builder.abort();
                 continue;
             }
@@ -1712,9 +1759,13 @@ impl Connection {
                     qdebug!([self], "pad Initial to path MTU {}", path.mtu());
                     initial.size += path.mtu() - packets.len();
                     packets.resize(path.mtu(), 0);
-                }
+                } 
                 self.loss_recovery.on_packet_sent(initial);
             }
+            // if is_paced_shaping && packets.len() < dgram_limit {
+            //     packets.resize(dgram_limit, 0);
+            // }
+
             // else {
             //     if needs_padding {
             //         qdebug!([self], "pad not Initial to path MTU {}", path.mtu());

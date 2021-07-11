@@ -407,11 +407,11 @@ impl ChaffStream {
         qtrace!([self], "data sent: {}", amount);
         match &mut self.send_state {
             SendState::Throttled { pending, allowed } => {
-                assert!(amount <= *pending, "More data sent than was known pending.");
-                assert!(amount <= *allowed, "More data sent than was allowed.");
+                // assert!(amount <= *pending, "More data sent than was known pending.");
+                // assert!(amount <= *allowed, "More data sent than was allowed.");
 
-                *pending -= amount;
-                *allowed -= amount;
+                // *pending -= amount;
+                // *allowed -= amount;
             },
             SendState::Unthrottled => (),
             SendState::Closed => panic!("Data sent while the stream is closed."),
