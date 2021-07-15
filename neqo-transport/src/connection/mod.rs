@@ -1625,7 +1625,7 @@ impl Connection {
         let is_paced_shaping = self.flow_shaper.as_ref()
             .map_or(false, |fs| fs.borrow_mut().is_paced());
 
-        let dgram_limit = if is_paced_shaping {
+        let (dgram_limit, send_chaff) = if is_paced_shaping {
             qtrace!([self], "shaper_pkt_queue has length: {}", self.shaper_pkt_queue.len());
             let mut limit = self.shaper_pkt_queue.pop_front().unwrap_or(0);
             if self.push_control && limit == 0 {
@@ -1638,9 +1638,12 @@ impl Connection {
                 qwarn!([self], "Clamping attempt to send larger than mtu: {} > {}", 
                        limit, path.mtu());
             }
-            std::cmp::min(limit, path.mtu())
+
+            (std::cmp::min(limit, path.mtu()), false)
+        } else if !is_paced_shaping && !self.shaper_pkt_queue.is_empty() {
+            (std::cmp::min(self.shaper_pkt_queue.pop_front().unwrap(), path.mtu()), true)
         } else {
-            profile.limit()
+            (profile.limit(), false)
         };
 
         let last_space = PNSpace::iter()
@@ -1651,6 +1654,10 @@ impl Connection {
         // packets can go in a single datagram
         let mut encoder = Encoder::with_capacity(dgram_limit);
         for space in PNSpace::iter() {
+            if send_chaff && *space != last_space {
+                continue;
+            }
+
             // Ensure we have tx crypto state for this epoch, or skip it.
             let (cspace, tx) = if let Some(crypto) = self.crypto.states.select_tx(*space) {
                 crypto
@@ -1680,9 +1687,14 @@ impl Connection {
 
             // Add frames to the packet.
             let limit = dgram_limit - aead_expansion;
-            let (tokens, ack_eliciting) =
-                self.add_frames(&mut builder, *space, limit, &profile, now);
-            if is_paced_shaping && *space == last_space {
+
+            let (tokens, mut ack_eliciting) = if !send_chaff {
+                self.add_frames(&mut builder, *space, limit, &profile, now)
+            } else {
+                (Vec::new(), false)
+            };
+
+            if send_chaff  || is_paced_shaping && *space == last_space {
                 // This is the last builder to be encountered, but it's empty, so we need
                 // to fill it with padding
                 let remaining = limit - builder.len();
@@ -1694,25 +1706,7 @@ impl Connection {
                         Frame::Padding.marshal(&mut builder);
                     }
                 }
-            } else if !is_paced_shaping 
-                    && builder.is_empty() 
-                    && *space == last_space
-                    && !self.shaper_pkt_queue.is_empty() 
-            {
-                // In this case, we're not paced shaping, but there's an event to send a chaff
-                // packet. Add it to this empty packet.
-                let mut remaining = std::cmp::min(
-                    self.shaper_pkt_queue.pop_front().unwrap(),
-                    dgram_limit); 
-                remaining = remaining - aead_expansion - builder.len();
-                if remaining >= 1 {
-                    qtrace!([self], "padding with {} bytes to length {}",
-                            remaining, dgram_limit);
-                    Frame::Ping.marshal(&mut builder);
-                    for _ in 0..(remaining-1) {
-                        Frame::Padding.marshal(&mut builder);
-                    }
-                }
+                ack_eliciting = true;
             } else if builder.is_empty() {
                 // Nothing to include in this packet.
                 encoder = builder.abort();
