@@ -1694,6 +1694,25 @@ impl Connection {
                         Frame::Padding.marshal(&mut builder);
                     }
                 }
+            } else if !is_paced_shaping 
+                    && builder.is_empty() 
+                    && *space == last_space
+                    && !self.shaper_pkt_queue.is_empty() 
+            {
+                // In this case, we're not paced shaping, but there's an event to send a chaff
+                // packet. Add it to this empty packet.
+                let mut remaining = std::cmp::min(
+                    self.shaper_pkt_queue.pop_front().unwrap(),
+                    dgram_limit); 
+                remaining = remaining - aead_expansion - builder.len();
+                if remaining >= 1 {
+                    qtrace!([self], "padding with {} bytes to length {}",
+                            remaining, dgram_limit);
+                    Frame::Ping.marshal(&mut builder);
+                    for _ in 0..(remaining-1) {
+                        Frame::Padding.marshal(&mut builder);
+                    }
+                }
             } else if builder.is_empty() {
                 // Nothing to include in this packet.
                 encoder = builder.abort();
