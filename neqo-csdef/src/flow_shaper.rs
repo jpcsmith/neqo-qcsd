@@ -655,6 +655,10 @@ impl HEventConsumer for FlowShaper {
     }
 
     fn on_application_complete(&mut self) {
+        if let Some(start_time) = self.start_time {
+            let duration = Instant::now() - start_time;
+            println!("[FlowShaper] Application complete after {} ms.", duration.as_millis());
+        }
         self.defence.on_application_complete();
     }
 }
