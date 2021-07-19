@@ -42,6 +42,8 @@ use neqo_csdef::dependency_tracker::UrlDependencyTracker;
 use structopt::StructOpt;
 use url::{Origin, Url};
 
+const QUIET: bool = true;
+
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -471,7 +473,9 @@ impl<'a> Handler<'a> {
                 self.url_queue.swap_remove_front(index).unwrap()
             }
             None => {
-                println!("None of the URLs are currently downloadable.");
+                if !QUIET {
+                    println!("None of the URLs are currently downloadable.");
+                }
                 return false;
             }
         };
@@ -554,7 +558,7 @@ impl<'a> Handler<'a> {
                     fin,
                 } => match self.streams.get(&stream_id) {
                     Some(((id, _), out_file)) => {
-                        if out_file.is_none() {
+                        if out_file.is_none() && !QUIET {
                             println!("READ HEADERS[{}]: fin={} {:?}", stream_id, fin, headers);
                         }
 
@@ -600,11 +604,17 @@ impl<'a> Handler<'a> {
                                     out_file.write_all(&data[..sz])?;
                                 }
                             } else if !self.args.output_read_data {
-                                println!("READ[{}]: {} bytes", stream_id, sz);
+                                if !QUIET {
+                                    println!("READ[{}]: {} bytes", stream_id, sz); 
+                                }
                             } else if let Ok(txt) = String::from_utf8(data.clone()) {
-                                println!("READ[{}]: {}", stream_id, txt);
+                                if !QUIET {
+                                    println!("READ[{}]: {}", stream_id, txt);
+                                }
                             } else {
-                                println!("READ[{}]: 0x{}", stream_id, hex(&data));
+                                if !QUIET {
+                                    println!("READ[{}]: 0x{}", stream_id, hex(&data));
+                                }
                             }
 
                             if fin {
@@ -648,6 +658,9 @@ impl<'a> Handler<'a> {
                         client.close(Instant::now(), 0, "kthx4shaping!");
                         return Ok(false);
                     }
+                }
+                Http3ClientEvent::ResumptionToken{..} => {
+                    println!("Unhandled resumption token.");
                 }
                 _ => {
                     println!("Unhandled event {:?}", event);
