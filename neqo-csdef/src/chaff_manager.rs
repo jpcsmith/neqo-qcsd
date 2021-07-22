@@ -93,6 +93,7 @@ impl ChaffManager {
     /// calling this function repeatedly without waiting for the streams to
     /// be created will result in too many streams being created.
     pub fn request_chaff_streams(&mut self, streams: &ChaffStreamMap) {
+        qtrace!([self], "requesting chaff streams");
         if streams.pull_available() >= self.low_watermark {
             qtrace!([self], "skipping requests, available data exceeds watermark: {}",
                     self.low_watermark);
@@ -126,6 +127,8 @@ impl ChaffManager {
                 chaff_needed = chaff_needed.saturating_sub(length);
                 remaining_streams -= 1;
             }
+        } else {
+            qtrace!([self], "no resources found in {:?}", self.resources);
         }
 
         qtrace!([self], "requests complete with {} streams still available and {} below watermark",

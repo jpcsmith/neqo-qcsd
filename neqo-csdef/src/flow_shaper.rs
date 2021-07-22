@@ -665,6 +665,10 @@ impl HEventConsumer for FlowShaper {
 
 impl StreamEventConsumer for FlowShaper {
     fn on_first_byte_sent(&mut self, stream_id: u64) {
+        if !self.chaff_manager.has_started() {
+            self.chaff_manager.start();
+        }
+
         if StreamId::new(stream_id).is_uni() {
             return;
         }

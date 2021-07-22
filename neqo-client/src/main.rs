@@ -215,6 +215,10 @@ pub struct ShapingArgs {
     #[structopt(long, requires("defence"), display_order=1001)]
     /// File to which to log the defence schedule as events are encountered
     defence_event_log: Option<String>,
+
+    #[structopt(long, display_order=1001)]
+    /// If true, will not download URLs but instead only use them to generate chaff
+    only_chaff: bool
 }
 
 
@@ -449,7 +453,7 @@ struct Handler<'a> {
 impl<'a> Handler<'a> {
     fn download_urls(&mut self, client: &mut Http3Client) {
         loop {
-            if self.url_queue.is_empty() {
+            if self.args.shaping_args.only_chaff || self.url_queue.is_empty() {
                 break;
             }
             if !self.download_next(client) {
@@ -541,7 +545,7 @@ impl<'a> Handler<'a> {
             let pending_streams = self.streams.keys().cloned().collect::<Vec<u64>>();
             println!("Pending streams: {:?}", pending_streams);
         }
-        self.streams.is_empty() && self.url_queue.is_empty() && self.is_done_shaping
+        ((self.streams.is_empty() && self.url_queue.is_empty()) || self.args.shaping_args.only_chaff) && self.is_done_shaping
     }
 
     fn handle(&mut self, client: &mut Http3Client) -> Res<bool> {
@@ -829,12 +833,14 @@ fn client(
     );
 
     // If there are no dummy-urls, extract them from the list of URLs
+    let n_urls = if !args.shaping_args.only_chaff { 5 } else { 20 };
+
     let chaff_resources = match (&args.shaping_args.dummy_urls,
                                  args.shaping_args.dont_select_padding_by_size) {
         (vec, _) if !vec.is_empty() => vec.iter().cloned().map(|x| x.into()).collect(),
-        (_, true) => url_deps.borrow().select_padding_urls(5)
+        (_, true) => url_deps.borrow().select_padding_urls(n_urls)
             .into_iter().map(|x| x.into()).collect(),
-        (_, false) => url_deps.borrow().select_padding_urls_by_size(5) 
+        (_, false) => url_deps.borrow().select_padding_urls_by_size(n_urls) 
     };
 
     if let Some(flow_shaper) = build_flow_shaper(
