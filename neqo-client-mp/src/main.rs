@@ -45,7 +45,7 @@ use neqo_csdef::dependency_tracker::UrlDependencyTracker;
 use structopt::StructOpt;
 use url::{Origin, Url, Host};
 
-const QUIET: bool = true;
+const QUIET: bool = false;
 
 
 #[derive(Debug)]
@@ -420,6 +420,13 @@ fn process_loop(
             return Ok(client.state());
         }
 
+        if handler.streams.is_empty() {
+            // The fact that exiting was false means that we still have some resources
+            // We set a short timeout as we may need to request a stream due to 
+            // dependencies being satisfied in the meantime
+            socket.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
+        }
+
         match socket.recv(&mut buf[..]) {
             Err(ref err)
                 if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::Interrupted => {}
@@ -452,6 +459,7 @@ struct Handler<'a> {
     is_done_shaping: bool,
     completion_state: (bool, bool, bool),
     url_completion_queue: std::sync::mpsc::Sender<Url>,
+    ready_to_request: bool,
 }
 
 impl<'a> Handler<'a> {
@@ -551,8 +559,10 @@ impl<'a> Handler<'a> {
         }
 
         if self.is_done_shaping && self.url_queue.is_empty() && !self.streams.is_empty() {
-            let pending_streams = self.streams.keys().cloned().collect::<Vec<u64>>();
-            println!("Pending streams: {:?}", pending_streams);
+            if !QUIET {
+                let pending_streams = self.streams.keys().cloned().collect::<Vec<u64>>();
+                println!("Pending streams: {:?}", pending_streams);
+            }
         }
         ((self.streams.is_empty() && self.url_queue.is_empty()) || self.args.shaping_args.only_chaff) && self.is_done_shaping
     }
@@ -665,6 +675,7 @@ impl<'a> Handler<'a> {
                 }
                 Http3ClientEvent::StateChange(Http3State::Connected)
                 | Http3ClientEvent::RequestsCreatable => {
+                    self.ready_to_request = true;
                     self.download_urls(client);
                 }
                 Http3ClientEvent::FlowShapingDone(should_close) => {
@@ -692,6 +703,8 @@ impl<'a> Handler<'a> {
                 client.close(Instant::now(), 0, "kthxbye!");
             }
             return Ok(false);
+        } else if self.ready_to_request && self.streams.is_empty() && !self.url_queue.is_empty() {
+            self.download_urls(client);
         }
         Ok(true)
     }
@@ -810,6 +823,7 @@ fn client(
     hostname: &str,
     url_deps: Arc<Mutex<UrlDependencyTracker>>,
     url_completion_queue: std::sync::mpsc::Sender<Url>,
+    origin: Origin,
 ) -> Res<()> {
     let quic_protocol = match args.alpn.as_str() {
         "h3-27" => QuicVersion::Draft27,
@@ -867,7 +881,11 @@ fn client(
     client.set_qlog(qlog);
 
     let key_update = KeyUpdateState(args.key_update);
-    let url_queue = VecDeque::from(url_deps.lock().unwrap().urls());
+    let url_queue: VecDeque<(u16, Url)> = url_deps.lock().unwrap()
+        .urls().iter()
+        .filter(|(_, url)| url.origin() == origin)
+        .cloned()
+        .collect();
     let mut h = Handler {
         streams: HashMap::new(),
         url_queue,
@@ -878,6 +896,7 @@ fn client(
         is_done_shaping: !shaping,
         completion_state: (false, false, !shaping),
         url_completion_queue,
+        ready_to_request: false,
     };
 
     process_loop(&local_addr, &remote_addr, &socket, &mut client, &mut h)?;
@@ -921,6 +940,7 @@ fn add_client(
     args: Arc<Args>,
     url_deps: Arc<Mutex<UrlDependencyTracker>>,
     url_completion_queue: std::sync::mpsc::Sender<Url>,
+    origin: Origin,
 ) -> Res<std::thread::JoinHandle<Res<()>>> {
     let addrs: Vec<_> = format!("{}:{}", host, port).to_socket_addrs()?.collect();
     let remote_addr = *addrs.first().unwrap();
@@ -947,7 +967,8 @@ fn add_client(
     );
 
     let handle = std::thread::spawn(move || {
-        client(
+        eprintln!("Thread for origin {:?} started.", origin);
+        let result = client(
             args,
             socket,
             local_addr,
@@ -955,7 +976,10 @@ fn add_client(
             &format!("{}", host),
             url_deps.clone(),
             url_completion_queue,
-        )
+            origin.clone(),
+        );
+        eprintln!("Thread for origin {:?} ending.", origin);
+        result
     });
 
     Ok(handle)
@@ -1039,7 +1063,7 @@ fn main() -> Res<()> {
         for origin in &new_origins {
             if let Origin::Tuple(_scheme, host, port) = origin.clone() {
                 let handle = add_client(
-                    _scheme, host, port, args.clone(), url_deps.clone(), tx.clone().unwrap()
+                    _scheme, host, port, args.clone(), url_deps.clone(), tx.clone().unwrap(), origin.clone()
                 )?;
                 clients_by_origin.insert(origin.clone(), handle);
             }
