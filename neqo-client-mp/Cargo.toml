@@ -1,0 +1,24 @@
+[package]
+name = "neqo-client-mp"
+version = "0.4.12"
+authors = ["Martin Thomson <mt@lowentropy.net>",
+	"Dragana Damjanovic <dragana.damjano@gmail.com>",
+	"Andy Grover <agrover@mozilla.com>"]
+edition = "2018"
+license = "MIT/Apache-2.0"
+
+[dependencies]
+neqo-crypto = { path = "./../neqo-crypto" }
+neqo-transport = { path = "./../neqo-transport" }
+neqo-common = { path="./../neqo-common" }
+neqo-http3 = { path = "./../neqo-http3" }
+neqo-qpack = { path = "./../neqo-qpack" }
+neqo-csdef = { path = "./../neqo-csdef" }
+structopt = "0.3.7"
+url = "1.7.2"
+qlog = "0.3.0"
+csv = "1.1"
+
+[features]
+default = ["deny-warnings"]
+deny-warnings = []
