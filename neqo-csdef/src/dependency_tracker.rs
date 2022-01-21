@@ -150,6 +150,12 @@ impl UrlDependencyTracker {
         self.dependencies.iter().filter(|x| !x.has_completed).count()
     }
 
+    pub fn remaining_urls(&self) -> Vec<Url>  {
+        self.dependencies.iter().filter(|x| !x.has_completed)
+            .map(|res| Url::parse((*res.url).into()).unwrap())
+            .collect()
+    }
+
     /// Return the number of elements in the tracker
     pub fn len(&self) -> usize {
         self.dependencies.len()
