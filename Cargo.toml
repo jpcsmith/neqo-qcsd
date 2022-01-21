@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "neqo-client",
+  "neqo-client-mp",
   "neqo-common",
   "neqo-crypto",
   "neqo-http3",
