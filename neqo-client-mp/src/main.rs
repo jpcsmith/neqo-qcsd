@@ -39,7 +39,10 @@ use std::thread::JoinHandle;
 use neqo_csdef::{ ConfigFile, Resource };
 use neqo_csdef::event::HEventConsumer;
 use neqo_csdef::flow_shaper::{ FlowShaper, FlowShaperBuilder, Config as FlowShaperConfig };
-use neqo_csdef::defences::{ Defencev2, FrontConfig, StaticSchedule, Front, Tamaraw };
+use neqo_csdef::defences::{
+    Defencev2, FrontConfig, StaticSchedule, Front, Tamaraw, RRSharedDefenceBuilder,
+    RRSharedDefence,
+};
 use neqo_csdef::dependency_tracker::UrlDependencyTracker;
 
 use structopt::StructOpt;
@@ -458,7 +461,7 @@ struct Handler<'a> {
     url_deps: Arc<Mutex<UrlDependencyTracker>>,
     is_done_shaping: bool,
     completion_state: (bool, bool, bool),
-    url_completion_queue: std::sync::mpsc::Sender<Url>,
+    url_completion_queue: Option<std::sync::mpsc::Sender<Url>>,
     ready_to_request: bool,
 }
 
@@ -591,10 +594,19 @@ impl<'a> Handler<'a> {
                             }
 
                             self.url_deps.lock().unwrap().resource_downloaded(*id);
-                            self.url_completion_queue.send(url.clone()).unwrap();
+                            self.url_completion_queue
+                                .as_mut()
+                                .expect("Queue to exist since we have streams")
+                                .send(url.clone()).unwrap();
 
                             self.download_urls(client);
                             self.streams.remove(&stream_id);
+
+                            if self.streams.is_empty() && self.url_queue.is_empty() {
+                                // Signal that we have no more URLs to process,
+                                // and instead are waiting on the defence
+                                self.url_completion_queue = None;
+                            }
 
                             if self.done(client) {
                                 if client.is_being_shaped() {
@@ -648,7 +660,10 @@ impl<'a> Handler<'a> {
                                 }
 
                                 self.url_deps.lock().unwrap().resource_downloaded(*id);
-                                self.url_completion_queue.send(url.clone()).unwrap();
+                                self.url_completion_queue
+                                    .as_mut()
+                                    .expect("Queue to exist since we have streams")
+                                    .send(url.clone()).unwrap();
                                 self.download_urls(client);
 
                                 stream_done = true;
@@ -663,6 +678,13 @@ impl<'a> Handler<'a> {
 
                     if stream_done {
                         self.streams.remove(&stream_id);
+
+                        if self.streams.is_empty() && self.url_queue.is_empty() {
+                            // Signal that we have no more URLs to process,
+                            // and instead are waiting on the defence
+                            self.url_completion_queue = None;
+                        }
+
                         if self.done(client) {
                             if client.is_being_shaped() {
                                 client.close(Instant::now(), 0, "kthx4shaping!");
@@ -727,55 +749,24 @@ fn to_headers(values: &[impl AsRef<str>]) -> Vec<Header> {
 }
 
 
-fn build_flow_shaper(args: &ShapingArgs, resources: Vec<Resource>, header: &Vec<String>) -> Option<FlowShaper> {
+fn build_defence(args: &ShapingArgs) -> Option<Box<dyn Defencev2 + Send>> {
     let defence = args.defence.as_deref();
     if matches!(defence, None | Some("none")) {
         return None;
     }
     let defence_type = defence.unwrap();
 
-    println!("Enabling connection shaping.");
-
-    let mut builder = FlowShaperBuilder::new();
-    let (mut config, mut front_config) = match args.shaper_config.clone() {
+    let mut front_config = match args.shaper_config.clone() {
         Some(filename) => {
             let configs = ConfigFile::load(&filename)
                 .expect("Unable to load config file");
 
-            (configs.flow_shaper.unwrap_or(FlowShaperConfig::default()),
-             configs.front_defence.unwrap_or(FrontConfig::default()))
+             configs.front_defence.unwrap_or(FrontConfig::default())
         },
-        None => (FlowShaperConfig::default(), FrontConfig::default())
+        None => FrontConfig::default()
     };
 
-    if let Some(value) = args.msd_limit_excess {
-        config.max_stream_data_excess = value;
-    }
-
-    if let Some(value) = args.tail_wait {
-        config.tail_wait = value;
-    }
-
-    if let Some(value) = args.max_chaff_streams {
-        config.max_chaff_streams = value;
-    }
-
-    if let Some(value) = args.drop_unsat_events {
-        config.drop_unsat_events = value;
-    }
-
-    builder.config(config);
-    builder.chaff_resources(&resources);
-    builder.chaff_headers(&to_headers(&header));
-
-    if let Some(filename) = args.chaff_ids_log.as_ref() {
-        builder.chaff_ids_log(filename);
-    }
-    if let Some(filename) = args.defence_event_log.as_ref() {
-        builder.defence_event_log(filename);
-    }
-
-    let defence: Box<dyn Defencev2> = match defence_type {
+    let defence: Box<dyn Defencev2 + Send> = match defence_type {
         "schedule" => {
             let filename = args.target_trace.clone()
                 .and_then(|p| p.into_os_string().to_str().map(str::to_owned))
@@ -809,9 +800,57 @@ fn build_flow_shaper(args: &ShapingArgs, resources: Vec<Resource>, header: &Vec<
         }
         other => panic!("unknown defence: {:?}", other),
     };
-    println!("Defence: {:?}", defence);
 
-    Some(builder.from_defence(defence))
+    println!("Defence: {:?}", defence);
+    Some(defence)
+}
+
+
+fn build_flow_shaper(
+    args: &ShapingArgs, resources: Vec<Resource>, header: &Vec<String>, defence: RRSharedDefence,
+) -> FlowShaper {
+    println!("Enabling connection shaping.");
+
+    let mut builder = FlowShaperBuilder::new();
+    let mut config = match args.shaper_config.clone() {
+        Some(filename) => {
+            let configs = ConfigFile::load(&filename)
+                .expect("Unable to load config file");
+
+            configs.flow_shaper.unwrap_or(FlowShaperConfig::default())
+        },
+        None => FlowShaperConfig::default()
+    };
+
+    if let Some(value) = args.msd_limit_excess {
+        config.max_stream_data_excess = value;
+    }
+
+    if let Some(value) = args.tail_wait {
+        config.tail_wait = value;
+    }
+
+    if let Some(value) = args.max_chaff_streams {
+        config.max_chaff_streams = value;
+    }
+
+    if let Some(value) = args.drop_unsat_events {
+        config.drop_unsat_events = value;
+    }
+
+    builder.config(config);
+    builder.chaff_resources(&resources);
+    builder.chaff_headers(&to_headers(&header));
+
+    if let Some(filename) = args.chaff_ids_log.as_ref() {
+        builder.chaff_ids_log(filename);
+    }
+    if let Some(filename) = args.defence_event_log.as_ref() {
+        builder.defence_event_log(filename);
+    }
+
+
+    builder.from_defence(Box::new(defence))
 }
 
 
@@ -824,6 +863,7 @@ fn client(
     url_deps: Arc<Mutex<UrlDependencyTracker>>,
     url_completion_queue: std::sync::mpsc::Sender<Url>,
     origin: Origin,
+    defence: Option<RRSharedDefence>,
 ) -> Res<()> {
     let quic_protocol = match args.alpn.as_str() {
         "h3-27" => QuicVersion::Draft27,
@@ -870,8 +910,8 @@ fn client(
         (_, false) => url_deps.lock().unwrap().select_padding_urls_by_size(n_urls) 
     };
 
-    if let Some(flow_shaper) = build_flow_shaper(
-        &args.shaping_args, chaff_resources, &args.header)
+    if let Some(flow_shaper) = defence
+        .map(|d| build_flow_shaper(&args.shaping_args, chaff_resources, &args.header, d))
     {
         client = client.with_flow_shaper(flow_shaper);
         shaping = true;
@@ -895,7 +935,7 @@ fn client(
         url_deps,
         is_done_shaping: !shaping,
         completion_state: (false, false, !shaping),
-        url_completion_queue,
+        url_completion_queue: Some(url_completion_queue),
         ready_to_request: false,
     };
 
@@ -941,6 +981,7 @@ fn add_client(
     url_deps: Arc<Mutex<UrlDependencyTracker>>,
     url_completion_queue: std::sync::mpsc::Sender<Url>,
     origin: Origin,
+    defence: Option<RRSharedDefence>,
 ) -> Res<std::thread::JoinHandle<Res<()>>> {
     let addrs: Vec<_> = format!("{}:{}", host, port).to_socket_addrs()?.collect();
     let remote_addr = *addrs.first().unwrap();
@@ -977,6 +1018,7 @@ fn add_client(
             url_deps.clone(),
             url_completion_queue,
             origin.clone(),
+            defence,
         );
         eprintln!("Thread for origin {:?} ending.", origin);
         result
@@ -1052,6 +1094,10 @@ fn main() -> Res<()> {
         }
     }
 
+
+    let mut manager = build_defence(&args.shaping_args)
+        .map(|defence| RRSharedDefenceBuilder::new(defence));
+
     loop {
         let new_origins: Vec<Origin> = pending_urls_by_origin.iter()
             .filter(|(_, urls)|
@@ -1062,8 +1108,10 @@ fn main() -> Res<()> {
 
         for origin in &new_origins {
             if let Origin::Tuple(_scheme, host, port) = origin.clone() {
+                let defence = manager.as_mut().map(|mgr| mgr.new_shared());
                 let handle = add_client(
-                    _scheme, host, port, args.clone(), url_deps.clone(), tx.clone().unwrap(), origin.clone()
+                    _scheme, host, port, args.clone(), url_deps.clone(), tx.clone().unwrap(),
+                    origin.clone(), defence,
                 )?;
                 clients_by_origin.insert(origin.clone(), handle);
             }
@@ -1084,8 +1132,11 @@ fn main() -> Res<()> {
         // Wait to read from the receive queue, if it's an error 
         match rx.recv() {
             Ok(url) => println!("Received notice of completion: {}", url),
-            Err(err) => {
-                println!("Received end-signal on the receive queue, exiting: {}", err);
+            Err(_) => {
+                println!("Received signal that all URLs are complete");
+                if let Some(mgr) = manager.as_mut() {
+                    mgr.on_all_applications_complete();
+                }
                 break;
             }
         };
