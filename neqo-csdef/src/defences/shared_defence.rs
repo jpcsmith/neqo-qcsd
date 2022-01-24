@@ -5,108 +5,155 @@ use crate::defences::Defencev2;
 
 
 #[derive(Debug)]
-struct RegulatedDefence<T: Defencev2> {
-    id: u64,
-    regulator: Arc<Mutex<DefenceRegulatorInner<T>>>,
+struct RRState<T: Defencev2> {
+    defence: T,
+    regulated_ids: Vec<u32>,
+    curr_index: usize,
 }
 
 
-impl<T> Defencev2 for RegulatedDefence<T> 
-where
-    T: Defencev2,
-{
-    fn next_event(&mut self, since_start: Duration) -> Option<Packet> {
-        None
-        // self.regulator.lock().unwrap().next_event(self.id, since_start)
-    }
-
-    fn next_event_at(&self) -> Option<Duration> {
-        None
-        // self.regulator.lock().unwrap().next_event_at(self.id)
-    }
-
-    fn is_complete(&self) -> bool {
-        false
-        // self.regulator.lock().unwrap().is_complete(self.id)
-    }
-
-    fn is_outgoing_complete(&self) -> bool {
-        false
-        // self.regulator.lock().unwrap().is_outgoing_complete(self.id)
-    }
-
-    fn is_padding_only(&self) -> bool {
-        true
-        // self.regulator.lock().unwrap().is_padding_only()
-    }
-
-    fn on_application_complete(&mut self) {
-        // self.regulator.lock().unwrap().on_application_complete(self.id)
-    }
+#[derive(Debug)]
+struct RRSharedDefence<T: Defencev2> {
+    id: u32,
+    // Pair of active ids and the index of the next id
+    state: Arc<Mutex<RRState<T>>>,
 }
 
-impl<T> Drop for RegulatedDefence<T> 
+impl<T> Drop for RRSharedDefence<T> 
 where
     T: Defencev2,
 {
     fn drop(&mut self) {
-        // self.regulator.lock().unwrap().disconnect(self.id);
+        // When this drops, we need to remove it from the list of ids, and 
+        // adjust curr_index accordingly.
+        if let Ok(mut state) = self.state.lock() {
+            let index = state.regulated_ids.iter().position(|x| *x == self.id)
+                .expect("Should have been tracked.");
+            state.regulated_ids.remove(index);
+
+            if state.curr_index == index && state.curr_index == state.regulated_ids.len() {
+                state.curr_index = 0;
+            }
+            if state.curr_index > index {
+                state.curr_index = state.curr_index.saturating_sub(1);
+            }
+        }
     }
 }
 
 
-#[derive(Debug)]
-struct DefenceRegulatorInner<T: Defencev2> {
-    defence: T,
-    regulated_ids: Vec<u64>,
-    next_index: usize,
-}
-
-impl<T> DefenceRegulatorInner<T> 
+impl<T> Defencev2 for RRSharedDefence<T> 
 where
     T: Defencev2,
 {
-    // Remove the specified regulated defence from the round-robin queue.
-    // fn disconnect(&mut self, id: u64) {
-    //     assert!(self.defence.is_complete() || !self.regulated_ids.is_empty());
-    // }
+    fn next_event(&mut self, since_start: Duration) -> Option<Packet> {
+        let mut state = self.state.lock().unwrap();
+        if state.regulated_ids[state.curr_index] != self.id {
+            return None;
+        }
+
+        match state.defence.next_event(since_start) {
+            Some(pkt) => {
+                state.curr_index = (state.curr_index + 1) % state.regulated_ids.len();
+                Some(pkt)
+            },
+            None => None,
+        }
+    }
+
+    fn next_event_at(&self) -> Option<Duration> {
+        let state = self.state.lock().unwrap();
+
+        match state.defence.next_event_at() {
+            None => None,
+            Some(dur) if state.regulated_ids[state.curr_index] != self.id 
+                => Some(dur + Duration::from_millis(1)),
+            Some(dur) => Some(dur)
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        // We keep all the connections open until the defence is altogether,
+        // complete which allows us to make use of chaff available on all of
+        // the connections.
+        self.state.lock().unwrap().defence.is_complete()
+    }
+
+    fn is_outgoing_complete(&self) -> bool {
+        self.state.lock().unwrap().defence.is_outgoing_complete()
+    }
+
+    fn is_padding_only(&self) -> bool {
+        self.state.lock().unwrap().defence.is_padding_only()
+    }
+
+    fn on_application_complete(&mut self) {
+        // Individual connections cannot know if another connection will be 
+        // started some time after their completiton. Therefore, we need to
+        // get a signal from the managing code that no more URLs will be 
+        // requested.
+        //
+        // See the `on_all_applications_complete()` function.
+    }
 }
+
+impl<T> RRSharedDefence<T> 
+where
+    T: Defencev2
+{
+    /// To be called by the managing code to signal that no more URLs need to
+    /// be collected, and it is therefore safe to stop the defence.
+    fn on_all_applications_complete(&mut self) {
+        self.state.lock().unwrap().defence.on_application_complete()
+    }
+}
+
+
 
 #[derive(Debug)]
-pub struct DefenceRegulator<T: Defencev2> {
-    inner: Arc<Mutex<DefenceRegulatorInner<T>>>,
-    next_id: u64,
+pub struct RRSharedDefenceBuilder<T: Defencev2> {
+    state: Arc<Mutex<RRState<T>>>,
+    next_id: u32,
 }
 
-impl<T> DefenceRegulator<T> 
+
+impl<T> RRSharedDefenceBuilder<T> 
 where
     T: Defencev2,
 {
-    /// Create a new DefenceRegulator for sharing the provided defence.
+    /// Create a new RRSharedDefenceBuilder for sharing the provided
+    /// defence.
+    #[cfg(test)]
     fn new(defence: T) -> Self {
-        DefenceRegulator {
-            inner: Arc::new(Mutex::new(DefenceRegulatorInner {
+        RRSharedDefenceBuilder {
+            state: Arc::new(Mutex::new(RRState {
                 defence,
                 regulated_ids: Vec::new(),
-                next_index: 0,
+                curr_index: 0,
             })),
             next_id: 0,
         }
     }
 
-    fn add_regulated(&mut self) -> RegulatedDefence<T> {
-        let regulated = RegulatedDefence {
+    /// Create a new instance of the shared defence over the originally 
+    /// provided defence.
+    #[cfg(test)]
+    fn new_shared(&mut self) -> RRSharedDefence<T> {
+        let shared = RRSharedDefence {
             id: self.next_id,
-            regulator: self.inner.clone()
+            state: self.state.clone()
         };
-        self.inner.lock().unwrap().regulated_ids.push(regulated.id);
         self.next_id += 1;
 
-        regulated
+        let mut state = self.state.lock().unwrap();
+        state.regulated_ids.push(shared.id);
+
+        shared
     }
 
-    fn regulated_count(&self) -> usize {
-        self.inner.lock().unwrap().regulated_ids.len()
+    #[cfg(test)]
+    fn shared_count(&self) -> usize {
+        self.state.lock().unwrap().regulated_ids.len()
     }
 }
 
@@ -118,40 +165,122 @@ mod tests {
     use crate::defences::{ Front, FrontConfig };
 
     #[test]
-    fn add_regulated() {
+    fn new_shared() {
         let front = Front::new(FrontConfig::default());
-        let mut regulator = DefenceRegulator::new(front);
+        let mut builder = RRSharedDefenceBuilder::new(front);
 
-        assert_eq!(regulator.regulated_count(), 0);
-        regulator.add_regulated();
-        assert_eq!(regulator.regulated_count(), 1);
-        regulator.add_regulated();
-        assert_eq!(regulator.regulated_count(), 2);
+        assert_eq!(builder.shared_count(), 0);
+
+        let defence = builder.new_shared();
+        assert_eq!(builder.shared_count(), 1);
+        assert_eq!(builder.next_id, 1);
+        assert_eq!(defence.id, 0);
+        assert_eq!(builder.state.lock().unwrap().regulated_ids, vec![0, ]);
+
+        let defence = builder.new_shared();
+        assert_eq!(builder.shared_count(), 2);
+        assert_eq!(builder.next_id, 2);
+        assert_eq!(defence.id, 1);
+        assert_eq!(builder.state.lock().unwrap().regulated_ids, vec![0, 1]);
     }
 
-    // #[test]
-    // fn disconnect() {
-    // }
+    mod drop {
+        use super::*;
+
+        #[test]
+        fn simple() {
+            let front = Front::new(FrontConfig::default());
+            let mut builder = RRSharedDefenceBuilder::new(front);
+
+            {
+                let _defence = builder.new_shared();
+                assert_eq!(builder.shared_count(), 1);
+
+                {
+                    let _defence = builder.new_shared();
+                    assert_eq!(builder.shared_count(), 2);
+                    assert_eq!(builder.state.lock().unwrap().regulated_ids, vec![0, 1]);
+                }
+                assert_eq!(builder.shared_count(), 1);
+                assert_eq!(builder.state.lock().unwrap().regulated_ids, vec![0]);
+            }
+            assert_eq!(builder.shared_count(), 0);
+            assert_eq!(builder.state.lock().unwrap().regulated_ids, Vec::<u32>::new());
+        }
+
+        #[test]
+        fn single_removed() {
+            let front = Front::new(FrontConfig::default());
+            let mut builder = RRSharedDefenceBuilder::new(front);
+
+            {
+                let _defence = builder.new_shared();
+                assert_eq!(builder.state.lock().unwrap().curr_index, 0);
+                assert_eq!(builder.state.lock().unwrap().regulated_ids, [0]);
+            }
+            assert_eq!(builder.state.lock().unwrap().curr_index, 0);
+            assert_eq!(builder.state.lock().unwrap().regulated_ids, Vec::<u32>::new());
+        }
+
+        fn setup() -> (RRSharedDefenceBuilder<Front>, Vec<RRSharedDefence<Front>>) {
+            let front = Front::new(FrontConfig::default());
+            let mut builder = RRSharedDefenceBuilder::new(front);
+
+            let defences = vec![
+                builder.new_shared(), builder.new_shared(), builder.new_shared(),
+                builder.new_shared(), builder.new_shared(),
+            ];
+            assert_eq!(builder.shared_count(), 5);
+
+            (builder, defences)
+        }
+
+       #[test]
+       fn curr_index_before_removed() {
+           let (builder, mut defences) = setup();
+
+           builder.state.lock().unwrap().curr_index = 2;
+           defences.remove(3);
+
+           let state = builder.state.lock().unwrap();
+           assert_eq!(state.curr_index, 2);
+           assert_eq!(state.regulated_ids, [0, 1, 2, 4]);
+       }
+
+       #[test]
+       fn curr_index_same_as_removed() {
+           let (builder, mut defences) = setup();
+
+           builder.state.lock().unwrap().curr_index = 2;
+           defences.remove(2);
+
+           let state = builder.state.lock().unwrap();
+           assert_eq!(state.curr_index, 2);
+           assert_eq!(state.regulated_ids, [0, 1, 3, 4]);
+       }
+
+       #[test]
+       fn curr_index_at_end_removed() {
+           let (builder, mut defences) = setup();
+
+           builder.state.lock().unwrap().curr_index = defences.len() - 1;
+           defences.remove(defences.len() - 1);
+
+           let state = builder.state.lock().unwrap();
+           assert_eq!(state.curr_index, 0);
+           assert_eq!(state.regulated_ids, [0, 1, 2, 3]);
+       }
+
+       #[test]
+       fn curr_index_after_removed() {
+           let (builder, mut defences) = setup();
+
+           builder.state.lock().unwrap().curr_index = 2;
+           defences.remove(0);
+
+           let state = builder.state.lock().unwrap();
+           assert_eq!(state.curr_index, 1);
+           assert_eq!(state.regulated_ids, [ 1, 2, 3, 4]);
+       }
+    }
 }
-
-
-
-
-// 
-// 
-// impl<T> Defencev2 for SharedDefence<T> 
-// where
-//     T: Defencev2,
-// {
-//     fn next_event(&mut self, since_start: Duration) -> Option<Packet> {
-//         self.defence.next_event(since_start)
-//     }
-//     fn on_application_complete(&mut self) {
-//         self.defence.on_application_complete()
-//     }
-// 
-//     fn next_event_at(&self) -> Option<Duration> { self.defence.next_event_at() }
-//     fn is_complete(&self) -> bool { self.defence.is_complete() }
-//     fn is_outgoing_complete(&self) -> bool { self.defence.is_outgoing_complete() }
-//     fn is_padding_only(&self) -> bool { true }
-// }
