@@ -406,7 +406,7 @@ impl ChaffStream {
     pub fn data_sent(&mut self, amount: u64) {
         qtrace!([self], "data sent: {}", amount);
         match &mut self.send_state {
-            SendState::Throttled { pending, allowed } => {
+            SendState::Throttled { pending: _, allowed: _ } => {
                 // assert!(amount <= *pending, "More data sent than was known pending.");
                 // assert!(amount <= *allowed, "More data sent than was allowed.");
 
