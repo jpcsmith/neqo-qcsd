@@ -5,23 +5,21 @@ use crate::defences::Defencev2;
 
 
 #[derive(Debug)]
-struct RRState<T: Defencev2> {
-    defence: T,
+struct RRState {
+    defence: Box<dyn Defencev2 + Send>,
     regulated_ids: Vec<u32>,
     curr_index: usize,
 }
 
 
 #[derive(Debug)]
-struct RRSharedDefence<T: Defencev2> {
+pub struct RRSharedDefence {
     id: u32,
     // Pair of active ids and the index of the next id
-    state: Arc<Mutex<RRState<T>>>,
+    state: Arc<Mutex<RRState>>,
 }
 
-impl<T> Drop for RRSharedDefence<T> 
-where
-    T: Defencev2,
+impl Drop for RRSharedDefence
 {
     fn drop(&mut self) {
         // When this drops, we need to remove it from the list of ids, and 
@@ -42,9 +40,7 @@ where
 }
 
 
-impl<T> Defencev2 for RRSharedDefence<T> 
-where
-    T: Defencev2,
+impl Defencev2 for RRSharedDefence
 {
     fn next_event(&mut self, since_start: Duration) -> Option<Packet> {
         let mut state = self.state.lock().unwrap();
@@ -97,34 +93,19 @@ where
     }
 }
 
-impl<T> RRSharedDefence<T> 
-where
-    T: Defencev2
-{
-    /// To be called by the managing code to signal that no more URLs need to
-    /// be collected, and it is therefore safe to stop the defence.
-    fn on_all_applications_complete(&mut self) {
-        self.state.lock().unwrap().defence.on_application_complete()
-    }
-}
-
-
 
 #[derive(Debug)]
-pub struct RRSharedDefenceBuilder<T: Defencev2> {
-    state: Arc<Mutex<RRState<T>>>,
+pub struct RRSharedDefenceBuilder {
+    state: Arc<Mutex<RRState>>,
     next_id: u32,
 }
 
 
-impl<T> RRSharedDefenceBuilder<T> 
-where
-    T: Defencev2,
+impl RRSharedDefenceBuilder
 {
     /// Create a new RRSharedDefenceBuilder for sharing the provided
     /// defence.
-    #[cfg(test)]
-    fn new(defence: T) -> Self {
+    pub fn new(defence: Box<dyn Defencev2 + Send>) -> Self {
         RRSharedDefenceBuilder {
             state: Arc::new(Mutex::new(RRState {
                 defence,
@@ -135,10 +116,15 @@ where
         }
     }
 
+    /// To be called by the managing code to signal that no more URLs need to
+    /// be collected, and it is therefore safe to stop the defence.
+    pub fn on_all_applications_complete(&mut self) {
+        self.state.lock().unwrap().defence.on_application_complete()
+    }
+
     /// Create a new instance of the shared defence over the originally 
     /// provided defence.
-    #[cfg(test)]
-    fn new_shared(&mut self) -> RRSharedDefence<T> {
+    pub fn new_shared(&mut self) -> RRSharedDefence {
         let shared = RRSharedDefence {
             id: self.next_id,
             state: self.state.clone()
@@ -167,7 +153,7 @@ mod tests {
     #[test]
     fn new_shared() {
         let front = Front::new(FrontConfig::default());
-        let mut builder = RRSharedDefenceBuilder::new(front);
+        let mut builder = RRSharedDefenceBuilder::new(Box::new(front));
 
         assert_eq!(builder.shared_count(), 0);
 
@@ -190,7 +176,7 @@ mod tests {
         #[test]
         fn simple() {
             let front = Front::new(FrontConfig::default());
-            let mut builder = RRSharedDefenceBuilder::new(front);
+            let mut builder = RRSharedDefenceBuilder::new(Box::new(front));
 
             {
                 let _defence = builder.new_shared();
@@ -211,7 +197,7 @@ mod tests {
         #[test]
         fn single_removed() {
             let front = Front::new(FrontConfig::default());
-            let mut builder = RRSharedDefenceBuilder::new(front);
+            let mut builder = RRSharedDefenceBuilder::new(Box::new(front));
 
             {
                 let _defence = builder.new_shared();
@@ -222,9 +208,9 @@ mod tests {
             assert_eq!(builder.state.lock().unwrap().regulated_ids, Vec::<u32>::new());
         }
 
-        fn setup() -> (RRSharedDefenceBuilder<Front>, Vec<RRSharedDefence<Front>>) {
+        fn setup() -> (RRSharedDefenceBuilder, Vec<RRSharedDefence>) {
             let front = Front::new(FrontConfig::default());
-            let mut builder = RRSharedDefenceBuilder::new(front);
+            let mut builder = RRSharedDefenceBuilder::new(Box::new(front));
 
             let defences = vec![
                 builder.new_shared(), builder.new_shared(), builder.new_shared(),
