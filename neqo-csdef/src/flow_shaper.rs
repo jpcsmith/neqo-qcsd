@@ -323,6 +323,7 @@ impl FlowShaper {
                 qtrace!([self], "Sending PING to keep the connection alive");
                 // This sends at least a PING frame
                 self.events.borrow_mut().send_pad_frames(1);
+                self.events.borrow_mut().push_control();
             }
         }
     }
