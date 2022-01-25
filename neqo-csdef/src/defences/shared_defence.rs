@@ -1,5 +1,6 @@
 use std::time::Duration;
 use std::sync::{ Arc, Mutex };
+use neqo_common::{ qtrace, qinfo };
 use crate::trace::Packet;
 use crate::defences::{ Defencev2, CapacityInfo };
 
@@ -20,6 +21,12 @@ pub struct RRSharedDefence {
     state: Arc<Mutex<RRState>>,
 }
 
+impl std::fmt::Display for RRSharedDefence {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "RRSharedDefence({})", self.id)
+    }
+}
+
 impl Drop for RRSharedDefence
 {
     fn drop(&mut self) {
@@ -37,6 +44,7 @@ impl Drop for RRSharedDefence
                 state.curr_index = state.curr_index.saturating_sub(1);
             }
         }
+        qtrace!([self], "Dropping")
     }
 }
 
@@ -53,21 +61,24 @@ impl Defencev2 for RRSharedDefence
             return None;
         }
 
+
+        let available_incoming = capacity.available_incoming(state.defence.is_padding_only());
         match state.event.clone().or_else(|| state.defence.next_event(since_start)) {
             // We always assign outgoing events. We assign incoming events whenever
             // there is sufficient capacity to pull or this is the only stream.
             Some(pkt) if pkt.is_incoming() 
-                && capacity.incoming < u64::from(pkt.length())
-                && state.regulated_ids.len() > 1 =>
-            {
-                eprintln!("[SharedDefence {}] advancing connection as insufficient capacity: {} of {}",
-                    self.id, capacity.incoming, pkt.length());
+                && available_incoming < u64::from(pkt.length())
+                && state.regulated_ids.len() > 1
+                && !(capacity.app_incoming > 0 && capacity.incoming_used == 0)
+            => {
+                qtrace!([self], "advancing connection as insufficient capacity: {} of {}",
+                    available_incoming, pkt.length());
                 state.event = Some(pkt);
                 state.curr_index = (state.curr_index + 1) % state.regulated_ids.len();
                 None
             },
             Some(pkt) => {
-                eprintln!("[SharedDefence {}] assigned packet: {:?}", self.id, pkt);
+                qtrace!([self], "assigned packet: {:?}", pkt);
                 state.curr_index = (state.curr_index + 1) % state.regulated_ids.len();
 
                 state.event = None;
@@ -82,7 +93,7 @@ impl Defencev2 for RRSharedDefence
 
         match state.defence.next_event_at() {
             None => {
-                eprintln!("[SharedDefence {}] no more events to come.", self.id);
+                qtrace!([self], "no more events to come.");
                 None
             }
             Some(dur) if state.regulated_ids[state.curr_index] != self.id 
@@ -123,6 +134,11 @@ pub struct RRSharedDefenceBuilder {
     next_id: u32,
 }
 
+impl std::fmt::Display for RRSharedDefenceBuilder {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "RRSharedDefenceBuilder")
+    }
+}
 
 impl RRSharedDefenceBuilder
 {
@@ -158,7 +174,7 @@ impl RRSharedDefenceBuilder
         let mut state = self.state.lock().unwrap();
         state.regulated_ids.push(shared.id);
 
-        eprintln!("[SharedDefence {}] newly created", shared.id);
+        qinfo!([self], "newly created: {}", shared.id);
         shared
     }
 

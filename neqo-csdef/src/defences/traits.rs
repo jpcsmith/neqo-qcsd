@@ -3,8 +3,20 @@ use crate::trace::Packet;
 
 
 pub struct CapacityInfo {
-    pub incoming: u64,
-    pub outgoing: u64,
+    pub app_incoming: u64,
+    pub chaff_incoming: u64,
+    pub incoming_used: u64, 
+}
+
+impl CapacityInfo {
+    pub fn available_incoming(&self, is_padding_only: bool) -> u64 {
+        let avail = if is_padding_only {
+            self.chaff_incoming
+        } else {
+            self.app_incoming + self.chaff_incoming
+        };
+        avail.saturating_sub(self.incoming_used)
+    }
 }
 
 pub trait Defencev2: std::fmt::Debug {
