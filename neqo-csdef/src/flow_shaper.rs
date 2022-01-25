@@ -382,18 +382,11 @@ impl FlowShaper {
         // interval could be equal to since_start.
         assert!(since_start < self.next_ci);
 
-        while let Some(pkt) = {
-            let incoming_used = u64::from(incoming_length + self.incoming_backlog);
-            let (outgoing, incoming) = if self.defence.is_padding_only() {
-                // Infinite outgoing, since it does not matter which conn the PAD frames 
-                // are sent on.
-                (u64::MAX, self.chaff_streams.pull_available().saturating_sub(incoming_used))
-            } else {
-                let avail = self.chaff_streams.pull_available() + self.app_streams.pull_available();
-                (self.app_streams.push_available(), avail.saturating_sub(incoming_used))
-            };
-            self.defence.next_event_with_details(since_start, CapacityInfo { outgoing, incoming })
-        }{
+        while let Some(pkt) = self.defence.next_event_with_details(since_start, CapacityInfo { 
+                app_incoming: self.app_streams.pull_available(),
+                chaff_incoming: self.chaff_streams.pull_available(),
+                incoming_used: u64::from(incoming_length + self.incoming_backlog),
+        }) {
             self.log.defence_event(&pkt).expect("logging failed");
 
             match pkt {

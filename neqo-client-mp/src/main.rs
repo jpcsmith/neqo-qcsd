@@ -10,6 +10,7 @@
 use qlog::QlogStreamer;
 
 use neqo_common::{self as common, event::Provider, hex, qlog::NeqoQlog, Datagram, Role};
+use neqo_common::{ qtrace, qinfo, qwarn, qerror };
 use neqo_crypto::{
     constants::{TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256},
     init, AuthenticationStatus, Cipher
@@ -106,7 +107,7 @@ impl KeyUpdateState {
                     _ => return Err(e),
                 }
             } else {
-                println!("Keys updated");
+                qinfo!("Keys updated");
                 self.0 = false;
             }
         }
@@ -210,7 +211,7 @@ pub struct ShapingArgs {
     dont_select_padding_by_size: bool,
 
     #[structopt(long, display_order=1001)]
-    /// Duration after the defence is complete to wait before closing. 
+    /// Duration after the defence is complete to wait before closing.
     /// Allows responses from the server to be delivered
     tail_wait: Option<u64>,
 
@@ -330,7 +331,7 @@ fn emit_datagram(socket: &UdpSocket, d: Option<Datagram>) -> io::Result<()> {
     if let Some(d) = d {
         let sent = socket.send(&d[..])?;
         if sent != d.len() {
-            eprintln!("Unable to send all {} bytes of datagram", d.len());
+            qwarn!("Unable to send all {} bytes of datagram", d.len());
         }
     }
     Ok(())
@@ -354,11 +355,11 @@ fn get_output_file(
         out_path.push(url_path);
 
         if all_paths.contains(&out_path) {
-            eprintln!("duplicate path {}", out_path.display());
+            qwarn!("duplicate path {}", out_path.display());
             return None;
         }
 
-        eprintln!("Saving {} to {:?}", url.clone().into_string(), out_path);
+        qinfo!("Saving {} to {:?}", url.clone().into_string(), out_path);
 
         let f = match OpenOptions::new()
             .write(true)
@@ -383,7 +384,7 @@ fn process_loop(
     socket: &UdpSocket,
     client: &mut Http3Client,
     handler: &mut Handler,
-    origin: Origin,
+    _origin: Origin,
 ) -> Res<neqo_http3::Http3State> {
     let buf = &mut [0u8; 2048];
     loop {
@@ -391,16 +392,17 @@ fn process_loop(
             return Ok(client.state());
         }
 
-        eprintln!("[{}] Calling handle...", origin.ascii_serialization());
+        qtrace!("[process_loop] Calling handle...");
         let mut exiting = !handler.handle(client)?;
-        eprintln!("[{}] Handle returned: {}", origin.ascii_serialization(), exiting);
+        qtrace!("[process_loop] Handle returned: {}", exiting);
 
+        let mut callback_duration = None;
         loop {
             let output = client.process_output(Instant::now());
             match output {
                 Output::Datagram(dgram) => {
                     if let Err(e) = emit_datagram(&socket, Some(dgram)) {
-                        eprintln!("[{}] UDP write error: {}", origin.ascii_serialization(), e);
+                        qerror!("[process_loop] UDP write error: {}", e);
                         client.close(Instant::now(), 0, e.to_string());
                         exiting = true;
                         break;
@@ -408,7 +410,8 @@ fn process_loop(
                 }
                 Output::Callback(duration) => {
                     socket.set_read_timeout(Some(duration)).unwrap();
-                    eprintln!("[{}] callback in {} ms", origin.ascii_serialization(), duration.as_millis());
+                    callback_duration = Some(duration);
+                    qtrace!("[process_loop] callback in {} ms", duration.as_millis());
                     break;
                 }
                 Output::None => {
@@ -422,30 +425,34 @@ fn process_loop(
 
         if exiting {
             let urls = handler.url_deps.lock().unwrap();
-            println!("[{}] Exiting with {} of {} resources remaining, {} streams existing",
-                origin.ascii_serialization(),
+            qtrace!("[process_loop] Exiting with {} of {} resources remaining, {} streams existing",
                 urls.remaining(), urls.len(), handler.streams.len());
             return Ok(client.state());
         }
 
         if handler.streams.is_empty() {
-            // The fact that exiting was false means that we still have some resources
-            // We set a short timeout as we may need to request a stream due to 
-            // dependencies being satisfied in the meantime
-            eprintln!("[{}] No open streams, setting read timeout to 10 ms", origin.ascii_serialization());
-            socket.set_read_timeout(Some(Duration::from_millis(10))).unwrap();
-        } 
+            if let Some(duration) = callback_duration {
+                let max_timeout = Duration::from_millis(10);
+                if duration > max_timeout {
+                    // The fact that exiting was false means that we still have some resources
+                    // We set a short timeout as we may need to request a stream due to
+                    // dependencies being satisfied in the meantime
+                    qtrace!("[process_loop] No open streams, setting read timeout to 10 ms");
+                    socket.set_read_timeout(Some(max_timeout)).unwrap();
+                }
+            }
+        }
 
         match socket.recv(&mut buf[..]) {
             Err(ref err)
                 if err.kind() == ErrorKind::WouldBlock || err.kind() == ErrorKind::Interrupted => {}
             Err(err) => {
-                eprintln!("[{}] UDP error: {}", origin.ascii_serialization(), err);
+                qerror!("[process_loop] UDP error: {}", err);
                 exit(1)
             }
             Ok(sz) => {
                 if sz == buf.len() {
-                    eprintln!("[{}] Received more than {} bytes", origin.ascii_serialization(), buf.len());
+                    qinfo!("[process_loop] Received more than {} bytes", buf.len());
                     continue;
                 }
                 if sz > 0 {
@@ -472,6 +479,12 @@ struct Handler<'a> {
     origin: Origin,
 }
 
+impl<'a> std::fmt::Display for Handler<'a> {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "Handler({})", self.origin.ascii_serialization())
+    }
+}
+
 impl<'a> Handler<'a> {
     fn download_urls(&mut self, client: &mut Http3Client) {
         loop {
@@ -486,7 +499,7 @@ impl<'a> Handler<'a> {
 
     fn download_next(&mut self, client: &mut Http3Client) -> bool {
         if self.key_update.needed() {
-            println!("[{}] Deferring requests until first key update", self.origin.ascii_serialization());
+            qinfo!([self], "Deferring requests until first key update");
             return false;
         }
 
@@ -505,7 +518,7 @@ impl<'a> Handler<'a> {
             }
             None => {
                 if !QUIET {
-                    println!("[{}] None of the URLs are currently downloadable.", self.origin.ascii_serialization());
+                    qinfo!([self], "None of the URLs are currently downloadable.");
                 }
                 return false;
             }
@@ -520,9 +533,8 @@ impl<'a> Handler<'a> {
             &to_headers(&self.args.header),
         ) {
             Ok(client_stream_id) => {
-                println!(
-                    "[{}] Successfully created stream id {} for {}",
-                    self.origin.ascii_serialization(), client_stream_id, url
+                qinfo!(
+                    [self], "Successfully created stream id {} for {}", client_stream_id, url
                 );
                 let _ = client.stream_close_send(client_stream_id);
 
@@ -535,7 +547,7 @@ impl<'a> Handler<'a> {
             | e @ Err(Error::StreamLimitError)
             // | e @ Err(Error::AlreadyClosed)
             | e @ Err(Error::Unavailable) => {
-                println!("[{}] Cannot create stream {:?}", self.origin.ascii_serialization(), e);
+                qinfo!([self], "Cannot create stream {:?}", e);
                 self.url_queue.push_front((id, url));
                 false
             }
@@ -556,7 +568,7 @@ impl<'a> Handler<'a> {
             self.streams.is_empty(), self.url_queue.is_empty(), self.is_done_shaping
         );
         if new_state != self.completion_state {
-            println!("[{}] Checking if done: streams is empty: {:?} | url_queue is empty: {:?} | is done shaping: {:?}", self.origin.ascii_serialization(), new_state.0, new_state.1, new_state.2);
+            qinfo!([self], "Checking if done: streams is empty: {:?} | url_queue is empty: {:?} | is done shaping: {:?}", new_state.0, new_state.1, new_state.2);
             if (!self.completion_state.0 || !self.completion_state.1) && (new_state.0 && new_state.1) {
                 // If either there were running streams, or the URL queue was not empty, but now
                 // there are no running streams and the URL queue is empty, then signal that we are
@@ -571,7 +583,7 @@ impl<'a> Handler<'a> {
         if self.is_done_shaping && self.url_queue.is_empty() && !self.streams.is_empty() {
             if !QUIET {
                 let pending_streams = self.streams.keys().cloned().collect::<Vec<u64>>();
-                println!("[{}] Pending streams: {:?}", self.origin.ascii_serialization(), pending_streams);
+                qinfo!([self], "Pending streams: {:?}", pending_streams);
             }
         }
         ((self.streams.is_empty() && self.url_queue.is_empty()) || self.args.shaping_args.only_chaff) && self.is_done_shaping
@@ -592,12 +604,12 @@ impl<'a> Handler<'a> {
                 } => match self.streams.get(&stream_id) {
                     Some(((id, url), out_file)) => {
                         if out_file.is_none() && !QUIET {
-                            println!("[{}] READ HEADERS[{}]: fin={} {:?}", self.origin.ascii_serialization(), stream_id, fin, headers);
+                            qinfo!([self], "READ HEADERS[{}]: fin={} {:?}", stream_id, fin, headers);
                         }
 
                         if fin {
                             if out_file.is_none() {
-                                println!("[{}] <FIN[{}]>", self.origin.ascii_serialization(), stream_id);
+                                qinfo!([self], "<FIN[{}]>", stream_id);
                             }
 
                             self.url_deps.lock().unwrap().resource_downloaded(*id);
@@ -626,7 +638,7 @@ impl<'a> Handler<'a> {
                         }
                     }
                     None => {
-                        println!("[{}] Data on unexpected stream: {}", self.origin.ascii_serialization(), stream_id);
+                        qerror!([self], "Data on unexpected stream: {}", stream_id);
                         return Ok(false);
                     }
                 },
@@ -634,7 +646,7 @@ impl<'a> Handler<'a> {
                     let mut stream_done = false;
                     match self.streams.get_mut(&stream_id) {
                         None => {
-                            println!("[{}] Data on unexpected stream: {}", self.origin.ascii_serialization(), stream_id);
+                            qerror!([self], "Data on unexpected stream: {}", stream_id);
                             return Ok(false);
                         }
                         Some(((id, url), out_file)) => loop {
@@ -649,21 +661,21 @@ impl<'a> Handler<'a> {
                                 }
                             } else if !self.args.output_read_data {
                                 if !QUIET {
-                                    println!("READ[{}]: {} bytes", stream_id, sz); 
+                                    qinfo!("READ[{}]: {} bytes", stream_id, sz);
                                 }
                             } else if let Ok(txt) = String::from_utf8(data.clone()) {
                                 if !QUIET {
-                                    println!("READ[{}]: {}", stream_id, txt);
+                                    qinfo!("READ[{}]: {}", stream_id, txt);
                                 }
                             } else {
                                 if !QUIET {
-                                    println!("READ[{}]: 0x{}", stream_id, hex(&data));
+                                    qinfo!("READ[{}]: 0x{}", stream_id, hex(&data));
                                 }
                             }
 
                             if fin {
                                 if out_file.is_none() {
-                                    println!("[{}] <FIN[{}]>", self.origin.ascii_serialization(), stream_id);
+                                    qinfo!("<FIN[{}]>", stream_id);
                                 }
 
                                 self.url_deps.lock().unwrap().resource_downloaded(*id);
@@ -716,10 +728,13 @@ impl<'a> Handler<'a> {
                     }
                 }
                 Http3ClientEvent::ResumptionToken{..} => {
-                    println!("[{}] Unhandled resumption token.", self.origin.ascii_serialization());
+                    qwarn!([self], "Unhandled resumption token.");
+                }
+                Http3ClientEvent::StateChange(Http3State::Closing(err)) => {
+                    panic!("[{}] Unexpected closing due to error: {:?}", self, err);
                 }
                 _ => {
-                    println!("[{}] Unhandled event {:?}", self.origin.ascii_serialization(), event);
+                    qwarn!([self], "Unhandled event {:?}", event);
                 }
             }
         }
@@ -736,7 +751,8 @@ impl<'a> Handler<'a> {
         } else if self.ready_to_request && self.streams.is_empty() && !self.url_queue.is_empty() {
             self.download_urls(client);
         }
-        eprintln!("[{}] state summary is ready_to_request={}, streams.is_empty()={}, url_queue.is_empty()={}, is_done_shaping={}", self.origin.ascii_serialization(), self.ready_to_request, self.streams.is_empty(), self.url_queue.is_empty(), self.is_done_shaping);
+        qtrace!([self], "state summary is ready_to_request={}, streams.is_empty()={}, url_queue.is_empty()={}, is_done_shaping={}",
+            self.ready_to_request, self.streams.is_empty(), self.url_queue.is_empty(), self.is_done_shaping);
         Ok(true)
     }
 }
@@ -810,7 +826,7 @@ fn build_defence(args: &ShapingArgs) -> Option<Box<dyn Defencev2 + Send>> {
         other => panic!("unknown defence: {:?}", other),
     };
 
-    println!("Defence: {:?}", defence);
+    qinfo!("Defence: {:?}", defence);
     Some(defence)
 }
 
@@ -818,7 +834,7 @@ fn build_defence(args: &ShapingArgs) -> Option<Box<dyn Defencev2 + Send>> {
 fn build_flow_shaper(
     args: &ShapingArgs, resources: Vec<Resource>, header: &Vec<String>, defence: RRSharedDefence,
 ) -> FlowShaper {
-    println!("Enabling connection shaping.");
+    qinfo!("Enabling connection shaping.");
 
     let mut builder = FlowShaperBuilder::new();
     let mut config = match args.shaper_config.clone() {
@@ -916,7 +932,7 @@ fn client(
         (vec, _) if !vec.is_empty() => vec.iter().cloned().map(|x| x.into()).collect(),
         (_, true) => url_deps.lock().unwrap().select_padding_urls(n_urls)
             .into_iter().map(|x| x.into()).collect(),
-        (_, false) => url_deps.lock().unwrap().select_padding_urls_by_size(n_urls) 
+        (_, false) => url_deps.lock().unwrap().select_padding_urls_by_size(n_urls)
     };
     let chaff_resources = chaff_resources.iter()
         .filter(|res| res.url().origin() == origin)
@@ -996,6 +1012,7 @@ fn add_client(
     url_completion_queue: std::sync::mpsc::Sender<Url>,
     origin: Origin,
     defence: Option<RRSharedDefence>,
+    thread_name: String,
 ) -> Res<std::thread::JoinHandle<Res<()>>> {
     let addrs: Vec<_> = format!("{}:{}", host, port).to_socket_addrs()?.collect();
     let remote_addr = *addrs.first().unwrap();
@@ -1007,7 +1024,7 @@ fn add_client(
 
     let socket = match UdpSocket::bind(local_addr) {
         Err(e) => {
-            eprintln!("[{}] Unable to bind UDP socket: {}", origin.ascii_serialization(), e);
+            qerror!("[{}] Unable to bind UDP socket: {}", origin.ascii_serialization(), e);
             exit(1)
         }
         Ok(s) => s,
@@ -1017,26 +1034,29 @@ fn add_client(
         .connect(&remote_addr)
         .expect("Unable to connect UDP socket");
 
-    println!(
+    qinfo!(
         "[{}] H3 Client connecting: {:?} -> {:?}", origin.ascii_serialization(), socket.local_addr().unwrap(), remote_addr
     );
 
-    let handle = std::thread::spawn(move || {
-        eprintln!("[{}] Thread started.", origin.ascii_serialization());
-        let result = client(
-            args,
-            socket,
-            local_addr,
-            remote_addr,
-            &format!("{}", host),
-            url_deps.clone(),
-            url_completion_queue,
-            origin.clone(),
-            defence,
-        );
-        eprintln!("Thread for origin {:?} ending.", origin);
-        result
-    });
+    let handle = std::thread::Builder::new()
+        .name(thread_name)
+        .spawn(move || {
+            qtrace!("Thread started.");
+            let result = client(
+                args,
+                socket,
+                local_addr,
+                remote_addr,
+                &format!("{}", host),
+                url_deps.clone(),
+                url_completion_queue,
+                origin.clone(),
+                defence,
+            );
+            qtrace!("Thread ending with result: {:?}", result);
+            result
+        })
+        .unwrap();
 
     Ok(handle)
 }
@@ -1065,7 +1085,7 @@ fn main() -> Res<()> {
             }
             "zerortt" | "resumption" => {
                 if args.urls.len() < 2 {
-                    eprintln!("Warning: resumption tests won't work without >1 URL");
+                    qwarn!("Warning: resumption tests won't work without >1 URL");
                     exit(127);
                 }
                 args.use_old_http = true;
@@ -1104,7 +1124,7 @@ fn main() -> Res<()> {
             let entry = pending_urls_by_origin.entry(origin).or_default();
             entry.push((*id, url.clone()));
         } else {
-            eprintln!("Opaque origin {:?}", origin);
+            qinfo!("Opaque origin {:?}", origin);
         }
     }
 
@@ -1112,6 +1132,7 @@ fn main() -> Res<()> {
     let mut manager = build_defence(&args.shaping_args)
         .map(|defence| RRSharedDefenceBuilder::new(defence));
 
+    let mut next_client_id: u32 = 0;
     loop {
         let new_origins: Vec<Origin> = pending_urls_by_origin.iter()
             .filter(|(_, urls)|
@@ -1125,8 +1146,9 @@ fn main() -> Res<()> {
                 let defence = manager.as_mut().map(|mgr| mgr.new_shared());
                 let handle = add_client(
                     _scheme, host, port, args.clone(), url_deps.clone(), tx.clone().unwrap(),
-                    origin.clone(), defence,
+                    origin.clone(), defence, next_client_id.to_string()
                 )?;
+                next_client_id += 1;
                 clients_by_origin.insert(origin.clone(), handle);
             }
 
@@ -1143,11 +1165,11 @@ fn main() -> Res<()> {
             }
         }
 
-        // Wait to read from the receive queue, if it's an error 
+        // Wait to read from the receive queue, if it's an error
         match rx.recv() {
-            Ok(url) => println!("Received notice of completion: {}", url),
+            Ok(url) => qinfo!("[main] Received notice of completion: {}", url),
             Err(_) => {
-                println!("Received signal that all URLs are complete");
+                qinfo!("[main] Received signal that all URLs are complete");
                 if let Some(mgr) = manager.as_mut() {
                     mgr.on_all_applications_complete();
                 }
@@ -1157,7 +1179,7 @@ fn main() -> Res<()> {
     }
 
     for (origin, handle) in clients_by_origin.drain() {
-        eprintln!("Waiting for thread to exit for origin: {:?}", origin);
+        qinfo!("[main] Waiting for thread to exit for origin: {:?}", origin);
         match handle.join() {
             Ok(res) => res?,
             Err(e) => std::panic::resume_unwind(e),
