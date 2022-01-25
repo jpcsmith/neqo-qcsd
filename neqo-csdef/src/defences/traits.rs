@@ -2,6 +2,11 @@ use std::time::Duration;
 use crate::trace::Packet;
 
 
+pub struct CapacityInfo {
+    pub incoming: u64,
+    pub outgoing: u64,
+}
+
 pub trait Defencev2: std::fmt::Debug {
     /// Return the next event at or before or at the specified time point.
     /// May be called repeatedly with the same time point.
@@ -9,6 +14,12 @@ pub trait Defencev2: std::fmt::Debug {
     /// The times of the packets returned must be monotonically increasing 
     /// (not strictly increasing).
     fn next_event(&mut self, since_start: Duration) -> Option<Packet>;
+
+    fn next_event_with_details(
+        &mut self, since_start: Duration, _capacity: CapacityInfo
+    ) -> Option<Packet> {
+        self.next_event(since_start)
+    }
 
     /// Return the interval in milliseconds when then next event will occur,
     /// relative from the start of shaping. 

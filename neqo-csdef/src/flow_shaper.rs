@@ -13,7 +13,7 @@ use url::Url;
 use crate::Result;
 use crate::trace::Packet;
 use crate::stream_id::StreamId;
-use crate::defences::{ Defencev2, StaticSchedule };
+use crate::defences::{ Defencev2, StaticSchedule, CapacityInfo };
 use crate::chaff_stream::{ ChaffStream, ChaffStreamMap };
 use crate::event::{
     FlowShapingEvents, FlowShapingApplicationEvents, HEventConsumer,
@@ -382,7 +382,18 @@ impl FlowShaper {
         // interval could be equal to since_start.
         assert!(since_start < self.next_ci);
 
-        while let Some(pkt) = self.defence.next_event(since_start) {
+        while let Some(pkt) = {
+            let incoming_used = u64::from(incoming_length + self.incoming_backlog);
+            let (outgoing, incoming) = if self.defence.is_padding_only() {
+                // Infinite outgoing, since it does not matter which conn the PAD frames 
+                // are sent on.
+                (u64::MAX, self.chaff_streams.pull_available().saturating_sub(incoming_used))
+            } else {
+                let avail = self.chaff_streams.pull_available() + self.app_streams.pull_available();
+                (self.app_streams.push_available(), avail.saturating_sub(incoming_used))
+            };
+            self.defence.next_event_with_details(since_start, CapacityInfo { outgoing, incoming })
+        }{
             self.log.defence_event(&pkt).expect("logging failed");
 
             match pkt {
