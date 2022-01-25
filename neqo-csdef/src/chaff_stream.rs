@@ -226,6 +226,10 @@ impl ChaffStream {
         self.recv_state.msd_available()
     }
 
+    pub fn pending_bytes(&self) -> u64 {
+        self.send_state.pending_bytes()
+    }
+
     pub fn open(&mut self) {
         match self.recv_state {
             RecvState::Created { initial_msd, throttled: true } => {
@@ -505,6 +509,10 @@ impl ChaffStreamMap {
 
     pub fn pull_available(&self) -> u64 {
         self.iter().fold(0, |total, (_, stream)| total + stream.msd_available())
+    }
+
+    pub fn push_available(&self) -> u64 {
+        self.iter().fold(0, |total, (_, stream)| total + stream.pending_bytes())
     }
 
     pub fn can_pull(&self) -> bool {

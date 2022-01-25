@@ -1,7 +1,7 @@
 use std::time::Duration;
 use std::sync::{ Arc, Mutex };
 use crate::trace::Packet;
-use crate::defences::Defencev2;
+use crate::defences::{ Defencev2, CapacityInfo };
 
 
 #[derive(Debug)]
@@ -9,6 +9,7 @@ struct RRState {
     defence: Box<dyn Defencev2 + Send>,
     regulated_ids: Vec<u32>,
     curr_index: usize,
+    event: Option<Packet>,
 }
 
 
@@ -42,15 +43,34 @@ impl Drop for RRSharedDefence
 
 impl Defencev2 for RRSharedDefence
 {
-    fn next_event(&mut self, since_start: Duration) -> Option<Packet> {
+    fn next_event(&mut self, _since_start: Duration) -> Option<Packet> {
+        panic!("[SharedDefence {}] next_event() should not be called", self.id);
+    }
+
+    fn next_event_with_details(&mut self, since_start: Duration, capacity: CapacityInfo) -> Option<Packet> {
         let mut state = self.state.lock().unwrap();
         if state.regulated_ids[state.curr_index] != self.id {
             return None;
         }
 
-        match state.defence.next_event(since_start) {
-            Some(pkt) => {
+        match state.event.clone().or_else(|| state.defence.next_event(since_start)) {
+            // We always assign outgoing events. We assign incoming events whenever
+            // there is sufficient capacity to pull or this is the only stream.
+            Some(pkt) if pkt.is_incoming() 
+                && capacity.incoming < u64::from(pkt.length())
+                && state.regulated_ids.len() > 1 =>
+            {
+                eprintln!("[SharedDefence {}] advancing connection as insufficient capacity: {} of {}",
+                    self.id, capacity.incoming, pkt.length());
+                state.event = Some(pkt);
                 state.curr_index = (state.curr_index + 1) % state.regulated_ids.len();
+                None
+            },
+            Some(pkt) => {
+                eprintln!("[SharedDefence {}] assigned packet: {:?}", self.id, pkt);
+                state.curr_index = (state.curr_index + 1) % state.regulated_ids.len();
+
+                state.event = None;
                 Some(pkt)
             },
             None => None,
@@ -61,7 +81,10 @@ impl Defencev2 for RRSharedDefence
         let state = self.state.lock().unwrap();
 
         match state.defence.next_event_at() {
-            None => None,
+            None => {
+                eprintln!("[SharedDefence {}] no more events to come.", self.id);
+                None
+            }
             Some(dur) if state.regulated_ids[state.curr_index] != self.id 
                 => Some(dur + Duration::from_millis(1)),
             Some(dur) => Some(dur)
@@ -111,6 +134,7 @@ impl RRSharedDefenceBuilder
                 defence,
                 regulated_ids: Vec::new(),
                 curr_index: 0,
+                event: None,
             })),
             next_id: 0,
         }
@@ -134,6 +158,7 @@ impl RRSharedDefenceBuilder
         let mut state = self.state.lock().unwrap();
         state.regulated_ids.push(shared.id);
 
+        eprintln!("[SharedDefence {}] newly created", shared.id);
         shared
     }
 
