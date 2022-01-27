@@ -9,7 +9,8 @@ use crate::defences::{ Defencev2, CapacityInfo };
 struct RRState {
     defence: Box<dyn Defencev2 + Send>,
     regulated_ids: Vec<u32>,
-    curr_index: usize,
+    curr_index_inc: usize,
+    curr_index_out: usize,
     event: Option<Packet>,
     start_time: Option<Instant>,
 }
@@ -20,6 +21,17 @@ pub struct RRSharedDefence {
     id: u32,
     // Pair of active ids and the index of the next id
     state: Arc<Mutex<RRState>>,
+}
+
+impl RRSharedDefence {
+    fn maybe_update_index(curr_index: &mut usize, index: usize, n_regulated_ids: usize) {
+        if *curr_index == index && *curr_index == n_regulated_ids {
+            *curr_index = 0;
+        }
+        if *curr_index > index {
+            *curr_index = curr_index.saturating_sub(1);
+        }
+    }
 }
 
 impl std::fmt::Display for RRSharedDefence {
@@ -38,12 +50,9 @@ impl Drop for RRSharedDefence
                 .expect("Should have been tracked.");
             state.regulated_ids.remove(index);
 
-            if state.curr_index == index && state.curr_index == state.regulated_ids.len() {
-                state.curr_index = 0;
-            }
-            if state.curr_index > index {
-                state.curr_index = state.curr_index.saturating_sub(1);
-            }
+            let n_ids = state.regulated_ids.len();
+            RRSharedDefence::maybe_update_index(&mut state.curr_index_inc, index, n_ids);
+            RRSharedDefence::maybe_update_index(&mut state.curr_index_out, index, n_ids);
         }
         qtrace!([self], "Dropping")
     }
@@ -58,32 +67,55 @@ impl Defencev2 for RRSharedDefence
 
     fn next_event_with_details(&mut self, since_start: Duration, capacity: CapacityInfo) -> Option<Packet> {
         let mut state = self.state.lock().unwrap();
-        if state.regulated_ids[state.curr_index] != self.id {
+        state.event = state.event.clone().or_else(|| state.defence.next_event(since_start));
+
+        if let Some(pkt) = state.event.clone() {
+            if (pkt.is_outgoing() && state.regulated_ids[state.curr_index_out] != self.id)
+                || (pkt.is_incoming() && state.regulated_ids[state.curr_index_inc] != self.id) {
+                    return None;
+            }
+        } else {
             return None;
         }
-
+        assert!(state.event.is_some());
 
         let available_incoming = capacity.available_incoming(state.defence.is_padding_only());
-        match state.event.clone().or_else(|| state.defence.next_event(since_start)) {
-            // We always assign outgoing events. We assign incoming events whenever
-            // there is sufficient capacity to pull or this is the only stream.
-            Some(pkt) if pkt.is_incoming() 
-                && available_incoming < u64::from(pkt.length())
-                && state.regulated_ids.len() > 1
-                && !(capacity.app_incoming > 0 && capacity.incoming_used == 0)
-            => {
-                qtrace!([self], "advancing connection as insufficient capacity: {} of {}",
-                    available_incoming, pkt.length());
-                state.event = Some(pkt);
-                state.curr_index = (state.curr_index + 1) % state.regulated_ids.len();
-                None
-            },
-            Some(pkt) => {
+        match state.event.clone() {
+            // We always assign outgoing events.
+            Some(pkt) if pkt.is_outgoing() => {
+                assert!(state.regulated_ids[state.curr_index_out] == self.id);
+
                 qtrace!([self], "assigned packet: {:?}", pkt);
-                state.curr_index = (state.curr_index + 1) % state.regulated_ids.len();
+                state.curr_index_out = (state.curr_index_out + 1) % state.regulated_ids.len();
 
                 state.event = None;
                 Some(pkt)
+            }
+            Some(pkt) => {
+                assert!(state.regulated_ids[state.curr_index_inc] == self.id);
+
+                // We assign incoming events whenever there is sufficient capacity
+                // to pull or this is the only stream.
+                if available_incoming >= u64::from(pkt.length()) || state.regulated_ids.len() == 1
+                        || capacity.app_incoming > 0 && capacity.incoming_used == 0 {
+                    assert!(state.regulated_ids[state.curr_index_inc] == self.id);
+
+                    qtrace!([self], "assigned packet: {:?}", pkt);
+                    state.curr_index_inc = (state.curr_index_inc + 1) % state.regulated_ids.len();
+
+                    state.event = None;
+                    Some(pkt)
+                } else {
+                    // For the remaining incoming packets, they requesting connection is not suitable
+                    // to be assigned the packet, therefore we move on to the next connection.
+                    qtrace!([self], "advancing connection as insufficient capacity: {} of {} ({:?})",
+                        available_incoming, pkt.length(), capacity);
+                    state.curr_index_inc = (state.curr_index_inc + 1) % state.regulated_ids.len();
+
+                    // Store the packet until the next call
+                    state.event = Some(pkt);
+                    None
+                }
             },
             None => None,
         }
@@ -92,15 +124,21 @@ impl Defencev2 for RRSharedDefence
     fn next_event_at(&self) -> Option<Duration> {
         let state = self.state.lock().unwrap();
 
-        match state.defence.next_event_at() {
-            None => {
-                qtrace!([self], "no more events to come.");
-                None
-            }
-            Some(dur) if state.regulated_ids[state.curr_index] != self.id 
-                => Some(dur + Duration::from_millis(1)),
-            Some(dur) => Some(dur)
-        }
+        state.event
+            .as_ref()
+            .map(|pkt| pkt.duration())
+            .or_else(|| match state.defence.next_event_at() {
+                None => {
+                    qtrace!([self], "no more events to come.");
+                    None
+                }
+                Some(dur) if state.regulated_ids[state.curr_index_inc] != self.id 
+                    && state.regulated_ids[state.curr_index_out] != self.id 
+                => {
+                    Some(dur + Duration::from_millis(1))
+                }
+                Some(dur) => Some(dur)
+            })
     }
 
     fn start(&mut self) -> Instant {
@@ -115,11 +153,14 @@ impl Defencev2 for RRSharedDefence
         // We keep all the connections open until the defence is altogether,
         // complete which allows us to make use of chaff available on all of
         // the connections.
-        self.state.lock().unwrap().defence.is_complete()
+        let state = self.state.lock().unwrap();
+        state.event.is_none() && state.defence.is_complete()
     }
 
     fn is_outgoing_complete(&self) -> bool {
-        self.state.lock().unwrap().defence.is_outgoing_complete()
+        let state = self.state.lock().unwrap();
+        (state.event.is_none() || state.event.as_ref().unwrap().is_incoming())
+            && state.defence.is_outgoing_complete()
     }
 
     fn is_padding_only(&self) -> bool {
@@ -158,7 +199,8 @@ impl RRSharedDefenceBuilder
             state: Arc::new(Mutex::new(RRState {
                 defence,
                 regulated_ids: Vec::new(),
-                curr_index: 0,
+                curr_index_inc: 0,
+                curr_index_out: 0,
                 event: None,
                 start_time: None,
             })),
@@ -252,10 +294,10 @@ mod tests {
 
             {
                 let _defence = builder.new_shared();
-                assert_eq!(builder.state.lock().unwrap().curr_index, 0);
+                assert_eq!(builder.state.lock().unwrap().curr_index_inc, 0);
                 assert_eq!(builder.state.lock().unwrap().regulated_ids, [0]);
             }
-            assert_eq!(builder.state.lock().unwrap().curr_index, 0);
+            assert_eq!(builder.state.lock().unwrap().curr_index_inc, 0);
             assert_eq!(builder.state.lock().unwrap().regulated_ids, Vec::<u32>::new());
         }
 
@@ -276,11 +318,11 @@ mod tests {
        fn curr_index_before_removed() {
            let (builder, mut defences) = setup();
 
-           builder.state.lock().unwrap().curr_index = 2;
+           builder.state.lock().unwrap().curr_index_inc = 2;
            defences.remove(3);
 
            let state = builder.state.lock().unwrap();
-           assert_eq!(state.curr_index, 2);
+           assert_eq!(state.curr_index_inc, 2);
            assert_eq!(state.regulated_ids, [0, 1, 2, 4]);
        }
 
@@ -288,11 +330,11 @@ mod tests {
        fn curr_index_same_as_removed() {
            let (builder, mut defences) = setup();
 
-           builder.state.lock().unwrap().curr_index = 2;
+           builder.state.lock().unwrap().curr_index_inc = 2;
            defences.remove(2);
 
            let state = builder.state.lock().unwrap();
-           assert_eq!(state.curr_index, 2);
+           assert_eq!(state.curr_index_inc, 2);
            assert_eq!(state.regulated_ids, [0, 1, 3, 4]);
        }
 
@@ -300,11 +342,11 @@ mod tests {
        fn curr_index_at_end_removed() {
            let (builder, mut defences) = setup();
 
-           builder.state.lock().unwrap().curr_index = defences.len() - 1;
+           builder.state.lock().unwrap().curr_index_inc = defences.len() - 1;
            defences.remove(defences.len() - 1);
 
            let state = builder.state.lock().unwrap();
-           assert_eq!(state.curr_index, 0);
+           assert_eq!(state.curr_index_inc, 0);
            assert_eq!(state.regulated_ids, [0, 1, 2, 3]);
        }
 
@@ -312,11 +354,11 @@ mod tests {
        fn curr_index_after_removed() {
            let (builder, mut defences) = setup();
 
-           builder.state.lock().unwrap().curr_index = 2;
+           builder.state.lock().unwrap().curr_index_inc = 2;
            defences.remove(0);
 
            let state = builder.state.lock().unwrap();
-           assert_eq!(state.curr_index, 1);
+           assert_eq!(state.curr_index_inc, 1);
            assert_eq!(state.regulated_ids, [ 1, 2, 3, 4]);
        }
     }
