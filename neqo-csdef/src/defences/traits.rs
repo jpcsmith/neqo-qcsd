@@ -2,6 +2,7 @@ use std::time::{ Duration, Instant };
 use crate::trace::Packet;
 
 
+#[derive(Debug)]
 pub struct CapacityInfo {
     pub app_incoming: u64,
     pub chaff_incoming: u64,
