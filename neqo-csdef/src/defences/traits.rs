@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{ Duration, Instant };
 use crate::trace::Packet;
 
 
@@ -49,4 +49,9 @@ pub trait Defencev2: std::fmt::Debug {
 
     /// To be called when the application is done sending and receiving data.
     fn on_application_complete(&mut self);
+
+    /// Return the reference point to use as the start time of th defence
+    fn start(&mut self) -> Instant {
+        Instant::now()
+    }
 }

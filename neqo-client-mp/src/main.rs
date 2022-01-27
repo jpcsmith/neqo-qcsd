@@ -34,7 +34,8 @@ use std::process::exit;
 use std::rc::Rc;
 use std::time::{ Instant, Duration };
 use std::boxed::Box;
-use std::sync::{ Arc, Mutex };
+use std::sync::{ Arc, Weak, Mutex };
+use std::sync::atomic::{ AtomicU32, Ordering };
 use std::sync::mpsc::channel;
 use std::thread::JoinHandle;
 use neqo_csdef::{ ConfigFile, Resource };
@@ -1003,62 +1004,93 @@ fn qlog_new(args: &Args, hostname: &str, cid: &ConnectionId) -> Res<NeqoQlog> {
 }
 
 
-fn add_client(
-    _scheme: String,
-    host: Host<String>,
-    port: u16,
-    args: Arc<Args>,
-    url_deps: Arc<Mutex<UrlDependencyTracker>>,
-    url_completion_queue: std::sync::mpsc::Sender<Url>,
-    origin: Origin,
-    defence: Option<RRSharedDefence>,
-    thread_name: String,
-) -> Res<std::thread::JoinHandle<Res<()>>> {
-    let addrs: Vec<_> = format!("{}:{}", host, port).to_socket_addrs()?.collect();
-    let remote_addr = *addrs.first().unwrap();
 
-    let local_addr = match remote_addr {
-        SocketAddr::V4(..) => SocketAddr::new(IpAddr::V4(Ipv4Addr::from([0; 4])), 0),
-        SocketAddr::V6(..) => SocketAddr::new(IpAddr::V6(Ipv6Addr::from([0; 16])), 0),
-    };
+static NEXT_CLIENT_ID: AtomicU32 = AtomicU32::new(0);
 
-    let socket = match UdpSocket::bind(local_addr) {
-        Err(e) => {
-            qerror!("[{}] Unable to bind UDP socket: {}", origin.ascii_serialization(), e);
-            exit(1)
-        }
-        Ok(s) => s,
-    };
+struct ParallelClient {
+    id: u32,
+    lifeline: Weak<()>,
+    handle: Option<JoinHandle<Res<()>>>,
+}
 
-    socket
-        .connect(&remote_addr)
-        .expect("Unable to connect UDP socket");
+impl std::fmt::Display for ParallelClient {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+        write!(f, "PClient({})", self.id)
+    }
+}
 
-    qinfo!(
-        "[{}] H3 Client connecting: {:?} -> {:?}", origin.ascii_serialization(), socket.local_addr().unwrap(), remote_addr
-    );
+impl ParallelClient {
+    fn is_running(&self) -> bool {
+        qtrace!([self], "Has strong references: {}", self.lifeline.strong_count());
+        self.lifeline.strong_count() > 0
+    }
 
-    let handle = std::thread::Builder::new()
-        .name(thread_name)
-        .spawn(move || {
-            qtrace!("Thread started.");
-            let result = client(
-                args,
-                socket,
-                local_addr,
-                remote_addr,
-                &format!("{}", host),
-                url_deps.clone(),
-                url_completion_queue,
-                origin.clone(),
-                defence,
-            );
-            qtrace!("Thread ending with result: {:?}", result);
-            result
+    fn join(&mut self) -> std::thread::Result<Res<()>> {
+        self.handle.take().unwrap().join()
+    }
+
+    fn new(_scheme: String, host: Host<String>, port: u16, args: Arc<Args>,
+        url_deps: Arc<Mutex<UrlDependencyTracker>>, url_completion_queue: std::sync::mpsc::Sender<Url>,
+        origin: Origin, defence: Option<RRSharedDefence>,
+    ) -> Res<ParallelClient>  {
+        let id = NEXT_CLIENT_ID.fetch_add(1, Ordering::SeqCst);
+        let name = format!("t{}", id);
+
+        let lifeline = Arc::new(());
+        let lifeline_weak = Arc::downgrade(&lifeline);
+        assert!(lifeline_weak.strong_count() == 1);
+
+        let handle = std::thread::Builder::new()
+            .name(name.clone())
+            .spawn(move || {
+                let _lifeline = lifeline;
+                qtrace!("Thread starting.");
+
+                let addrs: Vec<_> = format!("{}:{}", host, port).to_socket_addrs()?.collect();
+                let remote_addr = *addrs.first().unwrap();
+
+                let local_addr = match remote_addr {
+                    SocketAddr::V4(..) => SocketAddr::new(IpAddr::V4(Ipv4Addr::from([0; 4])), 0),
+                    SocketAddr::V6(..) => SocketAddr::new(IpAddr::V6(Ipv6Addr::from([0; 16])), 0),
+                };
+
+                let socket = match UdpSocket::bind(local_addr) {
+                    Err(e) => {
+                        qerror!("[{}] Unable to bind UDP socket: {}", origin.ascii_serialization(), e);
+                        exit(1)
+                    }
+                    Ok(s) => s,
+                };
+
+                socket.connect(&remote_addr)
+                    .expect("Unable to connect UDP socket");
+
+                qinfo!("[{}] H3 Client connecting: {:?} -> {:?}",
+                    origin.ascii_serialization(), socket.local_addr().unwrap(), remote_addr);
+
+                let result = client(
+                    args,
+                    socket,
+                    local_addr,
+                    remote_addr,
+                    &format!("{}", host),
+                    url_deps.clone(),
+                    url_completion_queue,
+                    origin.clone(),
+                    defence,
+                )?;
+                qtrace!("Thread ending with result: {:?}", result);
+
+                Ok(result)
+            })
+            .unwrap();
+
+        Ok(ParallelClient {
+            id: id,
+            lifeline: lifeline_weak,
+            handle: Some(handle),
         })
-        .unwrap();
-
-    Ok(handle)
+    }
 }
 
 
@@ -1115,7 +1147,7 @@ fn main() -> Res<()> {
     let mut tx = Some(tx);
 
     let url_deps = Arc::new(Mutex::new(url_deps));
-    let mut clients_by_origin: HashMap<Origin, JoinHandle<Res<()>>> = HashMap::new();
+    let mut clients_by_origin: HashMap<Origin, ParallelClient> = HashMap::new();
     let mut pending_urls_by_origin: HashMap<Origin, Vec<(u16, Url)>> = HashMap::new();
 
     for (id, url) in &url_deps.lock().unwrap().urls() {
@@ -1128,11 +1160,9 @@ fn main() -> Res<()> {
         }
     }
 
-
     let mut manager = build_defence(&args.shaping_args)
         .map(|defence| RRSharedDefenceBuilder::new(defence));
 
-    let mut next_client_id: u32 = 0;
     loop {
         let new_origins: Vec<Origin> = pending_urls_by_origin.iter()
             .filter(|(_, urls)|
@@ -1144,12 +1174,11 @@ fn main() -> Res<()> {
         for origin in &new_origins {
             if let Origin::Tuple(_scheme, host, port) = origin.clone() {
                 let defence = manager.as_mut().map(|mgr| mgr.new_shared());
-                let handle = add_client(
+                let client = ParallelClient::new(
                     _scheme, host, port, args.clone(), url_deps.clone(), tx.clone().unwrap(),
-                    origin.clone(), defence, next_client_id.to_string()
+                    origin.clone(), defence, 
                 )?;
-                next_client_id += 1;
-                clients_by_origin.insert(origin.clone(), handle);
+                clients_by_origin.insert(origin.clone(), client);
             }
 
             // Since they will be downloaded, remove them from the pending hashmap
@@ -1176,13 +1205,40 @@ fn main() -> Res<()> {
                 break;
             }
         };
+
+        // Check for completion
+        let completed: Vec<Origin> = clients_by_origin.iter()
+            .filter(|(_, pclient)| !pclient.is_running())
+            .map(|(origin, _)| origin.clone())
+            .collect();
+
+        for origin in completed {
+            qtrace!("[main] joining stopped thread for {:?}", origin);
+            let mut pclient = clients_by_origin.remove(&origin).expect("was just found in the map");
+            match pclient.join() {
+                Ok(res) => {
+                    qtrace!("[main] thread had ended okay {:?}", origin);
+                    res?
+                }
+                Err(e) => {
+                    qerror!("[main] thread ended in an error: {:?} {:?}", origin, e);
+                    std::panic::resume_unwind(e)
+                }
+            };
+        }
     }
 
-    for (origin, handle) in clients_by_origin.drain() {
+    for (origin, mut pclient) in clients_by_origin.drain() {
         qinfo!("[main] Waiting for thread to exit for origin: {:?}", origin);
-        match handle.join() {
-            Ok(res) => res?,
-            Err(e) => std::panic::resume_unwind(e),
+        match pclient.join() {
+            Ok(res) => {
+                qtrace!("[main] thread had ended okay: {:?}", origin);
+                res?
+            }
+            Err(e) => {
+                qerror!("[main] thread ended in an error: {:?} {:?}", origin, e);
+                std::panic::resume_unwind(e)
+            }
         };
     }
 

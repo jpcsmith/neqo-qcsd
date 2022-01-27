@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{ Duration, Instant };
 use std::sync::{ Arc, Mutex };
 use neqo_common::{ qtrace, qinfo };
 use crate::trace::Packet;
@@ -11,6 +11,7 @@ struct RRState {
     regulated_ids: Vec<u32>,
     curr_index: usize,
     event: Option<Packet>,
+    start_time: Option<Instant>,
 }
 
 
@@ -102,6 +103,14 @@ impl Defencev2 for RRSharedDefence
         }
     }
 
+    fn start(&mut self) -> Instant {
+        let mut state = self.state.lock().unwrap();
+        if state.start_time.is_none() {
+            state.start_time = Some(Instant::now());
+        }
+        state.start_time.clone().unwrap()
+    }
+
     fn is_complete(&self) -> bool {
         // We keep all the connections open until the defence is altogether,
         // complete which allows us to make use of chaff available on all of
@@ -151,6 +160,7 @@ impl RRSharedDefenceBuilder
                 regulated_ids: Vec::new(),
                 curr_index: 0,
                 event: None,
+                start_time: None,
             })),
             next_id: 0,
         }
