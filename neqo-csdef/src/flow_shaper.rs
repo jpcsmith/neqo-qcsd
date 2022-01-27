@@ -264,7 +264,7 @@ impl FlowShaper {
     /// point.
     pub fn start(&mut self) {
         qdebug!([self], "starting shaping.");
-        self.start_time = Some(Instant::now());
+        self.start_time = Some(self.defence.start());
     }
 
     pub fn is_complete(&self) -> bool {
