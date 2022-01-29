@@ -45,6 +45,8 @@ pub struct Config {
     pub max_chaff_streams: u32,
     /// The amount of chaff data to retain available
     pub low_watermark: u64,
+    /// Whether to use allow resources with 0 expected length
+    pub use_empty_resources: bool,
 
     /// Whether to drop unsatisfied shaping events
     pub drop_unsat_events: bool,
@@ -70,6 +72,7 @@ impl Default for Config {
             drop_unsat_events: false,
             keep_alive_lead_time: 100,
             tail_wait: 0,
+            use_empty_resources: false,
         }
     }
 }
@@ -232,8 +235,12 @@ impl Default for FlowShaper {
 impl FlowShaper {
     pub fn new(config: Config, defence: Box<dyn Defencev2>) -> Self {
         let application_events = Rc::new(RefCell::new(FlowShapingApplicationEvents::default()));
-        let chaff_manager = ChaffManager::new(
+        let mut chaff_manager = ChaffManager::new(
             config.max_chaff_streams, config.low_watermark, application_events.clone());
+
+        if config.use_empty_resources {
+            chaff_manager.allow_empty_resources();
+        }
 
         let shaper = FlowShaper{
             next_ci: Duration::from_millis(config.control_interval),
