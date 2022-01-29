@@ -200,7 +200,7 @@ pub struct ShapingArgs {
     max_chaff_streams: Option<u32>,
 
     #[structopt(long, requires("defence"), display_order=1001)]
-    /// The maximum number of chaff streams
+    /// Whether to allow empty resources if no resources are available
     use_empty_resources: Option<bool>,
 
     #[structopt(long, requires("defence"), display_order=1001)]
