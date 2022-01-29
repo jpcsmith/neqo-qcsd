@@ -8,6 +8,8 @@ use crate::event::FlowShapingApplicationEvents;
 use crate::chaff_stream::ChaffStreamMap;
 use crate::Resource;
 
+static EMPTY_RESOURCE_LENGTH: u64 = 20;
+
 
 macro_rules! http_hdr {
     ($key:literal, $value:literal) => {
@@ -26,6 +28,7 @@ pub(crate) struct ChaffManager {
     resources: HashMap<Url, Resource>,
     events: Rc<RefCell<FlowShapingApplicationEvents>>,
     has_started: bool,
+    use_empty_resources: bool,
 }
 
 impl ChaffManager {
@@ -40,7 +43,14 @@ impl ChaffManager {
             events,
             has_started: false,
             resources: Default::default(),
+            use_empty_resources: false,
         }
+    }
+
+    /// Allows using resources with an assumed length of 0 for chaff if
+    /// there are no alternatives.
+    pub fn allow_empty_resources(&mut self) {
+        self.use_empty_resources = true;
     }
 
     /// Add a resource to be tracked by the chaff manager, replacing any existing
@@ -118,7 +128,11 @@ impl ChaffManager {
         }
 
         if let Some(resource) = self.largest_resource().cloned() {
-            let length = resource.length;
+            let length = if self.use_empty_resources && resource.length == 0 {
+                EMPTY_RESOURCE_LENGTH
+            } else {
+                resource.length
+            };
             assert!(length > 0, "largest resource should have a length");
 
             while remaining_streams > 0 && chaff_needed > 0 {
@@ -139,6 +153,14 @@ impl ChaffManager {
         self.resources.values()
             .filter(|resource| resource.length > 0)
             .max_by_key(|resource| resource.length)
+            .or_else(|| {
+                // Maybe return an empty resource instead if allowed
+                if self.use_empty_resources {
+                    self.resources.values().next()
+                } else {
+                    None
+                }
+            })
     }
 }
 

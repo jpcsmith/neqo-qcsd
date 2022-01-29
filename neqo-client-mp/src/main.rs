@@ -36,7 +36,7 @@ use std::time::{ Instant, Duration };
 use std::boxed::Box;
 use std::sync::{ Arc, Weak, Mutex };
 use std::sync::atomic::{ AtomicU32, Ordering };
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{ channel, RecvTimeoutError };
 use std::thread::JoinHandle;
 use neqo_csdef::{ ConfigFile, Resource };
 use neqo_csdef::event::HEventConsumer;
@@ -198,6 +198,10 @@ pub struct ShapingArgs {
     #[structopt(long, requires("defence"), display_order=1001)]
     /// The maximum number of chaff streams
     max_chaff_streams: Option<u32>,
+
+    #[structopt(long, requires("defence"), display_order=1001)]
+    /// The maximum number of chaff streams
+    use_empty_resources: Option<bool>,
 
     #[structopt(long, requires("defence"), display_order=1001)]
     /// Configuration for shaping
@@ -852,6 +856,10 @@ fn build_flow_shaper(
         config.max_stream_data_excess = value;
     }
 
+    if let Some(value) = args.use_empty_resources {
+        config.use_empty_resources = value;
+    }
+
     if let Some(value) = args.tail_wait {
         config.tail_wait = value;
     }
@@ -1195,15 +1203,16 @@ fn main() -> Res<()> {
         }
 
         // Wait to read from the receive queue, if it's an error
-        match rx.recv() {
+        match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(url) => qinfo!("[main] Received notice of completion: {}", url),
-            Err(_) => {
+            Err(RecvTimeoutError::Disconnected) => {
                 qinfo!("[main] Received signal that all URLs are complete");
                 if let Some(mgr) = manager.as_mut() {
                     mgr.on_all_applications_complete();
                 }
                 break;
             }
+            Err(RecvTimeoutError::Timeout) => (),
         };
 
         // Check for completion
