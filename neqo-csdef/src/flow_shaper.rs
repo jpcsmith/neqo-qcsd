@@ -5,6 +5,7 @@ use std::fmt::Display;
 use std::io::{ Write, BufWriter };
 use std::rc::Rc;
 use std::time::{ Duration, Instant };
+use std::sync::{ Arc, Mutex };
 
 use neqo_common::{ qwarn, qdebug, qtrace, qinfo };
 use serde::Deserialize;
@@ -78,15 +79,15 @@ impl Default for Config {
 }
 
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 /// Keeps details to be logged on shutdown later
-struct FlowShaperLogger {
+pub struct FlowShaperLogger {
     chaff_ids_log: Option<BufWriter<std::fs::File>>,
     defence_event_log: Option<BufWriter<std::fs::File>>,
 }
 
 impl FlowShaperLogger {
-    fn set_chaff_ids_log(&mut self, filename: &str) -> Result<()> {
+    pub fn set_chaff_ids_log(&mut self, filename: &str) -> Result<()> {
         assert!(self.chaff_ids_log.is_none(), "already set");
 
         let file = std::fs::File::create(filename)?;
@@ -102,7 +103,7 @@ impl FlowShaperLogger {
         Ok(())
     }
 
-    fn set_defence_event_log(&mut self, filename: &str) -> Result<()> {
+    pub fn set_defence_event_log(&mut self, filename: &str) -> Result<()> {
         assert!(self.defence_event_log.is_none(), "already set");
 
         let file = std::fs::File::create(filename)?;
@@ -128,6 +129,7 @@ pub struct FlowShaperBuilder {
 
     chaff_ids_log: Option<String>,
     defence_event_log: Option<String>,
+    logger: Option<Arc<Mutex<FlowShaperLogger>>>
 }
 
 impl FlowShaperBuilder {
@@ -166,17 +168,28 @@ impl FlowShaperBuilder {
         self
     }
 
-    pub fn from_defence(&mut self, defence: Box<dyn Defencev2>) -> FlowShaper {
+    pub fn logger(&mut self, logger: Option<Arc<Mutex<FlowShaperLogger>>>) -> &mut Self {
+        self.logger = logger;
+        self
+    }
+
+    pub fn from_defence(self, defence: Box<dyn Defencev2>) -> FlowShaper {
         let mut shaper = FlowShaper::new(self.config.clone(), defence);
         for resource in self.chaff_resources.iter() {
             shaper.chaff_manager.add_resource(resource.clone());
         }
 
-        if let Some(filename) = self.chaff_ids_log.as_ref() {
-            shaper.log.set_chaff_ids_log(filename).expect("invalid file");
-        }
-        if let Some(filename) = self.defence_event_log.as_ref() {
-            shaper.log.set_defence_event_log(filename).expect("invalid file");
+        if let Some(logger) = self.logger {
+            shaper.set_logger(logger);
+            qtrace!("Using externally set flow shaper logger.");
+        } else {
+            qtrace!("Configuring default flow shaper logger.");
+            if let Some(filename) = self.chaff_ids_log.as_ref() {
+                shaper.log.lock().unwrap().set_chaff_ids_log(filename).expect("invalid file");
+            }
+            if let Some(filename) = self.defence_event_log.as_ref() {
+                shaper.log.lock().unwrap().set_defence_event_log(filename).expect("invalid file");
+            }
         }
 
         shaper
@@ -219,7 +232,7 @@ pub struct FlowShaper {
     chaff_streams: ChaffStreamMap,
     app_streams: ChaffStreamMap,
 
-    log: FlowShaperLogger,
+    log: Arc<Mutex<FlowShaperLogger>>,
 
     needs_immediate_callback: RefCell<bool>,
 }
@@ -253,7 +266,7 @@ impl FlowShaper {
             app_streams: Default::default(),
             chaff_streams: Default::default(),
             events: Default::default(),
-            log: FlowShaperLogger::default(),
+            log: Arc::new(Mutex::new(FlowShaperLogger::default())),
             incoming_backlog: 0,
             end_time: None,
             needs_immediate_callback: RefCell::new(false),
@@ -395,7 +408,7 @@ impl FlowShaper {
                 chaff_incoming: self.chaff_streams.pull_available(),
                 incoming_used: u64::from(incoming_length + self.incoming_backlog),
         }) {
-            self.log.defence_event(&pkt).expect("logging failed");
+            self.log.lock().unwrap().defence_event(&pkt).expect("logging failed");
 
             match pkt {
                 Packet::Outgoing(_, length) => {
@@ -596,6 +609,10 @@ impl FlowShaper {
             false
         }
     }
+
+    pub fn set_logger(&mut self, logger: Arc<Mutex<FlowShaperLogger>>) {
+        self.log = logger;
+    }
 }
 
 impl Display for FlowShaper {
@@ -650,7 +667,7 @@ impl HEventConsumer for FlowShaper {
         }
 
         let streams = if is_chaff {
-            self.log.chaff_stream_id(stream_id).expect("log unsuccessful");
+            self.log.lock().unwrap().chaff_stream_id(stream_id).expect("log unsuccessful");
             &mut self.chaff_streams
         } else {
             &mut self.app_streams
