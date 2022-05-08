@@ -40,7 +40,7 @@ use std::sync::mpsc::{ channel, RecvTimeoutError };
 use std::thread::JoinHandle;
 use neqo_csdef::{ ConfigFile, Resource };
 use neqo_csdef::event::HEventConsumer;
-use neqo_csdef::flow_shaper::{ FlowShaper, FlowShaperBuilder, Config as FlowShaperConfig };
+use neqo_csdef::flow_shaper::{ FlowShaper, FlowShaperLogger, FlowShaperBuilder, Config as FlowShaperConfig };
 use neqo_csdef::defences::{
     Defencev2, FrontConfig, StaticSchedule, Front, Tamaraw, RRSharedDefenceBuilder,
     RRSharedDefence,
@@ -781,6 +781,7 @@ fn to_headers(values: &[impl AsRef<str>]) -> Vec<Header> {
 
 fn build_defence(args: &ShapingArgs) -> Option<Box<dyn Defencev2 + Send>> {
     let defence = args.defence.as_deref();
+    qtrace!("Defence is {:?}", defence);
     if matches!(defence, None | Some("none")) {
         return None;
     }
@@ -838,6 +839,7 @@ fn build_defence(args: &ShapingArgs) -> Option<Box<dyn Defencev2 + Send>> {
 
 fn build_flow_shaper(
     args: &ShapingArgs, resources: Vec<Resource>, header: &Vec<String>, defence: RRSharedDefence,
+    logger: Arc<Mutex<FlowShaperLogger>>
 ) -> FlowShaper {
     qinfo!("Enabling connection shaping.");
 
@@ -875,14 +877,7 @@ fn build_flow_shaper(
     builder.config(config);
     builder.chaff_resources(&resources);
     builder.chaff_headers(&to_headers(&header));
-
-    if let Some(filename) = args.chaff_ids_log.as_ref() {
-        builder.chaff_ids_log(filename);
-    }
-    if let Some(filename) = args.defence_event_log.as_ref() {
-        builder.defence_event_log(filename);
-    }
-
+    builder.logger(Some(logger));
 
     builder.from_defence(Box::new(defence))
 }
@@ -898,6 +893,7 @@ fn client(
     url_completion_queue: std::sync::mpsc::Sender<Url>,
     origin: Origin,
     defence: Option<RRSharedDefence>,
+    logger: Arc<Mutex<FlowShaperLogger>>
 ) -> Res<()> {
     let quic_protocol = match args.alpn.as_str() {
         "h3-27" => QuicVersion::Draft27,
@@ -949,7 +945,7 @@ fn client(
         .collect();
 
     if let Some(flow_shaper) = defence
-        .map(|d| build_flow_shaper(&args.shaping_args, chaff_resources, &args.header, d))
+        .map(|d| build_flow_shaper(&args.shaping_args, chaff_resources, &args.header, d, logger))
     {
         client = client.with_flow_shaper(flow_shaper);
         shaping = true;
@@ -1040,7 +1036,9 @@ impl ParallelClient {
     fn new(_scheme: String, host: Host<String>, port: u16, args: Arc<Args>,
         url_deps: Arc<Mutex<UrlDependencyTracker>>, url_completion_queue: std::sync::mpsc::Sender<Url>,
         origin: Origin, defence: Option<RRSharedDefence>,
+        logger: Arc<Mutex<FlowShaperLogger>>,
     ) -> Res<ParallelClient>  {
+        qtrace!("Creating new client.");
         let id = NEXT_CLIENT_ID.fetch_add(1, Ordering::SeqCst);
         let name = format!("t{}", id);
 
@@ -1054,7 +1052,7 @@ impl ParallelClient {
                 let _lifeline = lifeline;
                 qtrace!("Thread starting.");
 
-                let addrs: Vec<_> = format!("{}:{}", host, port).to_socket_addrs()?.collect();
+                let addrs: Vec<_> = format!("{}:{}", host, port).to_socket_addrs()?.filter(|x| x.is_ipv4()).collect();
                 let remote_addr = *addrs.first().unwrap();
 
                 let local_addr = match remote_addr {
@@ -1086,6 +1084,7 @@ impl ParallelClient {
                     url_completion_queue,
                     origin.clone(),
                     defence,
+                    logger,
                 )?;
                 qtrace!("Thread ending with result: {:?}", result);
 
@@ -1099,6 +1098,17 @@ impl ParallelClient {
             handle: Some(handle),
         })
     }
+}
+
+fn build_flow_shaper_logger(args: &ShapingArgs) -> FlowShaperLogger {
+    let mut logger = FlowShaperLogger::default();
+    if let Some(filename) = args.chaff_ids_log.as_ref() {
+        logger.set_chaff_ids_log(filename).expect("invalid file");
+    }
+    if let Some(filename) = args.defence_event_log.as_ref() {
+        logger.set_defence_event_log(filename).expect("invalid file");
+    }
+    logger
 }
 
 
@@ -1150,6 +1160,7 @@ fn main() -> Res<()> {
     }
 
 
+    let logger = Arc::new(Mutex::new(build_flow_shaper_logger(&args.shaping_args)));
     let args = Arc::new(args);
     let (tx, rx) = channel::<Url>();
     let mut tx = Some(tx);
@@ -1184,7 +1195,7 @@ fn main() -> Res<()> {
                 let defence = manager.as_mut().map(|mgr| mgr.new_shared());
                 let client = ParallelClient::new(
                     _scheme, host, port, args.clone(), url_deps.clone(), tx.clone().unwrap(),
-                    origin.clone(), defence, 
+                    origin.clone(), defence, logger.clone()
                 )?;
                 clients_by_origin.insert(origin.clone(), client);
             }

@@ -195,6 +195,7 @@ impl RRSharedDefenceBuilder
     /// Create a new RRSharedDefenceBuilder for sharing the provided
     /// defence.
     pub fn new(defence: Box<dyn Defencev2 + Send>) -> Self {
+        qtrace!("Creating shared defence around {:?}", defence);
         RRSharedDefenceBuilder {
             state: Arc::new(Mutex::new(RRState {
                 defence,
