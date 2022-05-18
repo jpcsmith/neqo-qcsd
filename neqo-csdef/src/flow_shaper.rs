@@ -27,6 +27,7 @@ pub use crate::event::{ FlowShapingEvent };
 
 const BLOCKED_STREAM_LIMIT: u64 = 16;
 const DEFAULT_MSD_EXCESS: u64 = 1000;
+const DEFAULT_MAX_UDP_PAYLOAD_SIZE: u64 = 65527;
 
 
 #[derive(Debug, Deserialize, Clone, Eq, PartialEq)]
@@ -41,6 +42,8 @@ pub struct Config {
     pub initial_max_stream_data: u64,
     /// Additional leeway on the max stream data of each stream
     pub max_stream_data_excess: u64,
+    /// The maximum UDP payload size to accept
+    pub max_udp_payload_size: u64,
 
     /// The maximum number of chaff streams to open
     pub max_chaff_streams: u32,
@@ -68,6 +71,7 @@ impl Default for Config {
             local_md: 4611686018427387903,
             initial_max_stream_data: BLOCKED_STREAM_LIMIT,
             max_stream_data_excess: DEFAULT_MSD_EXCESS,
+            max_udp_payload_size: DEFAULT_MAX_UDP_PAYLOAD_SIZE,
             max_chaff_streams: 5,
             low_watermark: 1_000_000,
             drop_unsat_events: false,
@@ -529,8 +533,9 @@ impl FlowShaper {
     }
 
     /// Return the initial values for transport parameters
-    pub fn tparam_defaults(&self) -> [(u64, u64); 4] {
+    pub fn tparam_defaults(&self) -> [(u64, u64); 5] {
         [
+            (0x03, self.config.max_udp_payload_size),
             (0x04, self.config.local_md),
             // Disable the peer sending data on bidirectional streams openned
             // by this endpoint (initial_max_stream_data_bidi_local)
