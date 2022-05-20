@@ -7,6 +7,7 @@ use crate::stream_id::StreamId;
 use crate::event::FlowShapingEvents;
 
 const DEFAULT_RX_DATA_WINDOW: u64 = 1048576;
+const DEFAULT_STREAM_DATA_BLOCKED_INC: u64 = 100;
 
 
 #[derive(Debug, PartialEq, Eq)]
@@ -309,6 +310,20 @@ impl ChaffStream {
             RecvState::Created { .. } | RecvState::Unthrottled { .. }
             | RecvState::Closed { .. } 
                 => panic!("Cannot pull data for stream in current state!"),
+        }
+    }
+
+    pub fn stream_data_blocked(&mut self, blocked_at: u64) {
+        qtrace!([self], "Stream data blocked at {} for {:?}", blocked_at, self.recv_state);
+        match &mut self.recv_state {
+            RecvState::ReceivingHeaders { max_stream_data_limit, max_stream_data, ..  }
+            | RecvState::ReceivingData { max_stream_data_limit, max_stream_data, ..  } => {
+                if (*max_stream_data_limit == *max_stream_data) && (*max_stream_data == blocked_at) {
+                    *max_stream_data_limit += DEFAULT_STREAM_DATA_BLOCKED_INC;
+                    qtrace!([self], "increased MSD on stream data blocked frame: {:?}", self.recv_state);
+                }
+            },
+            _ => (),
         }
     }
 
