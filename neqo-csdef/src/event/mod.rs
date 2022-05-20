@@ -25,6 +25,7 @@ pub trait StreamEventConsumer {
     fn data_consumed(&mut self, stream_id: u64, amount: u64);
     fn data_sent(&mut self, stream_id: u64, amount: u64);
     fn data_queued(&mut self, stream_id: u64, amount: u64);
+    fn stream_data_blocked(&mut self, stream_id: u64, blocked_at: u64);
 }
 
 

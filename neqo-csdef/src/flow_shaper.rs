@@ -698,6 +698,16 @@ impl HEventConsumer for FlowShaper {
 }
 
 impl StreamEventConsumer for FlowShaper {
+    fn stream_data_blocked(&mut self, stream_id: u64, blocked_at: u64) {
+        if StreamId::new(stream_id).is_uni() {
+            return;
+        }
+
+        self.get_stream_mut(&stream_id)
+            .expect("Stream to be tracked.")
+            .stream_data_blocked(blocked_at);
+    }
+
     fn on_first_byte_sent(&mut self, stream_id: u64) {
         if !self.chaff_manager.has_started() {
             self.chaff_manager.start();

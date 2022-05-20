@@ -2155,6 +2155,11 @@ impl Connection {
                     return Err(Error::StreamStateError);
                 }
 
+                if self.flow_shaper.is_some() {
+                    self.flow_shaper.as_ref().unwrap().borrow_mut()
+                        .stream_data_blocked(stream_id.as_u64(), stream_data_limit);
+                }
+
                 if let (_, Some(rs)) = self.obtain_stream(stream_id)? {
                     if let Some(msd) = rs.max_stream_data() {
                         qinfo!(
