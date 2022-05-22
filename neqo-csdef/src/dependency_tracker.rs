@@ -25,6 +25,10 @@ struct Resource {
     /// The previously observed content-length header value
     content_length: Option<u64>,
 
+    /// Whether this resource should be prioritised as chaff
+    #[serde(default)]
+    chaff_priority: bool,
+
     /// The unencoded data length observed
     data_length: u64,
 
@@ -57,6 +61,7 @@ impl UrlDependencyTracker {
                 data_length: 0,
                 has_completed: false,
                 depends_on: Vec::new(),
+                chaff_priority: false,
             }).collect();
 
         UrlDependencyTracker { dependencies }
@@ -106,7 +111,10 @@ impl UrlDependencyTracker {
     /// Prefers image URLs followed by script, stylesheet, and font URLs and
     /// decides based on the the type information provided to the tracker.
     pub fn select_padding_urls(&self, count: usize) -> Vec<Url> {
+        let not_only_priority = !self.dependencies.iter().any(|res| res.chaff_priority);
+
         let mut urls: Vec<(&String, Url)> = self.dependencies.iter()
+            .filter(|res| not_only_priority || res.chaff_priority)
             .map(|res| (&res.resource_type, Url::parse((*res.url).into()).unwrap()))
             .collect();
 
@@ -125,7 +133,10 @@ impl UrlDependencyTracker {
     /// Prefers padding URLs which have a large, known content length.
     /// resorts to selecting by type to break ties.
     pub fn select_padding_urls_by_size(&self, count: usize) -> Vec<ChaffResource> {
+        let not_only_priority = !self.dependencies.iter().any(|res| res.chaff_priority);
+
         let mut urls: Vec<(&String, u64, Url)> = self.dependencies.iter()
+            .filter(|res| not_only_priority || res.chaff_priority)
             .map(|res| (&res.resource_type, 
                         // Use 1 for None as unknown is better than a 0 content length
                         std::cmp::max(res.content_length.unwrap_or(1), res.data_length),
@@ -184,22 +195,22 @@ mod tests {
                 Resource {
                     id: 0, url: "https://z.com".into(), resource_type: "Document".into(),
                     known_to_be_valid: true, has_completed: false, depends_on: vec![],
-                    content_length: Some(5000), data_length: 0,
+                    content_length: Some(5000), data_length: 0, chaff_priority: false
                 },
                 Resource {
                     id: 1, url: "https://a.z.com".into(), resource_type: "Script".into(),
                     known_to_be_valid: true, has_completed: false, depends_on: vec![0, ],
-                    content_length: None, data_length: 0,
+                    content_length: None, data_length: 0, chaff_priority: false
                 },
                 Resource {
                     id: 2, url: "https://b.z.com".into(), resource_type: "Script".into(),
                     known_to_be_valid: true, has_completed: false, depends_on: vec![0, 1],
-                    content_length: Some(3000), data_length: 0,
+                    content_length: Some(3000), data_length: 0, chaff_priority: false
                 },
                 Resource {
                     id: 3, url: "https://c.z.com".into(), resource_type: "Image".into(),
                     known_to_be_valid: true, has_completed: false, depends_on: vec![2, ],
-                    content_length: Some(0), data_length: 0,
+                    content_length: Some(0), data_length: 0, chaff_priority: false
                 }
             ]
         }
@@ -256,6 +267,17 @@ mod tests {
            ChaffResource::new(url!("https://b.z.com"), Vec::new(), 3000),
            ChaffResource::new(url!("https://a.z.com"), Vec::new(), 1),
            ChaffResource::new(url!("https://c.z.com"), Vec::new(), 0),
+        ]);
+    }
+
+    #[test]
+    fn select_padding_urls_priority() {
+        let mut tracker = create_tracker();
+        tracker.dependencies[1].chaff_priority = true;
+
+        assert_eq!(tracker.select_padding_urls(2), [url!("https://a.z.com")]);
+        assert_eq!(tracker.select_padding_urls_by_size(3), [
+            ChaffResource::new(url!("https://a.z.com"), Vec::new(), 1)
         ]);
     }
 }
