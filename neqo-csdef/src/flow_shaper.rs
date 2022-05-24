@@ -219,8 +219,8 @@ pub struct FlowShaper {
     /// The time that the flow shaper was started
     start_time: Option<Instant>,
 
-    /// Set once the defence has completed to allow waiting for any tail end packets 
-    /// from the server. Once elapsed, will be set to a duration of zero and the 
+    /// Set once the defence has completed to allow waiting for any tail end packets
+    /// from the server. Once elapsed, will be set to a duration of zero and the
     /// shaper will be closed.
     end_time: Option<Duration>,
 
@@ -306,26 +306,27 @@ impl FlowShaper {
         let instant = if self.has_events() || *self.needs_immediate_callback.borrow() {
             self.needs_immediate_callback.replace(false);
             Some(Instant::now())
-        } else if let Some(end_time) = self.end_time { 
+        } else if let Some(end_time) = self.end_time {
             if end_time > Duration::new(0, 0) {
                 Some(self.start_time.expect("start_time must have been set") + end_time)
             } else {
                 None
             }
         } else {
-            self.defence.next_event_at()
-                .map(|dur| std::cmp::min(self.next_ci, dur))
+            let time = self.defence.next_event_at();
+            // qtrace!([self], "Next signal time: {:?}", time);
+            time.map(|dur| std::cmp::min(self.next_ci, dur))
                 .or(Some(self.next_ci))
                 .zip(self.start_time)
                 .map(|(dur, start)| start + dur)
         };
 
         // Schedule a possible cancellation o the timeoutbefore expiry.
-        // This is only to be considered when next_event_at() is not 
+        // This is only to be considered when next_event_at() is not
         // None (thus shaping is not complete).
         //
-        // This should not result in an infinite loop when called within 
-        // 200 ms of the expiry time. The first time it is called, it 
+        // This should not result in an infinite loop when called within
+        // 200 ms of the expiry time. The first time it is called, it
         // schedules a callback. On the process_timer call, we send a ping
         // which resets/delays the expiry time before this is called again.
         let cancel_expiry_at = expiry_time - Duration::from_millis(
@@ -407,7 +408,7 @@ impl FlowShaper {
         // interval could be equal to since_start.
         assert!(since_start < self.next_ci);
 
-        while let Some(pkt) = self.defence.next_event_with_details(since_start, CapacityInfo { 
+        while let Some(pkt) = self.defence.next_event_with_details(since_start, CapacityInfo {
                 app_incoming: self.app_streams.pull_available(),
                 chaff_incoming: self.chaff_streams.pull_available(),
                 incoming_used: u64::from(incoming_length + self.incoming_backlog),
@@ -543,8 +544,8 @@ impl FlowShaper {
             // Disable the peer sending data on bidirectional streams that
             // they open (initial_max_stream_data_bidi_remote)
             (0x06, self.config.initial_max_stream_data),
-            // Disable the peer creating unidirectional streams to send push 
-            // data (initial_max_streams_uni). The minimum allowed is 3 for 
+            // Disable the peer creating unidirectional streams to send push
+            // data (initial_max_streams_uni). The minimum allowed is 3 for
             // HTTP/3 settings and the mandatory QPACK extensions
             (0x09, 3),
         ]

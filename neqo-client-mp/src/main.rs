@@ -416,7 +416,7 @@ fn process_loop(
                 Output::Callback(duration) => {
                     socket.set_read_timeout(Some(duration)).unwrap();
                     callback_duration = Some(duration);
-                    qtrace!("[process_loop] callback in {} ms", duration.as_millis());
+                    qtrace!("[process_loop] callback in {} ms ({} ns)", duration.as_millis(), duration.as_nanos());
                     break;
                 }
                 Output::None => {
@@ -445,6 +445,14 @@ fn process_loop(
                     qtrace!("[process_loop] No open streams, setting read timeout to 10 ms");
                     socket.set_read_timeout(Some(max_timeout)).unwrap();
                 }
+            }
+        }
+
+        if let Some(duration) = callback_duration {
+            // socket.recv will block for multiple milliseconds for each call. Instead, just skip
+            // the recv for short callback durations
+            if duration < Duration::from_millis(1) {
+                continue;
             }
         }
 

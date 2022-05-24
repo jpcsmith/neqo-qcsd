@@ -390,6 +390,7 @@ fn process_loop(
 
         let mut exiting = !handler.handle(client)?;
 
+        let mut callback_duration = None;
         loop {
             let output = client.process_output(Instant::now());
             match output {
@@ -403,6 +404,8 @@ fn process_loop(
                 }
                 Output::Callback(duration) => {
                     socket.set_read_timeout(Some(duration)).unwrap();
+                    callback_duration = Some(duration);
+                    eprintln!("[process_loop] callback in {} ms ({} ns)", duration.as_millis(), duration.as_nanos());
                     break;
                 }
                 Output::None => {
@@ -419,6 +422,14 @@ fn process_loop(
             println!("Exiting with {} of {} resources remaining, {} streams existing",
                      urls.remaining(), urls.len(), handler.streams.len());
             return Ok(client.state());
+        }
+
+        if let Some(duration) = callback_duration {
+            // socket.recv will block for multiple milliseconds for each call. Instead, just skip
+            // the recv for short callback durations
+            if duration < Duration::from_millis(1) {
+                continue;
+            }
         }
 
         match socket.recv(&mut buf[..]) {
