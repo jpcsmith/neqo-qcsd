@@ -405,7 +405,6 @@ fn process_loop(
                 Output::Callback(duration) => {
                     socket.set_read_timeout(Some(duration)).unwrap();
                     callback_duration = Some(duration);
-                    eprintln!("[process_loop] callback in {} ms ({} ns)", duration.as_millis(), duration.as_nanos());
                     break;
                 }
                 Output::None => {
