@@ -13,6 +13,7 @@ struct RRState {
     curr_index_out: usize,
     event: Option<Packet>,
     start_time: Option<Instant>,
+    n_skipped: usize,
 }
 
 
@@ -43,7 +44,7 @@ impl std::fmt::Display for RRSharedDefence {
 impl Drop for RRSharedDefence
 {
     fn drop(&mut self) {
-        // When this drops, we need to remove it from the list of ids, and 
+        // When this drops, we need to remove it from the list of ids, and
         // adjust curr_index accordingly.
         if let Ok(mut state) = self.state.lock() {
             let index = state.regulated_ids.iter().position(|x| *x == self.id)
@@ -96,21 +97,27 @@ impl Defencev2 for RRSharedDefence
 
                 // We assign incoming events whenever there is sufficient capacity
                 // to pull or this is the only stream.
-                if available_incoming >= u64::from(pkt.length()) || state.regulated_ids.len() == 1
-                        || capacity.app_incoming > 0 && capacity.incoming_used == 0 {
+                if available_incoming >= u64::from(pkt.length())
+                        || state.regulated_ids.len() == 1
+                        || capacity.app_incoming > 0 && capacity.incoming_used == 0
+                        // If we have done a full round without any having enough capacity, assign it
+                        || state.n_skipped == state.regulated_ids.len()
+                {
                     assert!(state.regulated_ids[state.curr_index_inc] == self.id);
 
                     qtrace!([self], "assigned packet: {:?}", pkt);
                     state.curr_index_inc = (state.curr_index_inc + 1) % state.regulated_ids.len();
+                    state.n_skipped = 0;
 
                     state.event = None;
                     Some(pkt)
                 } else {
-                    // For the remaining incoming packets, they requesting connection is not suitable
+                    // For the remaining incoming packets, the requesting connection is not suitable
                     // to be assigned the packet, therefore we move on to the next connection.
                     qtrace!([self], "advancing connection as insufficient capacity: {} of {} ({:?})",
                         available_incoming, pkt.length(), capacity);
                     state.curr_index_inc = (state.curr_index_inc + 1) % state.regulated_ids.len();
+                    state.n_skipped += 1;
 
                     // Store the packet until the next call
                     state.event = Some(pkt);
@@ -132,8 +139,8 @@ impl Defencev2 for RRSharedDefence
                     qtrace!([self], "no more events to come.");
                     None
                 }
-                Some(dur) if state.regulated_ids[state.curr_index_inc] != self.id 
-                    && state.regulated_ids[state.curr_index_out] != self.id 
+                Some(dur) if state.regulated_ids[state.curr_index_inc] != self.id
+                    && state.regulated_ids[state.curr_index_out] != self.id
                 => {
                     Some(dur + Duration::from_millis(1))
                 }
@@ -168,9 +175,9 @@ impl Defencev2 for RRSharedDefence
     }
 
     fn on_application_complete(&mut self) {
-        // Individual connections cannot know if another connection will be 
+        // Individual connections cannot know if another connection will be
         // started some time after their completiton. Therefore, we need to
-        // get a signal from the managing code that no more URLs will be 
+        // get a signal from the managing code that no more URLs will be
         // requested.
         //
         // See the `on_all_applications_complete()` function.
@@ -204,6 +211,7 @@ impl RRSharedDefenceBuilder
                 curr_index_out: 0,
                 event: None,
                 start_time: None,
+                n_skipped: 0,
             })),
             next_id: 0,
         }
@@ -215,7 +223,7 @@ impl RRSharedDefenceBuilder
         self.state.lock().unwrap().defence.on_application_complete()
     }
 
-    /// Create a new instance of the shared defence over the originally 
+    /// Create a new instance of the shared defence over the originally
     /// provided defence.
     pub fn new_shared(&mut self) -> RRSharedDefence {
         let shared = RRSharedDefence {
