@@ -230,7 +230,11 @@ pub struct ShapingArgs {
 
     #[structopt(long, display_order=1001)]
     /// If true, will not download URLs but instead only use them to generate chaff
-    only_chaff: bool
+    only_chaff: bool,
+
+    #[structopt(long, requires("defence"), display_order=1001)]
+    /// The maximum UDP packet size to accept
+    max_udp_payload_size: Option<u64>,
 }
 
 
@@ -876,6 +880,10 @@ fn build_flow_shaper(
 
     if let Some(value) = args.max_chaff_streams {
         config.max_chaff_streams = value;
+    }
+
+    if let Some(value) = args.max_udp_payload_size {
+        config.max_udp_payload_size = value;
     }
 
     if let Some(value) = args.drop_unsat_events {
