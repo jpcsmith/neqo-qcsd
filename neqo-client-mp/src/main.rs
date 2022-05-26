@@ -235,6 +235,10 @@ pub struct ShapingArgs {
     #[structopt(long, requires("defence"), display_order=1001)]
     /// The maximum UDP packet size to accept
     max_udp_payload_size: Option<u64>,
+
+    #[structopt(long, display_order=1001)]
+    /// Whether to assign packets regardless of data availability
+    strict_round_robin: bool
 }
 
 
@@ -1196,7 +1200,7 @@ fn main() -> Res<()> {
     }
 
     let mut manager = build_defence(&args.shaping_args)
-        .map(|defence| RRSharedDefenceBuilder::new(defence));
+        .map(|defence| RRSharedDefenceBuilder::new(defence, args.shaping_args.strict_round_robin));
 
     loop {
         let new_origins: Vec<Origin> = pending_urls_by_origin.iter()
