@@ -23,6 +23,7 @@ pub struct RRSharedDefence {
     id: u32,
     // Pair of active ids and the index of the next id
     state: Arc<Mutex<RRState>>,
+    own_app_complete: bool,
 }
 
 impl RRSharedDefence {
@@ -164,8 +165,16 @@ impl Defencev2 for RRSharedDefence
         // We keep all the connections open until the defence is altogether,
         // complete which allows us to make use of chaff available on all of
         // the connections.
+        //
+        // In the case of strict_rr, immediately mark a  connection as complete
+        // if there are other connections open and this connections own app is
+        // complete, so that it does not hog data.
         let state = self.state.lock().unwrap();
-        state.event.is_none() && state.defence.is_complete()
+        if state.strict_rr && state.regulated_ids.len() > 1 {
+            self.own_app_complete
+        } else {
+            state.event.is_none() && state.defence.is_complete()
+        }
     }
 
     fn is_outgoing_complete(&self) -> bool {
@@ -185,6 +194,7 @@ impl Defencev2 for RRSharedDefence
         // requested.
         //
         // See the `on_all_applications_complete()` function.
+        self.own_app_complete = true;
     }
 }
 
@@ -233,7 +243,8 @@ impl RRSharedDefenceBuilder
     pub fn new_shared(&mut self) -> RRSharedDefence {
         let shared = RRSharedDefence {
             id: self.next_id,
-            state: self.state.clone()
+            state: self.state.clone(),
+            own_app_complete: false
         };
         self.next_id += 1;
 
