@@ -14,7 +14,6 @@ struct RRState {
     event: Option<Packet>,
     start_time: Option<Instant>,
     n_skipped: usize,
-    strict_rr: bool,
 }
 
 
@@ -23,7 +22,6 @@ pub struct RRSharedDefence {
     id: u32,
     // Pair of active ids and the index of the next id
     state: Arc<Mutex<RRState>>,
-    own_app_complete: bool,
 }
 
 impl RRSharedDefence {
@@ -99,10 +97,7 @@ impl Defencev2 for RRSharedDefence
 
                 // We assign incoming events whenever there is sufficient capacity
                 // to pull or this is the only stream.
-                // If we are using strict round robin, assign it regardless of its
-                // availability of data
-                if state.strict_rr
-                        || available_incoming >= u64::from(pkt.length())
+                if available_incoming >= u64::from(pkt.length())
                         || state.regulated_ids.len() == 1
                         || capacity.app_incoming > 0 && capacity.incoming_used == 0
                         // If we have done a full round without any having enough capacity, assign it
@@ -165,16 +160,8 @@ impl Defencev2 for RRSharedDefence
         // We keep all the connections open until the defence is altogether,
         // complete which allows us to make use of chaff available on all of
         // the connections.
-        //
-        // In the case of strict_rr, immediately mark a  connection as complete
-        // if there are other connections open and this connections own app is
-        // complete, so that it does not hog data.
         let state = self.state.lock().unwrap();
-        if state.strict_rr && state.regulated_ids.len() > 1 {
-            self.own_app_complete
-        } else {
-            state.event.is_none() && state.defence.is_complete()
-        }
+        state.event.is_none() && state.defence.is_complete()
     }
 
     fn is_outgoing_complete(&self) -> bool {
@@ -194,7 +181,6 @@ impl Defencev2 for RRSharedDefence
         // requested.
         //
         // See the `on_all_applications_complete()` function.
-        self.own_app_complete = true;
     }
 }
 
@@ -215,7 +201,7 @@ impl RRSharedDefenceBuilder
 {
     /// Create a new RRSharedDefenceBuilder for sharing the provided
     /// defence.
-    pub fn new(defence: Box<dyn Defencev2 + Send>, strict_rr: bool) -> Self {
+    pub fn new(defence: Box<dyn Defencev2 + Send>) -> Self {
         qtrace!("Creating shared defence around {:?}", defence);
         RRSharedDefenceBuilder {
             state: Arc::new(Mutex::new(RRState {
@@ -226,7 +212,6 @@ impl RRSharedDefenceBuilder
                 event: None,
                 start_time: None,
                 n_skipped: 0,
-                strict_rr,
             })),
             next_id: 0,
         }
@@ -243,8 +228,7 @@ impl RRSharedDefenceBuilder
     pub fn new_shared(&mut self) -> RRSharedDefence {
         let shared = RRSharedDefence {
             id: self.next_id,
-            state: self.state.clone(),
-            own_app_complete: false
+            state: self.state.clone()
         };
         self.next_id += 1;
 
@@ -271,7 +255,7 @@ mod tests {
     #[test]
     fn new_shared() {
         let front = Front::new(FrontConfig::default());
-        let mut builder = RRSharedDefenceBuilder::new(Box::new(front), false);
+        let mut builder = RRSharedDefenceBuilder::new(Box::new(front));
 
         assert_eq!(builder.shared_count(), 0);
 
@@ -294,7 +278,7 @@ mod tests {
         #[test]
         fn simple() {
             let front = Front::new(FrontConfig::default());
-            let mut builder = RRSharedDefenceBuilder::new(Box::new(front), false);
+            let mut builder = RRSharedDefenceBuilder::new(Box::new(front));
 
             {
                 let _defence = builder.new_shared();
@@ -315,7 +299,7 @@ mod tests {
         #[test]
         fn single_removed() {
             let front = Front::new(FrontConfig::default());
-            let mut builder = RRSharedDefenceBuilder::new(Box::new(front), false);
+            let mut builder = RRSharedDefenceBuilder::new(Box::new(front));
 
             {
                 let _defence = builder.new_shared();
@@ -328,7 +312,7 @@ mod tests {
 
         fn setup() -> (RRSharedDefenceBuilder, Vec<RRSharedDefence>) {
             let front = Front::new(FrontConfig::default());
-            let mut builder = RRSharedDefenceBuilder::new(Box::new(front), false);
+            let mut builder = RRSharedDefenceBuilder::new(Box::new(front));
 
             let defences = vec![
                 builder.new_shared(), builder.new_shared(), builder.new_shared(),
