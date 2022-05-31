@@ -7,6 +7,7 @@ use crate::stream_id::StreamId;
 use crate::event::FlowShapingEvents;
 
 const DEFAULT_RX_DATA_WINDOW: u64 = 1048576;
+const DEFAULT_STREAM_DATA_BLOCKED_INC: u64 = 100;
 
 
 #[derive(Debug, PartialEq, Eq)]
@@ -226,6 +227,10 @@ impl ChaffStream {
         self.recv_state.msd_available()
     }
 
+    pub fn pending_bytes(&self) -> u64 {
+        self.send_state.pending_bytes()
+    }
+
     pub fn open(&mut self) {
         match self.recv_state {
             RecvState::Created { initial_msd, throttled: true } => {
@@ -305,6 +310,20 @@ impl ChaffStream {
             RecvState::Created { .. } | RecvState::Unthrottled { .. }
             | RecvState::Closed { .. } 
                 => panic!("Cannot pull data for stream in current state!"),
+        }
+    }
+
+    pub fn stream_data_blocked(&mut self, blocked_at: u64) {
+        qtrace!([self], "Stream data blocked at {} for {:?}", blocked_at, self.recv_state);
+        match &mut self.recv_state {
+            RecvState::ReceivingHeaders { max_stream_data_limit, max_stream_data, ..  }
+            | RecvState::ReceivingData { max_stream_data_limit, max_stream_data, ..  } => {
+                if (*max_stream_data_limit == *max_stream_data) && (*max_stream_data == blocked_at) {
+                    *max_stream_data_limit += DEFAULT_STREAM_DATA_BLOCKED_INC;
+                    qtrace!([self], "increased MSD on stream data blocked frame: {:?}", self.recv_state);
+                }
+            },
+            _ => (),
         }
     }
 
@@ -406,7 +425,7 @@ impl ChaffStream {
     pub fn data_sent(&mut self, amount: u64) {
         qtrace!([self], "data sent: {}", amount);
         match &mut self.send_state {
-            SendState::Throttled { pending, allowed } => {
+            SendState::Throttled { pending: _, allowed: _ } => {
                 // assert!(amount <= *pending, "More data sent than was known pending.");
                 // assert!(amount <= *allowed, "More data sent than was allowed.");
 
@@ -505,6 +524,10 @@ impl ChaffStreamMap {
 
     pub fn pull_available(&self) -> u64 {
         self.iter().fold(0, |total, (_, stream)| total + stream.msd_available())
+    }
+
+    pub fn push_available(&self) -> u64 {
+        self.iter().fold(0, |total, (_, stream)| total + stream.pending_bytes())
     }
 
     pub fn can_pull(&self) -> bool {

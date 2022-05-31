@@ -49,10 +49,11 @@ pub fn init() {
             let elapsed = START_TIME.elapsed();
             writeln!(
                 buf,
-                "{}s{:3}ms {} {}",
+                "{}s{:3}ms {} <{}> {}",
                 elapsed.as_secs(),
                 elapsed.as_millis() % 1000,
                 buf.default_styled_level(record.level()),
+                std::thread::current().name().unwrap_or("-1"),
                 record.args()
             )
         });

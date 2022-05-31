@@ -5,6 +5,7 @@ use std::fmt::Display;
 use std::io::{ Write, BufWriter };
 use std::rc::Rc;
 use std::time::{ Duration, Instant };
+use std::sync::{ Arc, Mutex };
 
 use neqo_common::{ qwarn, qdebug, qtrace, qinfo };
 use serde::Deserialize;
@@ -13,7 +14,7 @@ use url::Url;
 use crate::Result;
 use crate::trace::Packet;
 use crate::stream_id::StreamId;
-use crate::defences::{ Defencev2, StaticSchedule };
+use crate::defences::{ Defencev2, StaticSchedule, CapacityInfo };
 use crate::chaff_stream::{ ChaffStream, ChaffStreamMap };
 use crate::event::{
     FlowShapingEvents, FlowShapingApplicationEvents, HEventConsumer,
@@ -26,6 +27,7 @@ pub use crate::event::{ FlowShapingEvent };
 
 const BLOCKED_STREAM_LIMIT: u64 = 16;
 const DEFAULT_MSD_EXCESS: u64 = 1000;
+const DEFAULT_MAX_UDP_PAYLOAD_SIZE: u64 = 65527;
 
 
 #[derive(Debug, Deserialize, Clone, Eq, PartialEq)]
@@ -40,11 +42,15 @@ pub struct Config {
     pub initial_max_stream_data: u64,
     /// Additional leeway on the max stream data of each stream
     pub max_stream_data_excess: u64,
+    /// The maximum UDP payload size to accept
+    pub max_udp_payload_size: u64,
 
     /// The maximum number of chaff streams to open
     pub max_chaff_streams: u32,
     /// The amount of chaff data to retain available
     pub low_watermark: u64,
+    /// Whether to use allow resources with 0 expected length
+    pub use_empty_resources: bool,
 
     /// Whether to drop unsatisfied shaping events
     pub drop_unsat_events: bool,
@@ -65,25 +71,27 @@ impl Default for Config {
             local_md: 4611686018427387903,
             initial_max_stream_data: BLOCKED_STREAM_LIMIT,
             max_stream_data_excess: DEFAULT_MSD_EXCESS,
+            max_udp_payload_size: DEFAULT_MAX_UDP_PAYLOAD_SIZE,
             max_chaff_streams: 5,
             low_watermark: 1_000_000,
             drop_unsat_events: false,
             keep_alive_lead_time: 100,
             tail_wait: 0,
+            use_empty_resources: false,
         }
     }
 }
 
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 /// Keeps details to be logged on shutdown later
-struct FlowShaperLogger {
+pub struct FlowShaperLogger {
     chaff_ids_log: Option<BufWriter<std::fs::File>>,
     defence_event_log: Option<BufWriter<std::fs::File>>,
 }
 
 impl FlowShaperLogger {
-    fn set_chaff_ids_log(&mut self, filename: &str) -> Result<()> {
+    pub fn set_chaff_ids_log(&mut self, filename: &str) -> Result<()> {
         assert!(self.chaff_ids_log.is_none(), "already set");
 
         let file = std::fs::File::create(filename)?;
@@ -99,7 +107,7 @@ impl FlowShaperLogger {
         Ok(())
     }
 
-    fn set_defence_event_log(&mut self, filename: &str) -> Result<()> {
+    pub fn set_defence_event_log(&mut self, filename: &str) -> Result<()> {
         assert!(self.defence_event_log.is_none(), "already set");
 
         let file = std::fs::File::create(filename)?;
@@ -125,6 +133,7 @@ pub struct FlowShaperBuilder {
 
     chaff_ids_log: Option<String>,
     defence_event_log: Option<String>,
+    logger: Option<Arc<Mutex<FlowShaperLogger>>>
 }
 
 impl FlowShaperBuilder {
@@ -163,17 +172,28 @@ impl FlowShaperBuilder {
         self
     }
 
-    pub fn from_defence(&mut self, defence: Box<dyn Defencev2>) -> FlowShaper {
+    pub fn logger(&mut self, logger: Option<Arc<Mutex<FlowShaperLogger>>>) -> &mut Self {
+        self.logger = logger;
+        self
+    }
+
+    pub fn from_defence(self, defence: Box<dyn Defencev2>) -> FlowShaper {
         let mut shaper = FlowShaper::new(self.config.clone(), defence);
         for resource in self.chaff_resources.iter() {
             shaper.chaff_manager.add_resource(resource.clone());
         }
 
-        if let Some(filename) = self.chaff_ids_log.as_ref() {
-            shaper.log.set_chaff_ids_log(filename).expect("invalid file");
-        }
-        if let Some(filename) = self.defence_event_log.as_ref() {
-            shaper.log.set_defence_event_log(filename).expect("invalid file");
+        if let Some(logger) = self.logger {
+            shaper.set_logger(logger);
+            qtrace!("Using externally set flow shaper logger.");
+        } else {
+            qtrace!("Configuring default flow shaper logger.");
+            if let Some(filename) = self.chaff_ids_log.as_ref() {
+                shaper.log.lock().unwrap().set_chaff_ids_log(filename).expect("invalid file");
+            }
+            if let Some(filename) = self.defence_event_log.as_ref() {
+                shaper.log.lock().unwrap().set_defence_event_log(filename).expect("invalid file");
+            }
         }
 
         shaper
@@ -199,8 +219,8 @@ pub struct FlowShaper {
     /// The time that the flow shaper was started
     start_time: Option<Instant>,
 
-    /// Set once the defence has completed to allow waiting for any tail end packets 
-    /// from the server. Once elapsed, will be set to a duration of zero and the 
+    /// Set once the defence has completed to allow waiting for any tail end packets
+    /// from the server. Once elapsed, will be set to a duration of zero and the
     /// shaper will be closed.
     end_time: Option<Duration>,
 
@@ -216,7 +236,7 @@ pub struct FlowShaper {
     chaff_streams: ChaffStreamMap,
     app_streams: ChaffStreamMap,
 
-    log: FlowShaperLogger,
+    log: Arc<Mutex<FlowShaperLogger>>,
 
     needs_immediate_callback: RefCell<bool>,
 }
@@ -232,8 +252,12 @@ impl Default for FlowShaper {
 impl FlowShaper {
     pub fn new(config: Config, defence: Box<dyn Defencev2>) -> Self {
         let application_events = Rc::new(RefCell::new(FlowShapingApplicationEvents::default()));
-        let chaff_manager = ChaffManager::new(
+        let mut chaff_manager = ChaffManager::new(
             config.max_chaff_streams, config.low_watermark, application_events.clone());
+
+        if config.use_empty_resources {
+            chaff_manager.allow_empty_resources();
+        }
 
         let shaper = FlowShaper{
             next_ci: Duration::from_millis(config.control_interval),
@@ -246,7 +270,7 @@ impl FlowShaper {
             app_streams: Default::default(),
             chaff_streams: Default::default(),
             events: Default::default(),
-            log: FlowShaperLogger::default(),
+            log: Arc::new(Mutex::new(FlowShaperLogger::default())),
             incoming_backlog: 0,
             end_time: None,
             needs_immediate_callback: RefCell::new(false),
@@ -264,7 +288,7 @@ impl FlowShaper {
     /// point.
     pub fn start(&mut self) {
         qdebug!([self], "starting shaping.");
-        self.start_time = Some(Instant::now());
+        self.start_time = Some(self.defence.start());
     }
 
     pub fn is_complete(&self) -> bool {
@@ -282,26 +306,27 @@ impl FlowShaper {
         let instant = if self.has_events() || *self.needs_immediate_callback.borrow() {
             self.needs_immediate_callback.replace(false);
             Some(Instant::now())
-        } else if let Some(end_time) = self.end_time { 
+        } else if let Some(end_time) = self.end_time {
             if end_time > Duration::new(0, 0) {
                 Some(self.start_time.expect("start_time must have been set") + end_time)
             } else {
                 None
             }
         } else {
-            self.defence.next_event_at()
-                .map(|dur| std::cmp::min(self.next_ci, dur))
+            let time = self.defence.next_event_at();
+            // qtrace!([self], "Next signal time: {:?}", time);
+            time.map(|dur| std::cmp::min(self.next_ci, dur))
                 .or(Some(self.next_ci))
                 .zip(self.start_time)
                 .map(|(dur, start)| start + dur)
         };
 
         // Schedule a possible cancellation o the timeoutbefore expiry.
-        // This is only to be considered when next_event_at() is not 
+        // This is only to be considered when next_event_at() is not
         // None (thus shaping is not complete).
         //
-        // This should not result in an infinite loop when called within 
-        // 200 ms of the expiry time. The first time it is called, it 
+        // This should not result in an infinite loop when called within
+        // 200 ms of the expiry time. The first time it is called, it
         // schedules a callback. On the process_timer call, we send a ping
         // which resets/delays the expiry time before this is called again.
         let cancel_expiry_at = expiry_time - Duration::from_millis(
@@ -323,6 +348,7 @@ impl FlowShaper {
                 qtrace!([self], "Sending PING to keep the connection alive");
                 // This sends at least a PING frame
                 self.events.borrow_mut().send_pad_frames(1);
+                self.events.borrow_mut().push_control();
             }
         }
     }
@@ -382,8 +408,12 @@ impl FlowShaper {
         // interval could be equal to since_start.
         assert!(since_start < self.next_ci);
 
-        while let Some(pkt) = self.defence.next_event(since_start) {
-            self.log.defence_event(&pkt).expect("logging failed");
+        while let Some(pkt) = self.defence.next_event_with_details(since_start, CapacityInfo {
+                app_incoming: self.app_streams.pull_available(),
+                chaff_incoming: self.chaff_streams.pull_available(),
+                incoming_used: u64::from(incoming_length + self.incoming_backlog),
+        }) {
+            self.log.lock().unwrap().defence_event(&pkt).expect("logging failed");
 
             match pkt {
                 Packet::Outgoing(_, length) => {
@@ -504,8 +534,9 @@ impl FlowShaper {
     }
 
     /// Return the initial values for transport parameters
-    pub fn tparam_defaults(&self) -> [(u64, u64); 4] {
+    pub fn tparam_defaults(&self) -> [(u64, u64); 5] {
         [
+            (0x03, self.config.max_udp_payload_size),
             (0x04, self.config.local_md),
             // Disable the peer sending data on bidirectional streams openned
             // by this endpoint (initial_max_stream_data_bidi_local)
@@ -513,8 +544,8 @@ impl FlowShaper {
             // Disable the peer sending data on bidirectional streams that
             // they open (initial_max_stream_data_bidi_remote)
             (0x06, self.config.initial_max_stream_data),
-            // Disable the peer creating unidirectional streams to send push 
-            // data (initial_max_streams_uni). The minimum allowed is 3 for 
+            // Disable the peer creating unidirectional streams to send push
+            // data (initial_max_streams_uni). The minimum allowed is 3 for
             // HTTP/3 settings and the mandatory QPACK extensions
             (0x09, 3),
         ]
@@ -584,6 +615,10 @@ impl FlowShaper {
             false
         }
     }
+
+    pub fn set_logger(&mut self, logger: Arc<Mutex<FlowShaperLogger>>) {
+        self.log = logger;
+    }
 }
 
 impl Display for FlowShaper {
@@ -638,7 +673,7 @@ impl HEventConsumer for FlowShaper {
         }
 
         let streams = if is_chaff {
-            self.log.chaff_stream_id(stream_id).expect("log unsuccessful");
+            self.log.lock().unwrap().chaff_stream_id(stream_id).expect("log unsuccessful");
             &mut self.chaff_streams
         } else {
             &mut self.app_streams
@@ -664,6 +699,16 @@ impl HEventConsumer for FlowShaper {
 }
 
 impl StreamEventConsumer for FlowShaper {
+    fn stream_data_blocked(&mut self, stream_id: u64, blocked_at: u64) {
+        if StreamId::new(stream_id).is_uni() {
+            return;
+        }
+
+        self.get_stream_mut(&stream_id)
+            .expect("Stream to be tracked.")
+            .stream_data_blocked(blocked_at);
+    }
+
     fn on_first_byte_sent(&mut self, stream_id: u64) {
         if !self.chaff_manager.has_started() {
             self.chaff_manager.start();
