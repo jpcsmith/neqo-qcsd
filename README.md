@@ -1,3 +1,19 @@
+# Neqo-QCSD, a fork of Neqo with the QCSD
+
+This repository contains the the QCSD library and source code associated with the paper "QCSD: A QUIC Client-Side Website-Fingerprinting Defence Framework" (USENIX Security 2022). It is built upon Mozilla's QUIC-HTTP/3 library "Neqo". The primary changes to the repository are as follows:
+
+- `neqo-csdef`. The `neqo-csdef` crate contains the library code for orchestrating defences on the connection with QCSD. Code has been added to the `neqo-http3` and `neqo-transport` crates to utilise QCSD.
+- `neqo-client` and `neqo-client-mp`. These crates contain modified version of the original `neqo-client` test client, and enable downloading URLs while enacting live defences. 
+
+The code for running the experiments and futher details can be found at https://github.com/jpcsmith/qcsd-experiments.
+
+The code in this repository has been tested on a fresh installation of Ubuntu 20.04 with rust version 1.51. Additionally, building the binary requires the following dependencies `build-essential mercurial gyp ninja-build libz-dev clang`, which can be installed with apt.
+The file cargo lock file `Cargo.lock` details a known working configuration of dependent rust packages, and is used by cargo to build the binaries.
+
+
+The contents of the original README are provided below.
+
+---
 # Neqo, an Implementation of QUIC written in Rust
 
 ![neqo logo](https://github.com/mozilla/neqo/raw/main/neqo.png "neqo logo")
